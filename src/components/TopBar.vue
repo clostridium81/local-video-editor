@@ -6,11 +6,19 @@ import { clearProject, deleteProjectState } from '../persistence/assetStore'
 import { toast } from '../composables/useToast'
 import { hasWebCodecs } from '../engine/capabilities'
 import ExportDialog from './ExportDialog.vue'
+import AudioMixer from './AudioMixer.vue'
+import RecorderDialog from './RecorderDialog.vue'
+import ProjectsDialog from './ProjectsDialog.vue'
+import ShortcutHelp from './ShortcutHelp.vue'
 
 const store = useProjectStore()
 const fileInputRef = ref<HTMLInputElement>()
 const saving = ref(false)
 const showExport = ref(false)
+const showMixer = ref(false)
+const showRecorder = ref(false)
+const showProjects = ref(false)
+const showHelp = ref(false)
 
 async function onSave() {
   saving.value = true
@@ -103,6 +111,10 @@ function onExport() {
       <button class="ghost" :disabled="saving" @click="onSave">
         {{ saving ? '保存中…' : 'バックアップ' }}
       </button>
+      <button class="ghost icon-btn" title="プロジェクト管理" @click="showProjects = true">📂</button>
+      <button class="ghost icon-btn" title="録音・録画" @click="showRecorder = true">🎙</button>
+      <button class="ghost icon-btn" title="オーディオミキサー" @click="showMixer = !showMixer" :class="{ active: showMixer }">🎚</button>
+      <button class="ghost icon-btn" title="キーボードショートカット" @click="showHelp = true">?</button>
       <button
         class="primary"
         :disabled="!hasWebCodecs"
@@ -120,6 +132,10 @@ function onExport() {
   </div>
 
   <ExportDialog v-if="showExport" @close="showExport = false" />
+  <AudioMixer v-if="showMixer" @close="showMixer = false" />
+  <RecorderDialog v-if="showRecorder" @close="showRecorder = false" />
+  <ProjectsDialog v-if="showProjects" @close="showProjects = false" />
+  <ShortcutHelp v-if="showHelp" @close="showHelp = false" />
 </template>
 
 <style scoped>

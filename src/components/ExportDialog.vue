@@ -16,7 +16,12 @@ import { exportProject, downloadBlob, type ExportOptions } from '../engine/expor
 const emit = defineEmits<{ close: [] }>()
 const store = useProjectStore()
 
-const format = ref<'mp4' | 'webm'>('mp4')
+const format = ref<'mp4' | 'webm' | 'gif'>('mp4')
+const useRange = ref<'full' | 'inout' | 'custom'>(
+  store.state.timeline.inPoint != null || store.state.timeline.outPoint != null ? 'inout' : 'full'
+)
+const customStart = ref(0)
+const customEnd = ref(store.state.timeline.duration)
 const fps = ref<number>(store.state.meta.fps)
 const resolutionPreset = ref<'project' | '1080p' | '720p' | '480p'>('project')
 const bitratePreset = ref<'low' | 'medium' | 'high'>('medium')
@@ -122,6 +127,16 @@ async function onStart() {
   abortCtrl.value = ctrl
   store.suspendAutosave()
 
+  let rangeStart: number | undefined = undefined
+  let rangeEnd: number | undefined = undefined
+  if (useRange.value === 'inout') {
+    rangeStart = store.state.timeline.inPoint ?? 0
+    rangeEnd = store.state.timeline.outPoint ?? store.state.timeline.duration
+  } else if (useRange.value === 'custom') {
+    rangeStart = Math.max(0, customStart.value)
+    rangeEnd = Math.min(store.state.timeline.duration, customEnd.value)
+  }
+
   const opts: ExportOptions = {
     format: format.value,
     width: resolution.value.width,
@@ -129,7 +144,9 @@ async function onStart() {
     fps: fps.value,
     videoBitrate: resolvedBitrate.value,
     audioBitrate: 192_000,
-    includeAudio: includeAudio.value,
+    includeAudio: includeAudio.value && format.value !== 'gif',
+    startTime: rangeStart,
+    endTime: rangeEnd,
     signal: ctrl.signal,
     onProgress: p => {
       progressPhase.value = p.phase
@@ -191,6 +208,7 @@ function phaseLabel(p: string) {
             <select v-model="format">
               <option value="mp4" :disabled="!mp4Supported">MP4 (H.264 + AAC)</option>
               <option value="webm" :disabled="!webmSupported">WebM (VP9 + Opus)</option>
+              <option value="gif">GIF</option>
             </select>
           </label>
           <label class="field">
@@ -241,10 +259,42 @@ function phaseLabel(p: string) {
           />
         </label>
 
-        <label class="toggle">
+        <label class="toggle" v-if="format !== 'gif'">
           <input type="checkbox" v-model="includeAudio" />
           <span>音声を含める</span>
         </label>
+
+        <div class="field">
+          <span>範囲</span>
+          <div class="row-3">
+            <label class="toggle">
+              <input type="radio" value="full" v-model="useRange" />
+              <span>全体</span>
+            </label>
+            <label class="toggle">
+              <input type="radio" value="inout" v-model="useRange" />
+              <span>In/Out</span>
+            </label>
+            <label class="toggle">
+              <input type="radio" value="custom" v-model="useRange" />
+              <span>カスタム</span>
+            </label>
+          </div>
+        </div>
+        <div v-if="useRange === 'custom'" class="row-2">
+          <label class="field">
+            <span>開始 (s)</span>
+            <input type="number" step="0.1" min="0"
+              :max="store.state.timeline.duration"
+              v-model.number="customStart" />
+          </label>
+          <label class="field">
+            <span>終了 (s)</span>
+            <input type="number" step="0.1" min="0"
+              :max="store.state.timeline.duration"
+              v-model.number="customEnd" />
+          </label>
+        </div>
 
         <div class="summary muted">
           <div>最終: {{ resolution.width }} × {{ resolution.height }} @ {{ fps }}fps</div>
@@ -325,6 +375,11 @@ function phaseLabel(p: string) {
   display: grid;
   grid-template-columns: 1fr 1fr;
   gap: 10px;
+}
+.row-3 {
+  display: flex;
+  gap: 10px;
+  align-items: center;
 }
 .field {
   display: flex;

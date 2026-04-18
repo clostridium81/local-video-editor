@@ -8,11 +8,20 @@ import type {
   ImageClip,
   TextClip,
   AudioClip,
+  ShapeClip,
+  ShapeKind,
   KeyframeableProperty,
   Easing,
   TransitionType,
   ClipEffects,
-  Transition
+  Transition,
+  BlendMode,
+  ColorGrade,
+  ChromaKey,
+  TextDecor,
+  TextAnim,
+  TextAnimType,
+  AudioEQ
 } from '../types/project'
 import { findKeyframeAt, neighborKeyframes } from '../engine/keyframes'
 import EffectSlider from './EffectSlider.vue'
@@ -24,6 +33,24 @@ const selectedClip = computed<Clip | null>(() => {
   const id = selection.selectedClipId.value
   if (!id) return null
   return store.state.clips.find(c => c.id === id) ?? null
+})
+
+// 型ガード済みの computed
+const videoOrImageClip = computed<VideoClip | ImageClip | null>(() => {
+  const c = selectedClip.value
+  return c && (c.kind === 'video' || c.kind === 'image') ? c : null
+})
+const textClip = computed<TextClip | null>(() => {
+  const c = selectedClip.value
+  return c && c.kind === 'text' ? c : null
+})
+const shapeClip = computed<ShapeClip | null>(() => {
+  const c = selectedClip.value
+  return c && c.kind === 'shape' ? c : null
+})
+const audioLikeClip = computed<VideoClip | AudioClip | null>(() => {
+  const c = selectedClip.value
+  return c && (c.kind === 'video' || c.kind === 'audio') ? c : null
 })
 
 const localPlayhead = computed(() => {
@@ -144,6 +171,124 @@ function resetEffects() {
   if (!c || !hasEffects(c)) return
   store.setEffects(c.id, undefined)
 }
+
+// ---------- 速度 / 再生 / ブレンド ----------
+
+function setSpeed(v: number) {
+  const c = selectedClip.value
+  if (!c) return
+  store.updateClip(c.id, { speed: Math.max(0.125, Math.min(8, v)) } as any, `speed:${c.id}`)
+}
+function setReversed(v: boolean) {
+  const c = selectedClip.value
+  if (!c) return
+  store.updateClip(c.id, { reversed: v } as any)
+}
+function setBlendMode(m: BlendMode) {
+  const c = selectedClip.value
+  if (!c) return
+  store.setBlendMode(c.id, m === 'normal' ? undefined : m)
+}
+
+// ---------- カラーグレード ----------
+
+function updateGrade(patch: Partial<ColorGrade>) {
+  const c = selectedClip.value
+  if (!c || (c.kind !== 'video' && c.kind !== 'image')) return
+  const prev = (c as VideoClip | ImageClip).colorGrade ?? {}
+  store.setColorGrade(c.id, { ...prev, ...patch })
+}
+function resetGrade() {
+  const c = selectedClip.value
+  if (!c || (c.kind !== 'video' && c.kind !== 'image')) return
+  store.setColorGrade(c.id, undefined)
+}
+
+// ---------- クロマキー ----------
+
+function updateChroma(patch: Partial<ChromaKey>) {
+  const c = selectedClip.value
+  if (!c || (c.kind !== 'video' && c.kind !== 'image')) return
+  const prev = (c as VideoClip | ImageClip).chromaKey ?? {
+    enabled: false,
+    color: '#00ff00',
+    threshold: 0.25,
+    softness: 0.1,
+    spillSuppress: 0.3
+  }
+  store.setChromaKey(c.id, { ...prev, ...patch })
+}
+function clearChroma() {
+  const c = selectedClip.value
+  if (!c || (c.kind !== 'video' && c.kind !== 'image')) return
+  store.setChromaKey(c.id, undefined)
+}
+
+// ---------- テキスト装飾・アニメ ----------
+
+function updateDecor(patch: Partial<TextDecor>) {
+  const c = selectedClip.value
+  if (!c || c.kind !== 'text') return
+  const prev = (c as TextClip).decor ?? {}
+  store.setTextDecor(c.id, { ...prev, ...patch })
+}
+function clearDecor() {
+  const c = selectedClip.value
+  if (!c || c.kind !== 'text') return
+  store.setTextDecor(c.id, undefined)
+}
+function setAnim(type: TextAnimType, duration = 1) {
+  const c = selectedClip.value
+  if (!c || c.kind !== 'text') return
+  if (type === 'none') store.setTextAnim(c.id, undefined)
+  else store.setTextAnim(c.id, { type, duration })
+}
+
+// ---------- EQ ----------
+
+function updateEQ(patch: Partial<AudioEQ>) {
+  const c = selectedClip.value
+  if (!c || (c.kind !== 'audio' && c.kind !== 'video')) return
+  const prev = (c as AudioClip).eq ?? {}
+  store.setAudioEQ(c.id, { ...prev, ...patch })
+}
+
+// ---------- 図形 ----------
+
+function updateShape(patch: Partial<ShapeClip>) {
+  const c = selectedClip.value
+  if (!c || c.kind !== 'shape') return
+  store.updateClip(c.id, patch as any)
+}
+function updateShapeStyle(patch: Partial<ShapeClip['style']>) {
+  const c = selectedClip.value
+  if (!c || c.kind !== 'shape') return
+  const sc = c as ShapeClip
+  store.updateClip(c.id, { style: { ...sc.style, ...patch } } as any)
+}
+
+// ---------- リンク ----------
+
+function linkSelection() {
+  const ids = selection.selectedClipIds.value
+  if (ids.length >= 2) store.linkClips(ids)
+}
+function unlinkSelection() {
+  const ids = selection.selectedClipIds.value
+  if (ids.length > 0) store.unlinkClips(ids)
+}
+
+const BLEND_MODES: BlendMode[] = [
+  'normal','multiply','screen','overlay','darken','lighten',
+  'color-dodge','color-burn','hard-light','soft-light',
+  'difference','exclusion','hue','saturation','color','luminosity','add'
+]
+
+const TEXT_ANIMS: TextAnimType[] = [
+  'none','typewriter','fade-words','slide-chars','bounce','scale-pop','wave'
+]
+
+const SHAPE_KINDS: ShapeKind[] = ['rect','ellipse','triangle','star','arrow','line']
 </script>
 
 <template>
@@ -587,6 +732,318 @@ function resetEffects() {
         </div>
       </section>
 
+      <!-- 速度 / 逆再生 / ブレンド -->
+      <section v-if="selectedClip.kind !== 'text' && selectedClip.kind !== 'shape'" class="section">
+        <div class="section-head">再生</div>
+        <div class="grid-2">
+          <label class="field">
+            <span>速度 (×) <span class="mono muted">{{ (selectedClip.speed ?? 1).toFixed(2) }}</span></span>
+            <input
+              type="range"
+              min="0.25"
+              max="4"
+              step="0.05"
+              :value="selectedClip.speed ?? 1"
+              @input="(e) => setSpeed(Number((e.target as HTMLInputElement).value))"
+            />
+          </label>
+          <label class="toggle" style="align-self: end;">
+            <input
+              type="checkbox"
+              :checked="!!selectedClip.reversed"
+              @change="(e) => setReversed((e.target as HTMLInputElement).checked)"
+            />
+            <span>逆再生</span>
+          </label>
+        </div>
+      </section>
+
+      <section v-if="hasEffects(selectedClip) || selectedClip.kind === 'shape' || selectedClip.kind === 'text'" class="section">
+        <div class="section-head">合成</div>
+        <label class="field">
+          <span>ブレンドモード</span>
+          <select
+            :value="selectedClip.blendMode ?? 'normal'"
+            @change="(e) => setBlendMode((e.target as HTMLSelectElement).value as BlendMode)"
+          >
+            <option v-for="m in BLEND_MODES" :key="m" :value="m">{{ m }}</option>
+          </select>
+        </label>
+      </section>
+
+      <!-- カラーグレーディング -->
+      <section v-if="hasEffects(selectedClip)" class="section">
+        <div class="section-head">
+          <span>カラーグレード</span>
+          <button class="ghost tiny" @click="resetGrade">リセット</button>
+        </div>
+        <div class="sub-title">Lift (シャドウ)</div>
+        <div class="grid-3">
+          <EffectSlider label="R" :value="videoOrImageClip?.colorGrade?.lift?.r ?? 0" :min="-0.5" :max="0.5" :step="0.01"
+            @change="(v) => updateGrade({ lift: { ...(videoOrImageClip?.colorGrade?.lift ?? { r: 0, g: 0, b: 0 }), r: v } })" />
+          <EffectSlider label="G" :value="videoOrImageClip?.colorGrade?.lift?.g ?? 0" :min="-0.5" :max="0.5" :step="0.01"
+            @change="(v) => updateGrade({ lift: { ...(videoOrImageClip?.colorGrade?.lift ?? { r: 0, g: 0, b: 0 }), g: v } })" />
+          <EffectSlider label="B" :value="videoOrImageClip?.colorGrade?.lift?.b ?? 0" :min="-0.5" :max="0.5" :step="0.01"
+            @change="(v) => updateGrade({ lift: { ...(videoOrImageClip?.colorGrade?.lift ?? { r: 0, g: 0, b: 0 }), b: v } })" />
+        </div>
+        <div class="sub-title">Gamma (ミッドトーン)</div>
+        <div class="grid-3">
+          <EffectSlider label="R" :value="videoOrImageClip?.colorGrade?.gamma?.r ?? 0" :min="-1" :max="1" :step="0.01"
+            @change="(v) => updateGrade({ gamma: { ...(videoOrImageClip?.colorGrade?.gamma ?? { r: 0, g: 0, b: 0 }), r: v } })" />
+          <EffectSlider label="G" :value="videoOrImageClip?.colorGrade?.gamma?.g ?? 0" :min="-1" :max="1" :step="0.01"
+            @change="(v) => updateGrade({ gamma: { ...(videoOrImageClip?.colorGrade?.gamma ?? { r: 0, g: 0, b: 0 }), g: v } })" />
+          <EffectSlider label="B" :value="videoOrImageClip?.colorGrade?.gamma?.b ?? 0" :min="-1" :max="1" :step="0.01"
+            @change="(v) => updateGrade({ gamma: { ...(videoOrImageClip?.colorGrade?.gamma ?? { r: 0, g: 0, b: 0 }), b: v } })" />
+        </div>
+        <div class="sub-title">Gain (ハイライト)</div>
+        <div class="grid-3">
+          <EffectSlider label="R" :value="videoOrImageClip?.colorGrade?.gain?.r ?? 0" :min="-0.5" :max="0.5" :step="0.01"
+            @change="(v) => updateGrade({ gain: { ...(videoOrImageClip?.colorGrade?.gain ?? { r: 0, g: 0, b: 0 }), r: v } })" />
+          <EffectSlider label="G" :value="videoOrImageClip?.colorGrade?.gain?.g ?? 0" :min="-0.5" :max="0.5" :step="0.01"
+            @change="(v) => updateGrade({ gain: { ...(videoOrImageClip?.colorGrade?.gain ?? { r: 0, g: 0, b: 0 }), g: v } })" />
+          <EffectSlider label="B" :value="videoOrImageClip?.colorGrade?.gain?.b ?? 0" :min="-0.5" :max="0.5" :step="0.01"
+            @change="(v) => updateGrade({ gain: { ...(videoOrImageClip?.colorGrade?.gain ?? { r: 0, g: 0, b: 0 }), b: v } })" />
+        </div>
+        <EffectSlider label="色温度" :value="videoOrImageClip?.colorGrade?.temperature ?? 0" :min="-1" :max="1" :step="0.01"
+          @change="(v) => updateGrade({ temperature: v })" />
+        <EffectSlider label="ティント" :value="videoOrImageClip?.colorGrade?.tint ?? 0" :min="-1" :max="1" :step="0.01"
+          @change="(v) => updateGrade({ tint: v })" />
+      </section>
+
+      <!-- クロマキー -->
+      <section v-if="hasEffects(selectedClip)" class="section">
+        <div class="section-head">
+          <span>クロマキー</span>
+          <button class="ghost tiny" @click="clearChroma">解除</button>
+        </div>
+        <label class="toggle">
+          <input
+            type="checkbox"
+            :checked="!!videoOrImageClip?.chromaKey?.enabled"
+            @change="(e) => updateChroma({ enabled: (e.target as HTMLInputElement).checked })"
+          />
+          <span>有効化</span>
+        </label>
+        <div v-if="videoOrImageClip?.chromaKey?.enabled" class="grid-2">
+          <label class="field">
+            <span>キーカラー</span>
+            <input
+              type="color"
+              :value="videoOrImageClip?.chromaKey.color"
+              @input="(e) => updateChroma({ color: (e.target as HTMLInputElement).value })"
+            />
+          </label>
+          <div />
+          <EffectSlider label="閾値" :value="videoOrImageClip?.chromaKey.threshold" :min="0" :max="1" :step="0.01"
+            @change="(v) => updateChroma({ threshold: v })" />
+          <EffectSlider label="柔らかさ" :value="videoOrImageClip?.chromaKey.softness" :min="0" :max="1" :step="0.01"
+            @change="(v) => updateChroma({ softness: v })" />
+          <EffectSlider label="スピル抑制" :value="videoOrImageClip?.chromaKey.spillSuppress" :min="0" :max="1" :step="0.01"
+            @change="(v) => updateChroma({ spillSuppress: v })" />
+        </div>
+      </section>
+
+      <!-- テキスト装飾 / アニメ -->
+      <section v-if="selectedClip.kind === 'text'" class="section">
+        <div class="section-head">
+          <span>テキスト装飾</span>
+          <button class="ghost tiny" @click="clearDecor">解除</button>
+        </div>
+        <div class="grid-2">
+          <label class="field">
+            <span>影の色</span>
+            <input
+              type="color"
+              :value="textClip?.decor?.shadow?.color ?? '#000000'"
+              @input="(e) => updateDecor({ shadow: { ...(textClip?.decor?.shadow ?? { blur: 8, offsetX: 2, offsetY: 2, color: '#000000' }), color: (e.target as HTMLInputElement).value } })"
+            />
+          </label>
+          <label class="field">
+            <span>影のぼかし</span>
+            <input
+              type="number"
+              min="0" step="1"
+              :value="textClip?.decor?.shadow?.blur ?? 0"
+              @change="(e) => updateDecor({ shadow: { ...(textClip?.decor?.shadow ?? { blur: 0, offsetX: 0, offsetY: 0, color: '#000000' }), blur: Number((e.target as HTMLInputElement).value) } })"
+            />
+          </label>
+          <label class="field">
+            <span>影 X</span>
+            <input
+              type="number"
+              step="1"
+              :value="textClip?.decor?.shadow?.offsetX ?? 0"
+              @change="(e) => updateDecor({ shadow: { ...(textClip?.decor?.shadow ?? { blur: 0, offsetX: 0, offsetY: 0, color: '#000000' }), offsetX: Number((e.target as HTMLInputElement).value) } })"
+            />
+          </label>
+          <label class="field">
+            <span>影 Y</span>
+            <input
+              type="number"
+              step="1"
+              :value="textClip?.decor?.shadow?.offsetY ?? 0"
+              @change="(e) => updateDecor({ shadow: { ...(textClip?.decor?.shadow ?? { blur: 0, offsetX: 0, offsetY: 0, color: '#000000' }), offsetY: Number((e.target as HTMLInputElement).value) } })"
+            />
+          </label>
+          <label class="field">
+            <span>アウトライン色</span>
+            <input
+              type="color"
+              :value="textClip?.decor?.outline?.color ?? '#000000'"
+              @input="(e) => updateDecor({ outline: { ...(textClip?.decor?.outline ?? { color: '#000000', width: 0 }), color: (e.target as HTMLInputElement).value } })"
+            />
+          </label>
+          <label class="field">
+            <span>アウトライン幅</span>
+            <input
+              type="number"
+              min="0" step="0.5"
+              :value="textClip?.decor?.outline?.width ?? 0"
+              @change="(e) => updateDecor({ outline: { ...(textClip?.decor?.outline ?? { color: '#000000', width: 0 }), width: Number((e.target as HTMLInputElement).value) } })"
+            />
+          </label>
+          <label class="field">
+            <span>字間 (px)</span>
+            <input
+              type="number"
+              step="0.5"
+              :value="textClip?.decor?.letterSpacing ?? 0"
+              @change="(e) => updateDecor({ letterSpacing: Number((e.target as HTMLInputElement).value) })"
+            />
+          </label>
+          <label class="field">
+            <span>行間 (倍)</span>
+            <input
+              type="number"
+              min="1" max="3" step="0.05"
+              :value="textClip?.decor?.lineHeight ?? 1.3"
+              @change="(e) => updateDecor({ lineHeight: Number((e.target as HTMLInputElement).value) })"
+            />
+          </label>
+        </div>
+      </section>
+
+      <section v-if="selectedClip.kind === 'text'" class="section">
+        <div class="section-head">テキストアニメ</div>
+        <div class="grid-2">
+          <label class="field">
+            <span>種類</span>
+            <select
+              :value="textClip?.anim?.type ?? 'none'"
+              @change="(e) => setAnim((e.target as HTMLSelectElement).value as TextAnimType, textClip?.anim?.duration ?? 1)"
+            >
+              <option v-for="a in TEXT_ANIMS" :key="a" :value="a">{{ a }}</option>
+            </select>
+          </label>
+          <label class="field">
+            <span>時間 (s)</span>
+            <input
+              type="number"
+              min="0.1" step="0.1"
+              :value="textClip?.anim?.duration ?? 1"
+              :disabled="!textClip?.anim"
+              @change="(e) => setAnim(textClip?.anim?.type ?? 'none', Number((e.target as HTMLInputElement).value))"
+            />
+          </label>
+        </div>
+      </section>
+
+      <!-- 図形 -->
+      <section v-if="selectedClip.kind === 'shape'" class="section">
+        <div class="section-head">図形</div>
+        <label class="field">
+          <span>形状</span>
+          <select
+            :value="shapeClip!.shape"
+            @change="(e) => updateShape({ shape: (e.target as HTMLSelectElement).value as ShapeKind })"
+          >
+            <option v-for="s in SHAPE_KINDS" :key="s" :value="s">{{ s }}</option>
+          </select>
+        </label>
+        <div class="grid-2">
+          <label class="field">
+            <span>幅 (0..1)</span>
+            <input
+              type="number"
+              step="0.01" min="0.01" max="2"
+              :value="shapeClip!.width.toFixed(3)"
+              @change="(e) => updateShape({ width: Number((e.target as HTMLInputElement).value) })"
+            />
+          </label>
+          <label class="field">
+            <span>高さ (0..1)</span>
+            <input
+              type="number"
+              step="0.01" min="0.01" max="2"
+              :value="shapeClip!.height.toFixed(3)"
+              @change="(e) => updateShape({ height: Number((e.target as HTMLInputElement).value) })"
+            />
+          </label>
+          <label class="field">
+            <span>塗り</span>
+            <div class="row gap-4">
+              <input
+                type="color"
+                :value="shapeClip!.style.fill ?? '#e8a838'"
+                @input="(e) => updateShapeStyle({ fill: (e.target as HTMLInputElement).value })"
+              />
+              <button class="ghost" @click="updateShapeStyle({ fill: undefined })">なし</button>
+            </div>
+          </label>
+          <label class="field">
+            <span>線</span>
+            <div class="row gap-4">
+              <input
+                type="color"
+                :value="shapeClip!.style.stroke ?? '#ffffff'"
+                @input="(e) => updateShapeStyle({ stroke: (e.target as HTMLInputElement).value })"
+              />
+              <button class="ghost" @click="updateShapeStyle({ stroke: undefined })">なし</button>
+            </div>
+          </label>
+          <label class="field">
+            <span>線幅</span>
+            <input
+              type="number"
+              min="0" step="1"
+              :value="shapeClip!.style.strokeWidth ?? 0"
+              @change="(e) => updateShapeStyle({ strokeWidth: Number((e.target as HTMLInputElement).value) })"
+            />
+          </label>
+          <label class="field" v-if="shapeClip!.shape === 'rect'">
+            <span>角丸 (px)</span>
+            <input
+              type="number"
+              min="0" step="1"
+              :value="shapeClip!.style.cornerRadius ?? 0"
+              @change="(e) => updateShapeStyle({ cornerRadius: Number((e.target as HTMLInputElement).value) })"
+            />
+          </label>
+        </div>
+      </section>
+
+      <!-- EQ (音声/映像) -->
+      <section v-if="hasVolume(selectedClip)" class="section">
+        <div class="section-head">EQ (3 バンド)</div>
+        <div class="grid-3">
+          <EffectSlider label="低" :value="audioLikeClip?.eq?.low ?? 0" :min="-24" :max="24" :step="0.5"
+            @change="(v) => updateEQ({ low: v })" />
+          <EffectSlider label="中" :value="audioLikeClip?.eq?.mid ?? 0" :min="-24" :max="24" :step="0.5"
+            @change="(v) => updateEQ({ mid: v })" />
+          <EffectSlider label="高" :value="audioLikeClip?.eq?.high ?? 0" :min="-24" :max="24" :step="0.5"
+            @change="(v) => updateEQ({ high: v })" />
+        </div>
+      </section>
+
+      <!-- リンク -->
+      <section class="section">
+        <div class="row gap-4">
+          <button class="ghost tiny" :disabled="selection.selectedClipIds.value.length < 2" @click="linkSelection">🔗 リンク</button>
+          <button class="ghost tiny" :disabled="!selectedClip.linkGroup" @click="unlinkSelection">🔗 解除</button>
+          <span v-if="selectedClip.linkGroup" class="muted mono" style="font-size: 10px">リンク済</span>
+        </div>
+      </section>
+
       <!-- 削除 -->
       <section class="section">
         <button class="danger" @click="() => { if (selectedClip) { store.removeClip(selectedClip.id); selection.clearSelection() } }">
@@ -662,6 +1119,12 @@ function resetEffects() {
   grid-template-columns: 1fr 1fr;
   gap: 8px;
   margin-bottom: 8px;
+}
+.grid-3 {
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr;
+  gap: 6px;
+  margin-bottom: 6px;
 }
 
 .field {
