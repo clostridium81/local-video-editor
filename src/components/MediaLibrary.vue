@@ -4,14 +4,59 @@ import { useProjectStore } from '../stores/projectStore'
 import type { Asset } from '../types/project'
 import { toast } from '../composables/useToast'
 
+const searchQuery = ref('')
+const currentFolder = ref<string | null>(null)
+
 const store = useProjectStore()
 const fileInputRef = ref<HTMLInputElement>()
 const isDragging = ref(false)
 const uploading = ref(false)
 
-const assetList = computed<Asset[]>(() =>
-  Object.values(store.assets).sort((a, b) => b.createdAt - a.createdAt)
-)
+const assetList = computed<Asset[]>(() => {
+  let list = Object.values(store.assets)
+  if (currentFolder.value !== null) {
+    list = list.filter(a => (a.folderId ?? null) === currentFolder.value)
+  }
+  const q = searchQuery.value.trim().toLowerCase()
+  if (q) {
+    list = list.filter(a =>
+      a.name.toLowerCase().includes(q) ||
+      a.kind.toLowerCase().includes(q) ||
+      (a.tags ?? []).some(t => t.toLowerCase().includes(q))
+    )
+  }
+  return list.sort((a, b) => b.createdAt - a.createdAt)
+})
+
+const folders = computed(() => store.state.folders ?? [])
+
+function addFolderPrompt() {
+  const name = window.prompt('フォルダ名')
+  if (!name) return
+  store.addFolder(name)
+}
+function deleteFolder(id: string) {
+  if (!confirm('このフォルダを削除しますか? (素材は残ります)')) return
+  store.removeFolder(id)
+  if (currentFolder.value === id) currentFolder.value = null
+}
+function renameFolderPrompt(id: string, cur: string) {
+  const name = window.prompt('新しいフォルダ名', cur)
+  if (name) store.renameFolder(id, name)
+}
+
+function onAssetDragOverFolder(e: DragEvent, folderId: string | null) {
+  if (e.dataTransfer?.types.includes('application/x-lve-asset-id')) {
+    e.preventDefault()
+    e.dataTransfer.dropEffect = 'move'
+  }
+}
+function onAssetDropOnFolder(e: DragEvent, folderId: string | null) {
+  e.preventDefault()
+  const assetId = e.dataTransfer?.getData('application/x-lve-asset-id')
+  if (!assetId) return
+  store.moveAssetToFolder(assetId, folderId)
+}
 
 function onPickClick() {
   fileInputRef.value?.click()
@@ -99,6 +144,38 @@ function kindColor(kind: string): string {
   <div class="panel-title">
     <span>Media Library</span>
     <button class="ghost" @click="onPickClick">＋ 追加</button>
+  </div>
+
+  <div class="search-wrap">
+    <input
+      class="search"
+      type="search"
+      placeholder="検索..."
+      v-model="searchQuery"
+    />
+  </div>
+
+  <div class="folders">
+    <div
+      class="folder"
+      :class="{ active: currentFolder === null }"
+      @click="currentFolder = null"
+      @dragover="(e) => onAssetDragOverFolder(e, null)"
+      @drop="(e) => onAssetDropOnFolder(e, null)"
+    >全て</div>
+    <div
+      v-for="f in folders"
+      :key="f.id"
+      class="folder"
+      :class="{ active: currentFolder === f.id }"
+      :style="{ borderLeftColor: f.color ?? 'var(--accent)' }"
+      @click="currentFolder = f.id"
+      @dblclick="renameFolderPrompt(f.id, f.name)"
+      @contextmenu.prevent="deleteFolder(f.id)"
+      @dragover="(e) => onAssetDragOverFolder(e, f.id)"
+      @drop="(e) => onAssetDropOnFolder(e, f.id)"
+    >{{ f.name }}</div>
+    <button class="ghost tiny folder-add" @click="addFolderPrompt">＋</button>
   </div>
 
   <div
@@ -265,5 +342,42 @@ function kindColor(kind: string): string {
   color: var(--fg-2);
   font-size: 11px;
   padding: 8px;
+}
+
+.search-wrap {
+  padding: 4px 8px 6px;
+  border-bottom: 1px solid var(--line-weak);
+}
+.search {
+  width: 100%;
+  font-size: 11px;
+  padding: 4px 8px;
+}
+
+.folders {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--line-weak);
+}
+.folder {
+  padding: 3px 8px;
+  font-size: 10px;
+  background: var(--bg-2);
+  border: 1px solid var(--line-weak);
+  border-left-width: 3px;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  user-select: none;
+}
+.folder.active {
+  border-color: var(--accent);
+  background: var(--bg-3);
+  color: var(--fg-0);
+}
+.folder-add {
+  padding: 2px 6px;
+  font-size: 10px;
 }
 </style>

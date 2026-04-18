@@ -1,5 +1,99 @@
 # Changelog
 
+## [0.3.0] — Phase 3 プロユース拡張
+
+Google Vids / Premiere 相当のプロレベル機能群を追加。
+
+### 編集ワークフロー
+
+- **スナップ**: playhead、他クリップ境界、マーカー、in/out、プロジェクト端にマグネット
+- **マーカー**: `M` キーで即追加、ルーラー上にフラグ表示 (ダブルクリックで改名、右クリックで削除、クリックでジャンプ)
+- **In / Out ポイント**: `I`/`O` でセット、`Shift+I` で解除。範囲再生 + 範囲エクスポートに連動
+- **リップルモード**: `Shift+R` でトグル
+- **クリップリンク**: `Cmd/Ctrl+L` で選択クリップをリンク (動画+音声を一緒に移動)、`Shift+Cmd/Ctrl+L` で解除
+- **タイムラインツールバー**: スナップ・リップル・マーカー・In/Out・図形追加のワンクリックボタン
+- **トラックソロ**: S ボタンで他のトラックをミュート
+
+### 高度なクリップ機能
+
+- **速度 / 時間リマップ**: 0.25x〜4x、映像音声とも `playbackRate` で対応
+- **逆再生**: 音声は OfflineAudioContext でバッファ反転、映像はシーク単位で逆送り
+- **ブレンドモード**: normal / multiply / screen / overlay / darken / lighten / color-dodge / color-burn / hard-light / soft-light / difference / exclusion / hue / saturation / color / luminosity / add の 17 種
+- **図形クリップ** (新 `shape` ClipKind): rect / ellipse / triangle / star / arrow / line (fill, stroke, stroke-width, corner-radius)
+- **クリップリンクグループ**: `linkGroup` で同期移動
+
+### 高度なビジュアル
+
+- **カラーグレード** (video / image): Lift / Gamma / Gain (RGB 独立) + 色温度 + ティント。OffscreenCanvas でピクセルパス
+- **クロマキー**: 色指定 + 閾値 + 柔らかさ + スピル抑制。キーカラー近傍を透明化
+- **テキスト装飾**: ドロップシャドウ (色/ブラー/X/Y)、アウトライン (色/幅)、字間、行間
+- **テキストアニメーション**: none / typewriter / fade-words / slide-chars / bounce / scale-pop / wave
+
+### オーディオ
+
+- **オーディオミキサーパネル** (右下ドッキング): マスター + 各音声トラック。リアルタイム VU メーター (peak ベース推定)、ボリュームフェーダ、ソロ/ミュート
+- **マスターボリューム**
+- **3 バンド EQ** (音声/映像クリップ): 低 (lowshelf 200Hz) / 中 (peaking 1kHz) / 高 (highshelf 5kHz)
+- **ミキシング**: オフラインレンダリング時に BiquadFilter チェーン、ゲインオートメーション、トラック/マスターゲインを正確に適用
+
+### メディアキャプチャ
+
+- **RecorderDialog** でワンクリック録画:
+  - カメラ + マイク (getUserMedia)
+  - 画面 + システム音声 (getDisplayMedia)
+  - マイクのみ (ボイスオーバー)
+  - **TTS** (SpeechSynthesis + getDisplayMedia でタブ音声キャプチャ)
+- 録画した素材は自動で IndexedDB にアップロードされ、ライブラリに追加
+
+### アセット管理
+
+- **フォルダ**: 作成・改名 (ダブルクリック) ・削除 (右クリック)、素材のドラッグ&ドロップでフォルダ移動
+- **検索**: ファイル名・種別・タグで即時フィルタリング
+- **プロジェクト管理ダイアログ**: プロジェクトの一覧・切替・複製 (素材込み)・削除・新規作成
+
+### エクスポート
+
+- **GIF 出力**: `gifenc` ベースの quantize + applyPalette でパレット GIF エンコード
+- **範囲エクスポート**: Full / In-Out / カスタム
+- エクスポート時に speed、reversed、ブレンドモード、カラーグレード、クロマキー、テキストアニメ、図形、EQ、ソロ/マスター音量を全て反映
+
+### UI / UX
+
+- **キーボードショートカットダイアログ** (`?` ボタン): 全ショートカット一覧
+- **TopBar** に録音・ミキサー・プロジェクト・ヘルプのクイックアクセスボタン
+
+### ショートカット追加
+
+| キー | 動作 |
+|------|------|
+| M | 現在位置にマーカー追加 |
+| I / O | In 点 / Out 点 |
+| Shift + I | In/Out 解除 |
+| N | スナップ切替 |
+| Shift + R | リップル切替 |
+| Cmd/Ctrl + L | クリップリンク |
+| Cmd/Ctrl + Shift + L | リンク解除 |
+
+### 依存追加
+
+```json
+"gifenc": "^1.0.3"
+```
+
+### 破壊的でない型拡張
+
+- `Clip.speed`, `Clip.reversed`, `Clip.blendMode`, `Clip.linkGroup`
+- `VideoClip/ImageClip.colorGrade`, `VideoClip/ImageClip.chromaKey`
+- `VideoClip/AudioClip.eq`
+- `TextClip.decor`, `TextClip.anim`
+- 新規 `ShapeClip` (kind: 'shape')
+- `Track.solo`, `Track.volume`
+- `Asset.folderId`, `Asset.tags`
+- `ProjectState.folders`, `ProjectState.markers`
+- `timeline.inPoint`, `outPoint`, `snapping`, `rippleMode`, `masterVolume`
+
+---
+
 ## [0.2.0] — Phase 2 完成
 
 Phase 1 の MVP に対して、プロレベルの編集機能・エクスポート機能を全面追加。

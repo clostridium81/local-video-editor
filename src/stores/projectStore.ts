@@ -3,17 +3,27 @@ import { nanoid } from 'nanoid'
 import { ref, computed, watch } from 'vue'
 import type {
   Asset,
+  AssetFolder,
   Clip,
   Keyframe,
   KeyframeableProperty,
+  Marker,
   ProjectState,
   Track,
   VideoClip,
   ImageClip,
   AudioClip,
   TextClip,
+  ShapeClip,
+  ShapeKind,
   ClipEffects,
-  Transition
+  ColorGrade,
+  ChromaKey,
+  Transition,
+  TextAnim,
+  TextDecor,
+  BlendMode,
+  AudioEQ
 } from '../types/project'
 import {
   saveAssetBlob,
@@ -60,16 +70,21 @@ function makeEmptyProject(name = '無題のプロジェクト'): ProjectState {
       backgroundColor: '#000000'
     },
     assets: {},
+    folders: [],
     tracks: [
       { id: nanoid(), kind: 'video', name: 'V1', muted: false, locked: false, order: 1 },
       { id: nanoid(), kind: 'video', name: 'V2', muted: false, locked: false, order: 2 },
-      { id: nanoid(), kind: 'audio', name: 'A1', muted: false, locked: false, order: 0 }
+      { id: nanoid(), kind: 'audio', name: 'A1', muted: false, locked: false, order: 0, volume: 1 }
     ],
     clips: [],
+    markers: [],
     timeline: {
       playhead: 0,
       zoom: 50,
-      duration: 60
+      duration: 60,
+      snapping: true,
+      rippleMode: false,
+      masterVolume: 1
     }
   }
 }
@@ -616,6 +631,12 @@ export const useProjectStore = defineStore('project', () => {
     try {
       const latest = await loadLatestProjectState()
       if (latest && latest.meta && latest.clips) {
+        // 後方互換: 欠けているフィールドを初期化
+        if (!latest.folders) latest.folders = []
+        if (!latest.markers) latest.markers = []
+        if (!latest.timeline.snapping) latest.timeline.snapping = true
+        if (latest.timeline.rippleMode === undefined) latest.timeline.rippleMode = false
+        if (latest.timeline.masterVolume === undefined) latest.timeline.masterVolume = 1
         state.value = latest
         historyManager.clear()
         bumpHistoryVersion()
@@ -625,6 +646,281 @@ export const useProjectStore = defineStore('project', () => {
       console.warn('bootstrap failed', err)
     }
     return false
+  }
+
+  // ---------- マーカー ----------
+
+  function addMarker(time: number, label = 'マーカー', color = '#e8a838'): Marker {
+    recordHistory('marker:add')
+    const m: Marker = { id: nanoid(), time, label, color }
+    if (!state.value.markers) state.value.markers = []
+    state.value.markers.push(m)
+    state.value.markers.sort((a, b) => a.time - b.time)
+    touch()
+    return m
+  }
+
+  function removeMarker(id: string) {
+    if (!state.value.markers) return
+    recordHistory('marker:del')
+    state.value.markers = state.value.markers.filter(m => m.id !== id)
+    touch()
+  }
+
+  function updateMarker(id: string, patch: Partial<Marker>) {
+    if (!state.value.markers) return
+    const i = state.value.markers.findIndex(m => m.id === id)
+    if (i < 0) return
+    recordHistory(`marker:upd:${id}`)
+    state.value.markers[i] = { ...state.value.markers[i], ...patch }
+    state.value.markers.sort((a, b) => a.time - b.time)
+    touch()
+  }
+
+  // ---------- イン/アウト ----------
+
+  function setInPoint(t: number | undefined) {
+    recordHistory('inpoint')
+    state.value.timeline.inPoint = t
+    touch()
+  }
+  function setOutPoint(t: number | undefined) {
+    recordHistory('outpoint')
+    state.value.timeline.outPoint = t
+    touch()
+  }
+  function clearInOut() {
+    recordHistory('inout-clear')
+    state.value.timeline.inPoint = undefined
+    state.value.timeline.outPoint = undefined
+    touch()
+  }
+
+  // ---------- スナップ / リップル ----------
+
+  function toggleSnapping() {
+    state.value.timeline.snapping = !state.value.timeline.snapping
+    touch()
+  }
+  function toggleRipple() {
+    state.value.timeline.rippleMode = !state.value.timeline.rippleMode
+    touch()
+  }
+
+  function setMasterVolume(v: number) {
+    state.value.timeline.masterVolume = Math.max(0, Math.min(2, v))
+    touch()
+  }
+
+  /**
+   * 指定時刻を、他クリップの境界/playhead/マーカー/ticks にスナップ。
+   * 閾値 (秒) を超えたら元の time を返す。
+   */
+  function snapTime(
+    t: number,
+    threshold: number,
+    ignoreClipIds: string[] = []
+  ): number {
+    if (!state.value.timeline.snapping) return t
+    const candidates: number[] = [0, state.value.timeline.duration]
+    candidates.push(state.value.timeline.playhead)
+    if (state.value.timeline.inPoint != null)
+      candidates.push(state.value.timeline.inPoint)
+    if (state.value.timeline.outPoint != null)
+      candidates.push(state.value.timeline.outPoint)
+    for (const m of state.value.markers ?? []) candidates.push(m.time)
+    for (const c of state.value.clips) {
+      if (ignoreClipIds.includes(c.id)) continue
+      candidates.push(c.start)
+      candidates.push(c.start + c.duration)
+    }
+    let bestT = t
+    let bestDelta = threshold
+    for (const ct of candidates) {
+      const d = Math.abs(ct - t)
+      if (d < bestDelta) {
+        bestDelta = d
+        bestT = ct
+      }
+    }
+    return bestT
+  }
+
+  // ---------- クリップのリンク ----------
+
+  function linkClips(clipIds: string[]) {
+    if (clipIds.length < 2) return
+    recordHistory('link')
+    const group = nanoid()
+    for (const id of clipIds) {
+      const i = state.value.clips.findIndex(c => c.id === id)
+      if (i >= 0) {
+        state.value.clips[i] = { ...state.value.clips[i], linkGroup: group }
+      }
+    }
+    touch()
+  }
+  function unlinkClips(clipIds: string[]) {
+    recordHistory('unlink')
+    for (const id of clipIds) {
+      const i = state.value.clips.findIndex(c => c.id === id)
+      if (i >= 0) {
+        const c = { ...state.value.clips[i] }
+        delete c.linkGroup
+        state.value.clips[i] = c
+      }
+    }
+    touch()
+  }
+
+  function getLinkedClips(clipId: string): Clip[] {
+    const c = state.value.clips.find(x => x.id === clipId)
+    if (!c?.linkGroup) return [c].filter(Boolean) as Clip[]
+    return state.value.clips.filter(x => x.linkGroup === c.linkGroup)
+  }
+
+  // ---------- リップル削除 ----------
+
+  function rippleDelete(clipIds: string[]) {
+    if (clipIds.length === 0) return
+    recordHistory('ripple-del')
+    const targets = state.value.clips.filter(c => clipIds.includes(c.id))
+    if (targets.length === 0) return
+    const cut = Math.min(...targets.map(c => c.start))
+    const len = Math.max(...targets.map(c => c.start + c.duration)) - cut
+    const set = new Set(clipIds)
+    state.value.clips = state.value.clips
+      .filter(c => !set.has(c.id))
+      .map(c => (c.start >= cut + len ? { ...c, start: c.start - len } : c))
+    touch()
+  }
+
+  // ---------- 形状クリップ ----------
+
+  function addShapeClip(
+    shape: ShapeKind,
+    opts: { trackId?: string; start?: number } = {}
+  ): ShapeClip {
+    const trackId =
+      opts.trackId ??
+      tracks.value.find(t => t.kind === 'video')?.id ??
+      state.value.tracks[0].id
+    const start = opts.start ?? state.value.timeline.playhead
+    recordHistory('shape:add')
+    const clip: ShapeClip = {
+      id: nanoid(),
+      kind: 'shape',
+      trackId,
+      start,
+      duration: 3,
+      opacity: 1,
+      shape,
+      x: 0.5,
+      y: 0.5,
+      width: 0.3,
+      height: 0.3,
+      rotation: 0,
+      style: {
+        fill: '#e8a838',
+        stroke: undefined,
+        strokeWidth: 0,
+        cornerRadius: 0
+      }
+    }
+    state.value.clips.push(clip)
+    extendDurationIfNeeded(start + clip.duration)
+    touch()
+    return clip
+  }
+
+  // ---------- カラーグレード / クロマキー ----------
+
+  function setColorGrade(clipId: string, grade: ColorGrade | undefined) {
+    const idx = state.value.clips.findIndex(c => c.id === clipId)
+    if (idx < 0) return
+    const c = state.value.clips[idx]
+    if (c.kind !== 'video' && c.kind !== 'image') return
+    recordHistory(`grade:${clipId}`)
+    state.value.clips[idx] = { ...c, colorGrade: grade } as Clip
+    touch()
+  }
+  function setChromaKey(clipId: string, ck: ChromaKey | undefined) {
+    const idx = state.value.clips.findIndex(c => c.id === clipId)
+    if (idx < 0) return
+    const c = state.value.clips[idx]
+    if (c.kind !== 'video' && c.kind !== 'image') return
+    recordHistory(`chroma:${clipId}`)
+    state.value.clips[idx] = { ...c, chromaKey: ck } as Clip
+    touch()
+  }
+  function setTextDecor(clipId: string, decor: TextDecor | undefined) {
+    const idx = state.value.clips.findIndex(c => c.id === clipId)
+    if (idx < 0) return
+    const c = state.value.clips[idx]
+    if (c.kind !== 'text') return
+    recordHistory(`decor:${clipId}`)
+    state.value.clips[idx] = { ...c, decor } as Clip
+    touch()
+  }
+  function setTextAnim(clipId: string, anim: TextAnim | undefined) {
+    const idx = state.value.clips.findIndex(c => c.id === clipId)
+    if (idx < 0) return
+    const c = state.value.clips[idx]
+    if (c.kind !== 'text') return
+    recordHistory(`anim:${clipId}`)
+    state.value.clips[idx] = { ...c, anim } as Clip
+    touch()
+  }
+  function setBlendMode(clipId: string, mode: BlendMode | undefined) {
+    const idx = state.value.clips.findIndex(c => c.id === clipId)
+    if (idx < 0) return
+    recordHistory(`blend:${clipId}`)
+    state.value.clips[idx] = { ...state.value.clips[idx], blendMode: mode } as Clip
+    touch()
+  }
+  function setAudioEQ(clipId: string, eq: AudioEQ | undefined) {
+    const idx = state.value.clips.findIndex(c => c.id === clipId)
+    if (idx < 0) return
+    const c = state.value.clips[idx]
+    if (c.kind !== 'audio' && c.kind !== 'video') return
+    recordHistory(`eq:${clipId}`)
+    state.value.clips[idx] = { ...c, eq } as any
+    touch()
+  }
+
+  // ---------- フォルダ ----------
+
+  function addFolder(name: string, color?: string): AssetFolder {
+    recordHistory('folder:add')
+    const f: AssetFolder = { id: nanoid(), name, color, parentId: null }
+    if (!state.value.folders) state.value.folders = []
+    state.value.folders.push(f)
+    touch()
+    return f
+  }
+  function removeFolder(id: string) {
+    if (!state.value.folders) return
+    recordHistory('folder:del')
+    state.value.folders = state.value.folders.filter(f => f.id !== id)
+    for (const a of Object.values(state.value.assets)) {
+      if (a.folderId === id) a.folderId = null
+    }
+    touch()
+  }
+  function renameFolder(id: string, name: string) {
+    if (!state.value.folders) return
+    const i = state.value.folders.findIndex(f => f.id === id)
+    if (i < 0) return
+    recordHistory(`folder:rename:${id}`)
+    state.value.folders[i] = { ...state.value.folders[i], name }
+    touch()
+  }
+  function moveAssetToFolder(assetId: string, folderId: string | null) {
+    const a = state.value.assets[assetId]
+    if (!a) return
+    recordHistory(`asset:fold:${assetId}`)
+    state.value.assets[assetId] = { ...a, folderId }
+    touch()
   }
 
   return {
@@ -675,7 +971,39 @@ export const useProjectStore = defineStore('project', () => {
     bootstrap,
     suspendAutosave,
     resumeAutosave,
-    lastSavedAt: () => lastSavedAt
+    lastSavedAt: () => lastSavedAt,
+    // markers
+    addMarker,
+    removeMarker,
+    updateMarker,
+    // in/out
+    setInPoint,
+    setOutPoint,
+    clearInOut,
+    // snap/ripple
+    toggleSnapping,
+    toggleRipple,
+    snapTime,
+    setMasterVolume,
+    // link
+    linkClips,
+    unlinkClips,
+    getLinkedClips,
+    rippleDelete,
+    // shape
+    addShapeClip,
+    // grading
+    setColorGrade,
+    setChromaKey,
+    setTextDecor,
+    setTextAnim,
+    setBlendMode,
+    setAudioEQ,
+    // folders
+    addFolder,
+    removeFolder,
+    renameFolder,
+    moveAssetToFolder
   }
 })
 

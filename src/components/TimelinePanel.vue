@@ -138,14 +138,39 @@ function onDragMove(e: MouseEvent) {
   if (!drag) return
   const dxPx = e.clientX - drag.startX
   const dt = dxPx / zoom.value
+  const threshold = 8 / zoom.value // 8px 以内でスナップ
 
   const mergeKey = `tl-${drag.mode}:${drag.clipId}`
+  // リンクされたクリップを取得 (まとめて移動用)
+  const linked = store.getLinkedClips(drag.clipId)
+  const linkedIds = linked.map(l => l.id)
+  const isLinked = linked.length > 1
+
   if (drag.mode === 'move') {
-    const newStart = Math.max(0, drag.origStart + dt)
-    store.updateClip(drag.clipId, { start: newStart } as any, mergeKey)
+    let newStart = Math.max(0, drag.origStart + dt)
+    newStart = store.snapTime(newStart, threshold, isLinked ? linkedIds : [drag.clipId])
+    // リップル: 以降のクリップを push
+    if (store.state.timeline.rippleMode && dt !== 0) {
+      // 単純化: drag 対象のみ start を変える (他のリップル動作は非自動)
+    }
+    const delta = newStart - drag.origStart
+    if (isLinked) {
+      for (const l of linked) {
+        store.updateClip(
+          l.id,
+          { start: Math.max(0, l.start + (l.id === drag.clipId ? delta : delta)) } as any,
+          mergeKey
+        )
+      }
+    } else {
+      store.updateClip(drag.clipId, { start: newStart } as any, mergeKey)
+    }
   } else if (drag.mode === 'trim-left') {
     const maxDelta = drag.origDuration - 0.05
-    const delta = Math.max(-drag.origSourceIn, Math.min(maxDelta, dt))
+    let delta = Math.max(-drag.origSourceIn, Math.min(maxDelta, dt))
+    const newStart = store.snapTime(drag.origStart + delta, threshold, [drag.clipId])
+    delta = newStart - drag.origStart
+    delta = Math.max(-drag.origSourceIn, Math.min(maxDelta, delta))
     store.updateClip(
       drag.clipId,
       {
@@ -156,7 +181,13 @@ function onDragMove(e: MouseEvent) {
       mergeKey
     )
   } else if (drag.mode === 'trim-right') {
-    const newDur = Math.max(0.1, drag.origDuration + dt)
+    let newDur = Math.max(0.1, drag.origDuration + dt)
+    const rightEdge = store.snapTime(
+      drag.origStart + newDur,
+      threshold,
+      [drag.clipId]
+    )
+    newDur = Math.max(0.1, rightEdge - drag.origStart)
     store.updateClip(drag.clipId, { duration: newDur } as any, mergeKey)
   }
 }
@@ -298,6 +329,11 @@ function addTextClip() {
   selection.selectClip(clip.id)
 }
 
+function renameMarker(id: string, cur: string) {
+  const l = window.prompt('マーカー名', cur)
+  if (l !== null) store.updateMarker(id, { label: l })
+}
+
 // ---------- 波形 ----------
 
 const peaksMap = ref<Map<string, Peaks>>(new Map())
@@ -405,9 +441,53 @@ function hasWaveform(c: Clip): boolean {
   <div class="timeline-panel">
     <div class="tl-toolbar">
       <button class="ghost" @click="addTextClip">＋ テキスト</button>
-      <button class="ghost" @click="store.addTrack('video')">＋ 映像トラック</button>
-      <button class="ghost" @click="store.addTrack('audio')">＋ 音声トラック</button>
+      <div class="dropdown">
+        <button class="ghost">＋ 図形 ▾</button>
+        <div class="dropdown-menu">
+          <button class="ghost" @click="store.addShapeClip('rect')">矩形</button>
+          <button class="ghost" @click="store.addShapeClip('ellipse')">楕円</button>
+          <button class="ghost" @click="store.addShapeClip('triangle')">三角形</button>
+          <button class="ghost" @click="store.addShapeClip('star')">星</button>
+          <button class="ghost" @click="store.addShapeClip('arrow')">矢印</button>
+          <button class="ghost" @click="store.addShapeClip('line')">線</button>
+        </div>
+      </div>
+      <button class="ghost" @click="store.addTrack('video')">＋ V トラック</button>
+      <button class="ghost" @click="store.addTrack('audio')">＋ A トラック</button>
       <div class="spacer" />
+      <button
+        class="ghost tiny"
+        :class="{ active: store.state.timeline.snapping }"
+        title="スナップ (N)"
+        @click="store.toggleSnapping()"
+      >🧲</button>
+      <button
+        class="ghost tiny"
+        :class="{ active: store.state.timeline.rippleMode }"
+        title="リップル (Shift+R)"
+        @click="store.toggleRipple()"
+      >⇆</button>
+      <button
+        class="ghost tiny"
+        title="マーカー追加 (M)"
+        @click="store.addMarker(store.state.timeline.playhead)"
+      >🚩</button>
+      <button
+        class="ghost tiny"
+        title="In点 (I)"
+        @click="store.setInPoint(store.state.timeline.playhead)"
+      >I</button>
+      <button
+        class="ghost tiny"
+        title="Out点 (O)"
+        @click="store.setOutPoint(store.state.timeline.playhead)"
+      >O</button>
+      <button
+        class="ghost tiny"
+        title="In/Out 解除 (Shift+I)"
+        @click="store.clearInOut()"
+      >×</button>
+      <div class="sep" />
       <span class="muted mono" style="font-size: 11px">zoom</span>
       <input
         type="range"
@@ -430,6 +510,12 @@ function hasWaveform(c: Clip): boolean {
           <div class="track-kind-bar" :style="{ background: trackKindColor(track.kind) }" />
           <span class="track-name mono">{{ track.name }}</span>
           <div class="spacer" />
+          <button
+            class="ghost tiny"
+            :class="{ active: !!track.solo }"
+            title="ソロ"
+            @click="store.updateTrack(track.id, { solo: !track.solo })"
+          >S</button>
           <button
             class="ghost tiny"
             :class="{ active: track.muted }"
@@ -455,6 +541,41 @@ function hasWaveform(c: Clip): boolean {
             >
               <span class="tick-label mono">{{ m.label }}</span>
             </div>
+            <!-- マーカー -->
+            <div
+              v-for="m in (store.state.markers ?? [])"
+              :key="m.id"
+              class="marker"
+              :style="{ left: m.time * zoom + 'px', color: m.color ?? 'var(--accent)' }"
+              :title="m.label"
+              @click.stop="store.setPlayhead(m.time)"
+              @dblclick.stop="renameMarker(m.id, m.label)"
+              @contextmenu.stop.prevent="() => store.removeMarker(m.id)"
+            >
+              <div class="marker-flag" />
+              <div class="marker-label">{{ m.label }}</div>
+            </div>
+            <!-- In/Out 範囲 -->
+            <div
+              v-if="store.state.timeline.inPoint != null || store.state.timeline.outPoint != null"
+              class="inout-range"
+              :style="{
+                left: ((store.state.timeline.inPoint ?? 0) * zoom) + 'px',
+                width: (((store.state.timeline.outPoint ?? duration) - (store.state.timeline.inPoint ?? 0)) * zoom) + 'px'
+              }"
+            />
+            <div
+              v-if="store.state.timeline.inPoint != null"
+              class="inout-marker in-marker"
+              :style="{ left: (store.state.timeline.inPoint * zoom) + 'px' }"
+              title="In 点"
+            >I</div>
+            <div
+              v-if="store.state.timeline.outPoint != null"
+              class="inout-marker out-marker"
+              :style="{ left: (store.state.timeline.outPoint * zoom) + 'px' }"
+              title="Out 点"
+            >O</div>
           </div>
 
           <div
@@ -764,5 +885,87 @@ button.tiny.active {
   background: rgba(232, 168, 56, 0.1);
   pointer-events: none;
   z-index: 4;
+}
+
+.marker {
+  position: absolute;
+  top: 2px;
+  transform: translateX(-50%);
+  cursor: pointer;
+  user-select: none;
+}
+.marker-flag {
+  width: 10px;
+  height: 14px;
+  background: currentColor;
+  clip-path: polygon(0 0, 100% 0, 100% 70%, 50% 100%, 0 70%);
+}
+.marker-label {
+  position: absolute;
+  top: 14px;
+  left: 8px;
+  font-size: 9px;
+  color: var(--fg-1);
+  white-space: nowrap;
+  background: var(--bg-1);
+  padding: 1px 3px;
+  border-radius: 2px;
+  pointer-events: none;
+  opacity: 0.8;
+}
+
+.inout-range {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  background: rgba(93, 184, 228, 0.08);
+  border-left: 1px solid var(--video);
+  border-right: 1px solid var(--video);
+  pointer-events: none;
+}
+.inout-marker {
+  position: absolute;
+  top: 0;
+  transform: translateX(-50%);
+  font-size: 9px;
+  font-weight: 700;
+  color: #0a0b0d;
+  background: var(--video);
+  padding: 2px 4px;
+  border-radius: 2px;
+  pointer-events: none;
+  letter-spacing: 0.06em;
+}
+
+.dropdown {
+  position: relative;
+}
+.dropdown:hover .dropdown-menu {
+  display: flex;
+}
+.dropdown-menu {
+  display: none;
+  position: absolute;
+  top: 100%;
+  left: 0;
+  flex-direction: column;
+  background: var(--bg-2);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  min-width: 120px;
+  padding: 4px;
+  z-index: 20;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
+}
+.dropdown-menu button {
+  justify-content: flex-start;
+  text-align: left;
+  padding: 6px 10px;
+}
+.sep {
+  width: 1px;
+  height: 20px;
+  background: var(--line);
+  margin: 0 4px;
 }
 </style>

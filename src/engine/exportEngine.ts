@@ -1,8 +1,21 @@
-import type { ProjectState, Clip, VideoClip, AudioClip, ImageClip, TextClip } from '../types/project'
+import type {
+  ProjectState,
+  Clip,
+  VideoClip,
+  AudioClip,
+  ImageClip,
+  TextClip,
+  ShapeClip
+} from '../types/project'
 import { getAssetObjectURL, loadAssetBlob } from '../persistence/assetStore'
 import { sampleKeyframes } from './keyframes'
 import { sampleTransition } from './transitions'
-import { buildFilterString } from './previewEngine'
+import {
+  buildFilterString,
+  blendToCanvas,
+  applyColorGrade,
+  applyChromaKey
+} from './previewEngine'
 import { AVC_CODECS, AAC_CODEC, VP9_CODEC, OPUS_CODEC, hasWebCodecs } from './capabilities'
 
 // ============================================================
@@ -29,13 +42,16 @@ type Progress = {
 }
 
 export interface ExportOptions {
-  format: 'mp4' | 'webm'
+  format: 'mp4' | 'webm' | 'gif'
   width: number
   height: number
   fps: number
   videoBitrate: number
   audioBitrate: number
   includeAudio: boolean
+  /** 範囲指定 (省略時はプロジェクト全体) */
+  startTime?: number
+  endTime?: number
   signal?: AbortSignal
   onProgress?: (p: Progress) => void
 }
@@ -127,7 +143,8 @@ interface RenderContext {
 }
 
 function computeEffective(clip: Clip, t: number) {
-  const local = t - clip.start
+  const speed = (clip as any).speed ?? 1
+  const local = (t - clip.start) * speed
   const base: any = {
     x: (clip as any).x ?? 0.5,
     y: (clip as any).y ?? 0.5,
@@ -151,7 +168,7 @@ function computeEffective(clip: Clip, t: number) {
   base.scale *= trans.scale
   base.opacity *= trans.alpha
   base.volume *= trans.volume
-  return { eff: base, trans }
+  return { eff: base, trans, localT: local }
 }
 
 function drawFrame(rc: RenderContext, t: number) {
@@ -177,34 +194,80 @@ function drawFrame(rc: RenderContext, t: number) {
     const track = state.tracks.find(tr => tr.id === clip.trackId)
     if (track?.kind === 'audio') continue
 
-    const { eff, trans } = computeEffective(clip, t)
+    const { eff, trans, localT } = computeEffective(clip, t)
+    const blendMode = clip.blendMode ?? 'normal'
+
+    ctx.save()
+    if (blendMode !== 'normal') ctx.globalCompositeOperation = blendToCanvas(blendMode)
 
     if (clip.kind === 'video') {
       const el = rc.videoEls.get(clip.id)
-      if (!el) continue
-      drawTransformed(ctx, el as any, el.videoWidth, el.videoHeight, eff, (clip as VideoClip).effects, trans, width, height)
+      if (!el) {
+        ctx.restore()
+        continue
+      }
+      drawVisualSource(
+        ctx,
+        rc,
+        el as any,
+        el.videoWidth,
+        el.videoHeight,
+        eff,
+        (clip as VideoClip).effects,
+        (clip as VideoClip).colorGrade,
+        (clip as VideoClip).chromaKey,
+        trans,
+        width,
+        height
+      )
     } else if (clip.kind === 'image') {
       const img = rc.images.get((clip as ImageClip).assetId)
-      if (!img) continue
-      drawTransformed(ctx, img, img.naturalWidth, img.naturalHeight, eff, (clip as ImageClip).effects, trans, width, height)
+      if (!img) {
+        ctx.restore()
+        continue
+      }
+      drawVisualSource(
+        ctx,
+        rc,
+        img,
+        img.naturalWidth,
+        img.naturalHeight,
+        eff,
+        (clip as ImageClip).effects,
+        (clip as ImageClip).colorGrade,
+        (clip as ImageClip).chromaKey,
+        trans,
+        width,
+        height
+      )
     } else if (clip.kind === 'text') {
-      drawText(ctx, clip as TextClip, eff, trans, width, height)
+      drawText(ctx, clip as TextClip, eff, trans, width, height, localT)
+    } else if (clip.kind === 'shape') {
+      drawShape(ctx, clip as ShapeClip, eff, trans, width, height)
     }
+    ctx.restore()
   }
 }
 
-function drawTransformed(
+function drawVisualSource(
   ctx: any,
+  rc: RenderContext,
   src: CanvasImageSource,
   srcW: number,
   srcH: number,
   eff: any,
   effects: any,
+  grade: any,
+  chroma: any,
   trans: any,
   width: number,
   height: number
 ) {
   if (!srcW || !srcH) return
+  const needsPixelPass = !!(
+    (grade && (grade.lift || grade.gamma || grade.gain || grade.temperature || grade.tint)) ||
+    chroma?.enabled
+  )
   const fit = Math.min(width / srcW, height / srcH)
   const drawW = srcW * fit * eff.scale
   const drawH = srcH * fit * eff.scale
@@ -224,11 +287,139 @@ function drawTransformed(
   }
   ctx.translate(cx, cy)
   if (eff.rotation) ctx.rotate((eff.rotation * Math.PI) / 180)
-  ctx.drawImage(src, -drawW / 2, -drawH / 2, drawW, drawH)
+
+  if (!needsPixelPass) {
+    ctx.drawImage(src, -drawW / 2, -drawH / 2, drawW, drawH)
+  } else {
+    const pbufW = Math.max(1, Math.round(Math.abs(drawW)))
+    const pbufH = Math.max(1, Math.round(Math.abs(drawH)))
+    const pbuf = getPixelBuf(rc, pbufW, pbufH)
+    const pctx = pbuf.ctx
+    pctx.save()
+    pctx.filter = effects ? buildFilterString(effects) : 'none'
+    pctx.globalCompositeOperation = 'source-over'
+    pctx.globalAlpha = 1
+    pctx.clearRect(0, 0, pbufW, pbufH)
+    pctx.drawImage(src, 0, 0, pbufW, pbufH)
+    pctx.restore()
+    try {
+      const img = pctx.getImageData(0, 0, pbufW, pbufH)
+      if (chroma?.enabled) applyChromaKey(img, chroma)
+      if (grade) applyColorGrade(img, grade)
+      pctx.putImageData(img, 0, 0)
+    } catch {
+      // ignore
+    }
+    ctx.drawImage(pbuf.canvas, -drawW / 2, -drawH / 2, drawW, drawH)
+  }
   ctx.restore()
 }
 
-function drawText(ctx: any, clip: TextClip, eff: any, trans: any, width: number, height: number) {
+interface PixelBuf {
+  canvas: HTMLCanvasElement
+  ctx: CanvasRenderingContext2D
+}
+function getPixelBuf(rc: RenderContext, w: number, h: number): PixelBuf {
+  if (!(rc as any)._pbuf) {
+    const c = document.createElement('canvas')
+    const cx = c.getContext('2d', { willReadFrequently: true })!
+    ;(rc as any)._pbuf = { canvas: c, ctx: cx }
+  }
+  const pb = (rc as any)._pbuf as PixelBuf
+  if (pb.canvas.width !== w) pb.canvas.width = w
+  if (pb.canvas.height !== h) pb.canvas.height = h
+  return pb
+}
+
+function drawShape(
+  ctx: any,
+  clip: ShapeClip,
+  eff: any,
+  trans: any,
+  width: number,
+  height: number
+) {
+  ctx.save()
+  ctx.globalAlpha = Math.max(0, Math.min(1, eff.opacity))
+  if (clip.effects) {
+    const f = buildFilterString(clip.effects)
+    if (f) ctx.filter = f
+  }
+  if (trans.isWipe) {
+    ctx.beginPath()
+    ctx.rect(0, 0, width * trans.wipeProgress, height)
+    ctx.clip()
+  }
+  const cx = width * eff.x
+  const cy = height * eff.y
+  const w = width * clip.width * eff.scale
+  const h = height * clip.height * eff.scale
+  ctx.translate(cx, cy)
+  if (eff.rotation) ctx.rotate((eff.rotation * Math.PI) / 180)
+  ctx.fillStyle = clip.style.fill ?? 'transparent'
+  ctx.strokeStyle = clip.style.stroke ?? 'transparent'
+  ctx.lineWidth = clip.style.strokeWidth ?? 0
+  shapePath(ctx, clip, w, h)
+  if (clip.style.fill) ctx.fill()
+  if (clip.style.stroke && (clip.style.strokeWidth ?? 0) > 0) ctx.stroke()
+  ctx.restore()
+}
+
+function shapePath(ctx: any, clip: ShapeClip, w: number, h: number) {
+  ctx.beginPath()
+  const { shape, style } = clip
+  if (shape === 'rect') {
+    const r = style.cornerRadius ?? 0
+    if (r > 0 && typeof ctx.roundRect === 'function') {
+      ctx.roundRect(-w / 2, -h / 2, w, h, Math.min(r, Math.min(w, h) / 2))
+    } else {
+      ctx.rect(-w / 2, -h / 2, w, h)
+    }
+  } else if (shape === 'ellipse') {
+    ctx.ellipse(0, 0, Math.abs(w / 2), Math.abs(h / 2), 0, 0, Math.PI * 2)
+  } else if (shape === 'line') {
+    ctx.moveTo(-w / 2, 0)
+    ctx.lineTo(w / 2, 0)
+  } else if (shape === 'triangle') {
+    ctx.moveTo(0, -h / 2)
+    ctx.lineTo(-w / 2, h / 2)
+    ctx.lineTo(w / 2, h / 2)
+    ctx.closePath()
+  } else if (shape === 'arrow') {
+    const head = Math.min(w * 0.3, h)
+    ctx.moveTo(-w / 2, -h / 6)
+    ctx.lineTo(w / 2 - head, -h / 6)
+    ctx.lineTo(w / 2 - head, -h / 2)
+    ctx.lineTo(w / 2, 0)
+    ctx.lineTo(w / 2 - head, h / 2)
+    ctx.lineTo(w / 2 - head, h / 6)
+    ctx.lineTo(-w / 2, h / 6)
+    ctx.closePath()
+  } else if (shape === 'star') {
+    const n = 5
+    const inner = Math.min(w, h) / 4
+    const outer = Math.min(w, h) / 2
+    for (let i = 0; i < n * 2; i++) {
+      const r = i % 2 === 0 ? outer : inner
+      const a = (Math.PI / n) * i - Math.PI / 2
+      const px = Math.cos(a) * r
+      const py = Math.sin(a) * r
+      if (i === 0) ctx.moveTo(px, py)
+      else ctx.lineTo(px, py)
+    }
+    ctx.closePath()
+  }
+}
+
+function drawText(
+  ctx: any,
+  clip: TextClip,
+  eff: any,
+  trans: any,
+  width: number,
+  height: number,
+  localT: number
+) {
   ctx.save()
   ctx.globalAlpha = Math.max(0, Math.min(1, eff.opacity))
   const weight = clip.bold ? '700' : '400'
@@ -246,17 +437,124 @@ function drawText(ctx: any, clip: TextClip, eff: any, trans: any, width: number,
   ctx.translate(cx, cy)
   if (eff.rotation) ctx.rotate((eff.rotation * Math.PI) / 180)
   if (eff.scale !== 1) ctx.scale(eff.scale, eff.scale)
+
+  const decor = clip.decor
+  const letterSpacing = decor?.letterSpacing ?? 0
+  const anim = clip.anim
+  const animProgress = anim && anim.duration > 0
+    ? Math.max(0, Math.min(1, localT / anim.duration))
+    : 1
+
   if (clip.backgroundColor) {
     const m = ctx.measureText(clip.text)
-    const w = m.width
-    const h = clip.fontSize * 1.3
+    const w = m.width + letterSpacing * Math.max(0, clip.text.length - 1)
+    const h = clip.fontSize * (decor?.lineHeight ?? 1.3)
     ctx.fillStyle = clip.backgroundColor
     const bx = clip.align === 'center' ? -w / 2 : clip.align === 'right' ? -w : 0
     ctx.fillRect(bx - 16, -h / 2, w + 32, h)
   }
+
+  if (decor?.shadow) {
+    ctx.save()
+    ctx.shadowColor = decor.shadow.color
+    ctx.shadowBlur = decor.shadow.blur
+    ctx.shadowOffsetX = decor.shadow.offsetX
+    ctx.shadowOffsetY = decor.shadow.offsetY
+    drawTextAnim(ctx, clip, animProgress, letterSpacing, false)
+    ctx.restore()
+  }
+  if (decor?.outline && decor.outline.width > 0) {
+    ctx.save()
+    ctx.strokeStyle = decor.outline.color
+    ctx.lineWidth = decor.outline.width
+    ctx.lineJoin = 'round'
+    drawTextAnim(ctx, clip, animProgress, letterSpacing, true)
+    ctx.restore()
+  }
   ctx.fillStyle = clip.color
-  ctx.fillText(clip.text, 0, 0)
+  drawTextAnim(ctx, clip, animProgress, letterSpacing, false)
   ctx.restore()
+}
+
+function drawTextAnim(
+  ctx: any,
+  clip: TextClip,
+  progress: number,
+  letterSpacing: number,
+  strokeOnly: boolean
+) {
+  const type = clip.anim?.type ?? 'none'
+  const text = clip.text
+  if (type === 'none' && letterSpacing === 0) {
+    if (strokeOnly) ctx.strokeText(text, 0, 0)
+    else ctx.fillText(text, 0, 0)
+    return
+  }
+  const chars = Array.from(text)
+  const widths = chars.map((ch: string) => ctx.measureText(ch).width)
+  const totalW = widths.reduce((a: number, b: number) => a + b, 0) + letterSpacing * Math.max(0, chars.length - 1)
+  let startX = 0
+  if (clip.align === 'center') startX = -totalW / 2
+  else if (clip.align === 'right') startX = -totalW
+  const prevAlign = ctx.textAlign
+  ctx.textAlign = 'left'
+  for (let i = 0; i < chars.length; i++) {
+    const cp = charProgress(type, progress, i, chars.length)
+    if (cp <= 0) {
+      startX += widths[i] + letterSpacing
+      continue
+    }
+    ctx.save()
+    switch (type) {
+      case 'fade-words':
+        ctx.globalAlpha = ctx.globalAlpha * cp
+        break
+      case 'slide-chars':
+        ctx.translate(0, (1 - cp) * 40)
+        ctx.globalAlpha = ctx.globalAlpha * cp
+        break
+      case 'bounce':
+        ctx.translate(0, (1 - cp) * -30 * Math.sin(cp * Math.PI))
+        break
+      case 'scale-pop': {
+        const s = 0.6 + cp * 0.4
+        ctx.scale(s, s)
+        ctx.globalAlpha = ctx.globalAlpha * cp
+        break
+      }
+      case 'wave':
+        ctx.translate(0, Math.sin(progress * Math.PI * 2 + i * 0.4) * 10)
+        break
+    }
+    if (strokeOnly) ctx.strokeText(chars[i], startX, 0)
+    else ctx.fillText(chars[i], startX, 0)
+    ctx.restore()
+    startX += widths[i] + letterSpacing
+  }
+  ctx.textAlign = prevAlign
+}
+
+function charProgress(type: string, progress: number, idx: number, total: number): number {
+  if (type === 'typewriter') return progress >= (idx + 1) / total ? 1 : 0
+  if (type === 'fade-words' || type === 'slide-chars' || type === 'scale-pop') {
+    const spread = 0.7
+    const perChar = spread / Math.max(1, total)
+    const start = perChar * idx
+    const end = start + (1 - spread)
+    if (progress <= start) return 0
+    if (progress >= end) return 1
+    return (progress - start) / (end - start)
+  }
+  if (type === 'bounce') {
+    const spread = 0.5
+    const perChar = spread / Math.max(1, total)
+    const start = perChar * idx
+    const end = Math.min(1, start + 0.5)
+    if (progress <= start) return 0
+    if (progress >= end) return 1
+    return (progress - start) / (end - start)
+  }
+  return 1
 }
 
 // ---------- 音声ミックス (OfflineAudioContext) ----------
@@ -265,7 +563,8 @@ async function renderAudioMix(
   state: ProjectState,
   totalDuration: number,
   sampleRate: number,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  rangeOffset = 0
 ): Promise<AudioBuffer> {
   const Ctx =
     (globalThis as any).OfflineAudioContext ||
@@ -273,13 +572,14 @@ async function renderAudioMix(
   if (!Ctx) throw new Error('OfflineAudioContext 未対応')
   const oc = new Ctx(2, Math.ceil(sampleRate * totalDuration), sampleRate)
 
-  // AudioClip と VideoClip (音ありトラック) を集める
   type AClip = { clip: AudioClip | VideoClip; assetId: string }
   const audible: AClip[] = []
   for (const c of state.clips) {
     if (c.kind === 'audio') audible.push({ clip: c, assetId: c.assetId })
     else if (c.kind === 'video') audible.push({ clip: c, assetId: c.assetId })
   }
+
+  const anySolo = state.tracks.some(t => t.solo)
 
   // 素材ごとに decodeAudioData (重複排除)
   const decoded = new Map<string, AudioBuffer>()
@@ -290,12 +590,32 @@ async function renderAudioMix(
     if (!blob) continue
     try {
       const arr = await blob.arrayBuffer()
-      // decodeAudioData for OfflineAudioContext
       const buf = await (oc.decodeAudioData(arr) as Promise<AudioBuffer>)
       decoded.set(a.assetId, buf)
     } catch {
-      // 無音でスキップ
+      // 無音スキップ
     }
+  }
+
+  // マスターゲイン
+  const masterGain = oc.createGain()
+  masterGain.gain.value = state.timeline.masterVolume ?? 1
+  masterGain.connect(oc.destination)
+
+  // トラックごとのゲイン
+  const trackGains = new Map<string, GainNode>()
+  for (const tr of state.tracks) {
+    if (tr.kind !== 'audio') continue
+    const g = oc.createGain()
+    const tv = tr.volume ?? 1
+    const muteBySolo = anySolo && !tr.solo
+    g.gain.value = tr.muted || muteBySolo ? 0 : tv
+    g.connect(masterGain)
+    trackGains.set(tr.id, g)
+  }
+  // video トラックの音声は直接 master へ
+  function getDestForTrack(trackId: string): AudioNode {
+    return trackGains.get(trackId) ?? masterGain
   }
 
   for (const a of audible) {
@@ -306,19 +626,30 @@ async function renderAudioMix(
     const track = state.tracks.find(t => t.id === c.trackId)
     if (track?.muted || c.muted) continue
 
+    let srcBuf: AudioBuffer = buf
+    if (c.reversed) {
+      srcBuf = oc.createBuffer(buf.numberOfChannels, buf.length, buf.sampleRate)
+      for (let ch = 0; ch < buf.numberOfChannels; ch++) {
+        const s = buf.getChannelData(ch)
+        const d = srcBuf.getChannelData(ch)
+        for (let i = 0; i < s.length; i++) d[i] = s[s.length - 1 - i]
+      }
+    }
+
     const src = oc.createBufferSource()
-    src.buffer = buf
+    src.buffer = srcBuf
+    const speed = Math.max(0.0625, Math.min(16, c.speed ?? 1))
+    src.playbackRate.value = speed
+
     const gain = oc.createGain()
     const vol = Math.max(0, Math.min(2, c.volume ?? 1))
     gain.gain.value = vol
 
-    // 音量キーフレームとトランジションを GainNode のオートメーションで
     const keyframes = c.keyframes?.volume
     const transIn = c.transitionIn
     const transOut = c.transitionOut
 
     if (keyframes && keyframes.length > 0) {
-      // サンプリングしてオートメーション適用
       gain.gain.setValueAtTime(vol, c.start)
       const stepSec = 0.05
       for (let lt = 0; lt <= c.duration; lt += stepSec) {
@@ -336,9 +667,50 @@ async function renderAudioMix(
       gain.gain.linearRampToValueAtTime(0, c.start + c.duration)
     }
 
-    src.connect(gain).connect(oc.destination)
+    // EQ 3-band (optional)
+    const eq = (c as AudioClip).eq
+    let chainHead: AudioNode = src
+    if (eq) {
+      if (eq.low !== undefined && eq.low !== 0) {
+        const f = oc.createBiquadFilter()
+        f.type = 'lowshelf'
+        f.frequency.value = 200
+        f.gain.value = Math.max(-24, Math.min(24, eq.low))
+        chainHead.connect(f)
+        chainHead = f
+      }
+      if (eq.mid !== undefined && eq.mid !== 0) {
+        const f = oc.createBiquadFilter()
+        f.type = 'peaking'
+        f.frequency.value = 1000
+        f.Q.value = 1
+        f.gain.value = Math.max(-24, Math.min(24, eq.mid))
+        chainHead.connect(f)
+        chainHead = f
+      }
+      if (eq.high !== undefined && eq.high !== 0) {
+        const f = oc.createBiquadFilter()
+        f.type = 'highshelf'
+        f.frequency.value = 5000
+        f.gain.value = Math.max(-24, Math.min(24, eq.high))
+        chainHead.connect(f)
+        chainHead = f
+      }
+    }
+    chainHead.connect(gain)
+    gain.connect(getDestForTrack(c.trackId))
+
     const offsetInAsset = c.sourceIn ?? 0
-    src.start(c.start, offsetInAsset, c.duration)
+    const clipDurAtSourceRate = c.duration * speed
+    const startInOutput = c.start - rangeOffset
+    if (startInOutput + c.duration <= 0) continue
+    const actualStart = Math.max(0, startInOutput)
+    const skip = actualStart - startInOutput // 範囲開始で途中再生の場合
+    src.start(
+      actualStart,
+      offsetInAsset + skip * speed,
+      Math.max(0, clipDurAtSourceRate - skip * speed)
+    )
   }
 
   return await oc.startRendering()
@@ -353,13 +725,19 @@ export async function exportProject(
   if (!hasWebCodecs) throw new Error('このブラウザは WebCodecs に対応していません')
 
   const { width, height, fps, videoBitrate, audioBitrate, format, includeAudio, signal } = opts
-  // 出力解像度に合わせて state.meta を上書き (描画関数はこれを参照する)
   state = {
     ...state,
     meta: { ...state.meta, width, height, fps }
   }
-  const totalDuration = state.timeline.duration
-  const totalFrames = Math.max(1, Math.ceil(totalDuration * fps))
+  const rangeStart = Math.max(0, opts.startTime ?? 0)
+  const rangeEnd = Math.min(state.timeline.duration, opts.endTime ?? state.timeline.duration)
+  const rangeDur = Math.max(0.01, rangeEnd - rangeStart)
+  const totalFrames = Math.max(1, Math.ceil(rangeDur * fps))
+
+  // GIF 出力は専用パス
+  if (format === 'gif') {
+    return await exportGIF(state, { ...opts, startTime: rangeStart, endTime: rangeEnd })
+  }
 
   notifyProgress(opts, { phase: 'prepare', done: 0, total: 1, message: '準備中…' })
 
@@ -453,22 +831,28 @@ export async function exportProject(
 
   checkAbort(signal)
 
-  // ---------- フレームループ ----------
   notifyProgress(opts, { phase: 'video', done: 0, total: totalFrames, message: '映像エンコード中…' })
 
   const VFrame = (globalThis as any).VideoFrame
   for (let i = 0; i < totalFrames; i++) {
     checkAbort(signal)
-    const t = i / fps
+    const t = rangeStart + i / fps
 
-    // 必要な video だけ seek (parallel)
     const needed: HTMLVideoElement[] = []
     const seeks: Promise<void>[] = []
     for (const vc of uniqVideoClips) {
       if (t >= vc.start && t < vc.start + vc.duration) {
         const el = rc.videoEls.get(vc.id)
         if (!el) continue
-        const inT = t - vc.start + (vc.sourceIn ?? 0)
+        const speed = vc.speed ?? 1
+        const local = (t - vc.start) * speed
+        let inT: number
+        if (vc.reversed) {
+          const base = (vc.sourceIn ?? 0) + (el.duration || vc.duration * speed)
+          inT = Math.max(0, base - local)
+        } else {
+          inT = local + (vc.sourceIn ?? 0)
+        }
         needed.push(el)
         seeks.push(seekVideo(el, inT))
       }
@@ -499,7 +883,7 @@ export async function exportProject(
     const sampleRate = 48000
     let audioBuf: AudioBuffer | null = null
     try {
-      audioBuf = await renderAudioMix(state, totalDuration, sampleRate, signal)
+      audioBuf = await renderAudioMix(state, rangeDur, sampleRate, signal, rangeStart)
     } catch (e) {
       console.warn('audio mix failed', e)
     }
@@ -587,4 +971,106 @@ export async function downloadBlob(blob: Blob, filename: string) {
   a.click()
   a.remove()
   setTimeout(() => URL.revokeObjectURL(url), 2000)
+}
+
+// ============================================================
+// GIF エクスポート
+// ============================================================
+
+async function exportGIF(state: ProjectState, opts: ExportOptions): Promise<ExportResult> {
+  const { width, height } = opts
+  const fps = Math.max(2, Math.min(30, opts.fps))
+  const rangeStart = opts.startTime ?? 0
+  const rangeEnd = opts.endTime ?? state.timeline.duration
+  const rangeDur = Math.max(0.1, rangeEnd - rangeStart)
+  const totalFrames = Math.max(1, Math.ceil(rangeDur * fps))
+  const delayMs = Math.round(1000 / fps)
+
+  notifyProgress(opts, { phase: 'prepare', done: 0, total: 1, message: '準備中…' })
+
+  const gifenc = await import('gifenc')
+  const { GIFEncoder, quantize, applyPalette } = gifenc as any
+
+  const rc: RenderContext = {
+    state,
+    videoEls: new Map(),
+    images: new Map(),
+    canvas: (globalThis as any).OffscreenCanvas
+      ? new OffscreenCanvas(width, height)
+      : Object.assign(document.createElement('canvas'), { width, height }),
+    ctx: null as any
+  }
+  rc.ctx = (rc.canvas as any).getContext('2d', { willReadFrequently: true }) as any
+
+  const uniqVideoClips = state.clips.filter(c => c.kind === 'video') as VideoClip[]
+  const uniqImageAssetIds = new Set<string>()
+  for (const c of state.clips) if (c.kind === 'image') uniqImageAssetIds.add((c as ImageClip).assetId)
+
+  for (const vc of uniqVideoClips) {
+    const url = await getAssetObjectURL(state.meta.id, vc.assetId)
+    if (!url) continue
+    try {
+      const el = await makeHiddenVideo(url)
+      rc.videoEls.set(vc.id, el)
+    } catch {}
+  }
+  for (const aid of uniqImageAssetIds) {
+    const url = await getAssetObjectURL(state.meta.id, aid)
+    if (!url) continue
+    try {
+      rc.images.set(aid, await loadImage(url))
+    } catch {}
+  }
+
+  notifyProgress(opts, { phase: 'video', done: 0, total: totalFrames, message: 'GIF を合成中…' })
+
+  const gif = GIFEncoder()
+
+  for (let i = 0; i < totalFrames; i++) {
+    checkAbort(opts.signal)
+    const t = rangeStart + i / fps
+
+    const seeks: Promise<void>[] = []
+    for (const vc of uniqVideoClips) {
+      if (t >= vc.start && t < vc.start + vc.duration) {
+        const el = rc.videoEls.get(vc.id)
+        if (!el) continue
+        const speed = vc.speed ?? 1
+        const local = (t - vc.start) * speed
+        const inT = vc.reversed
+          ? Math.max(0, (vc.sourceIn ?? 0) + (el.duration || vc.duration * speed) - local)
+          : local + (vc.sourceIn ?? 0)
+        seeks.push(seekVideo(el, inT))
+      }
+    }
+    await Promise.all(seeks)
+
+    drawFrame(rc, t)
+    const img = (rc.ctx as CanvasRenderingContext2D).getImageData(0, 0, width, height)
+    const palette = quantize(img.data, 256)
+    const indexed = applyPalette(img.data, palette)
+    gif.writeFrame(indexed, width, height, { palette, delay: delayMs })
+
+    if (i % 3 === 0 || i === totalFrames - 1) {
+      notifyProgress(opts, { phase: 'video', done: i + 1, total: totalFrames })
+      await new Promise(r => setTimeout(r, 0))
+    }
+  }
+  gif.finish()
+  const buf = gif.bytes()
+
+  for (const el of rc.videoEls.values()) {
+    el.src = ''
+    el.load()
+  }
+
+  notifyProgress(opts, { phase: 'done', done: 1, total: 1, message: '完了' })
+
+  const safeName = state.meta.name.replace(/[^\p{L}\p{N}._-]+/gu, '_').slice(0, 64) || 'project'
+  const stamp = new Date().toISOString().replace(/[:.]/g, '-')
+  return {
+    blob: new Blob([buf], { type: 'image/gif' }),
+    filename: `${safeName}__${stamp}.gif`,
+    mime: 'image/gif'
+  }
 }

@@ -124,6 +124,53 @@ export function useKeyboard() {
       return
     }
 
+    // Markers & in/out
+    if (e.key.toLowerCase() === 'm' && !isCmdOrCtrl(e) && !e.shiftKey) {
+      e.preventDefault()
+      store.addMarker(store.state.timeline.playhead)
+      return
+    }
+    if (e.key.toLowerCase() === 'i' && !isCmdOrCtrl(e) && !e.shiftKey) {
+      e.preventDefault()
+      store.setInPoint(store.state.timeline.playhead)
+      return
+    }
+    if (e.key.toLowerCase() === 'o' && !isCmdOrCtrl(e) && !e.shiftKey) {
+      e.preventDefault()
+      store.setOutPoint(store.state.timeline.playhead)
+      return
+    }
+    if (e.key.toLowerCase() === 'i' && e.shiftKey) {
+      e.preventDefault()
+      store.clearInOut()
+      return
+    }
+    // スナップ切替
+    if (e.key.toLowerCase() === 'n' && !isCmdOrCtrl(e)) {
+      e.preventDefault()
+      store.toggleSnapping()
+      return
+    }
+    // リップル切替
+    if (e.key.toLowerCase() === 'r' && e.shiftKey && !isCmdOrCtrl(e)) {
+      e.preventDefault()
+      store.toggleRipple()
+      return
+    }
+    // Link / Unlink
+    if (isCmdOrCtrl(e) && e.key.toLowerCase() === 'l' && !e.shiftKey) {
+      e.preventDefault()
+      const ids = selection.selectedClipIds.value
+      if (ids.length >= 2) store.linkClips(ids)
+      return
+    }
+    if (isCmdOrCtrl(e) && e.key.toLowerCase() === 'l' && e.shiftKey) {
+      e.preventDefault()
+      const ids = selection.selectedClipIds.value
+      if (ids.length > 0) store.unlinkClips(ids)
+      return
+    }
+
     // Arrow keys: playhead 1 フレーム移動
     if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
       e.preventDefault()
