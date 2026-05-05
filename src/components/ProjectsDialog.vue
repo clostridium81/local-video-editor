@@ -1,6 +1,9 @@
 <script setup lang="ts">
 import { ref, onMounted } from 'vue'
 import { useProjectStore } from '../stores/projectStore'
+import { useLocale } from '../composables/useLocale'
+
+const { t } = useLocale()
 import {
   listStoredProjects,
   deleteProjectState,
@@ -33,17 +36,16 @@ async function openProject(id: string) {
   }
   busy.value = true
   try {
-    // 現在のプロジェクトをセーブ
     await saveProjectState(store.serialize())
     const next = await loadProjectState(id)
     if (!next) {
-      toast.error('プロジェクトの読み込みに失敗しました')
+      toast.error('さくひんを ひらけなかったよ')
       return
     }
     store.suspendAutosave()
     store.replaceState(next)
     store.resumeAutosave()
-    toast.success(`プロジェクトを切替: ${next.meta.name}`)
+    toast.success(`さくひんを きりかえたよ: ${next.meta.name}`)
     emit('close')
   } finally {
     busy.value = false
@@ -56,7 +58,7 @@ async function duplicateProject(id: string) {
   try {
     const src = await loadProjectState(id)
     if (!src) {
-      toast.error('ソースのロードに失敗')
+      toast.error('もとの さくひんを ひらけなかったよ')
       return
     }
     const newId = nanoid()
@@ -65,17 +67,16 @@ async function duplicateProject(id: string) {
     copy.meta.name = `${src.meta.name} (コピー)`
     copy.meta.createdAt = Date.now()
     copy.meta.updatedAt = Date.now()
-    // 素材を複製
     const assetIds = await listProjectAssets(id)
     for (const aid of assetIds) {
       const blob = await loadAssetBlob(id, aid)
       if (blob) await saveAssetBlob(newId, aid, blob)
     }
     await saveProjectState(copy)
-    toast.success(`複製しました: ${copy.meta.name}`)
+    toast.success(`コピーを つくったよ: ${copy.meta.name}`)
     refresh()
   } catch (err: any) {
-    toast.error('複製に失敗しました: ' + (err?.message ?? ''))
+    toast.error('コピーに しっぱいしたよ: ' + (err?.message ?? ''))
   } finally {
     busy.value = false
   }
@@ -83,15 +84,15 @@ async function duplicateProject(id: string) {
 
 async function deleteProject(id: string) {
   if (id === store.meta.id) {
-    toast.warn('現在のプロジェクトは削除できません')
+    toast.warn('いま つかっている さくひんは けせないよ')
     return
   }
-  if (!confirm('このプロジェクトを完全に削除しますか? (素材も消えます)')) return
+  if (!confirm('この さくひんを ぜんぶ けしてもいい? (なかみも きえるよ)')) return
   busy.value = true
   try {
     await clearProject(id)
     await deleteProjectState(id)
-    toast.success('削除しました')
+    toast.success('けしたよ')
     refresh()
   } finally {
     busy.value = false
@@ -99,14 +100,14 @@ async function deleteProject(id: string) {
 }
 
 async function newProject() {
-  if (!confirm('新規プロジェクトを作成します (現在の内容は保存されます)')) return
+  if (!confirm('あたらしい さくひんを はじめる? (いまの さくひんは ほぞんされるよ)')) return
   busy.value = true
   try {
     await saveProjectState(store.serialize())
     store.suspendAutosave()
     store.resetToEmpty()
     store.resumeAutosave()
-    toast.info('新規プロジェクトを作成しました')
+    toast.info('あたらしい さくひんを はじめたよ')
     emit('close')
   } finally {
     busy.value = false
@@ -122,16 +123,16 @@ function fmtDate(ts: number): string {
   <div class="modal-backdrop" @click.self="emit('close')">
     <div class="modal">
       <div class="modal-head">
-        <div class="title">プロジェクト管理</div>
+        <div class="title">{{ t('さくひんの きりかえ', 'プロジェクト管理') }}</div>
         <button class="ghost close" @click="emit('close')">×</button>
       </div>
       <div class="modal-body">
         <div class="toolbar">
-          <button class="primary" @click="newProject">＋ 新規プロジェクト</button>
+          <button class="primary" @click="newProject">＋ {{ t('あたらしい さくひん', '新規プロジェクト') }}</button>
           <div class="spacer" />
         </div>
         <div class="list">
-          <div v-if="projects.length === 0" class="empty muted">プロジェクトが見つかりません</div>
+          <div v-if="projects.length === 0" class="empty muted">{{ t('さくひんが まだ ないよ', 'プロジェクトが見つかりません') }}</div>
           <div
             v-for="p in projects"
             :key="p.id"
@@ -148,10 +149,10 @@ function fmtDate(ts: number): string {
                 class="ghost tiny"
                 :disabled="busy"
                 @click="openProject(p.id)"
-              >開く</button>
-              <span v-else class="badge">使用中</span>
-              <button class="ghost tiny" :disabled="busy" @click="duplicateProject(p.id)">複製</button>
-              <button class="ghost tiny danger" :disabled="busy || p.id === store.meta.id" @click="deleteProject(p.id)">削除</button>
+              >{{ t('ひらく', '開く') }}</button>
+              <span v-else class="badge">{{ t('いま つかってる', '使用中') }}</span>
+              <button class="ghost tiny" :disabled="busy" @click="duplicateProject(p.id)">{{ t('コピー', '複製') }}</button>
+              <button class="ghost tiny danger" :disabled="busy || p.id === store.meta.id" @click="deleteProject(p.id)">{{ t('けす', '削除') }}</button>
             </div>
           </div>
         </div>

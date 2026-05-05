@@ -2,10 +2,13 @@
 import { onMounted, onBeforeUnmount, ref, watch, computed } from 'vue'
 import { useProjectStore } from '../stores/projectStore'
 import { useSelection } from '../composables/useSelection'
+import { useLocale } from '../composables/useLocale'
 import { PreviewEngine } from '../engine/previewEngine'
 import { sampleKeyframes } from '../engine/keyframes'
 import { toast } from '../composables/useToast'
-import type { Clip, VideoClip, ImageClip, TextClip } from '../types/project'
+import type { Clip, VideoClip, ImageClip, TextClip, ShapeClip } from '../types/project'
+
+const { t } = useLocale()
 
 const store = useProjectStore()
 const selection = useSelection()
@@ -115,9 +118,9 @@ const selectedClip = computed<Clip | null>(() => {
   return store.state.clips.find(c => c.id === id) ?? null
 })
 
-function isManipulatable(c: Clip | null): c is VideoClip | ImageClip | TextClip {
+function isManipulatable(c: Clip | null): c is VideoClip | ImageClip | TextClip | ShapeClip {
   if (!c) return false
-  return c.kind === 'video' || c.kind === 'image' || c.kind === 'text'
+  return c.kind === 'video' || c.kind === 'image' || c.kind === 'text' || c.kind === 'shape'
 }
 
 interface BoxInfo {
@@ -152,25 +155,36 @@ function currentBox(): BoxInfo | null {
   const ch = store.meta.height
   const { x, y, scale, rotation } = effectiveTransform(c)
 
-  let natW = cw, natH = ch
-  if (c.kind === 'video') {
-    // video のネイティブサイズは engine 内なので asset のメタから
-    const asset = store.getAsset(c.assetId)
-    natW = asset?.width ?? cw
-    natH = asset?.height ?? ch
-  } else if (c.kind === 'image') {
-    const asset = store.getAsset(c.assetId)
-    natW = asset?.width ?? cw
-    natH = asset?.height ?? ch
-  } else if (c.kind === 'text') {
-    // 厳密にはフォントメトリクスが必要だが、概算で fontSize*文字数 と高さ
-    natW = Math.max(120, c.fontSize * Math.max(1, c.text.length))
-    natH = c.fontSize * 1.3
+  let boxW = 0
+  let boxH = 0
+
+  if (c.kind === 'shape') {
+    // 図形クリップは engine と揃えて短辺基準で正規化
+    const ref = Math.min(cw, ch)
+    boxW = ref * c.width * scale
+    boxH = ref * c.height * scale
+  } else {
+    let natW = cw
+    let natH = ch
+    if (c.kind === 'video') {
+      const asset = store.getAsset(c.assetId)
+      natW = asset?.width ?? cw
+      natH = asset?.height ?? ch
+    } else if (c.kind === 'image') {
+      const asset = store.getAsset(c.assetId)
+      natW = asset?.width ?? cw
+      natH = asset?.height ?? ch
+    } else if (c.kind === 'text') {
+      // 厳密にはフォントメトリクスが必要だが、概算で fontSize*文字数 と高さ
+      natW = Math.max(120, c.fontSize * Math.max(1, c.text.length))
+      natH = c.fontSize * 1.3
+    }
+    // 画像/映像/テキスト: engine の drawTransformed と同じ contain フィット
+    const fit = Math.min(cw / natW, ch / natH)
+    boxW = natW * fit * scale
+    boxH = natH * fit * scale
   }
 
-  const fit = Math.min(cw / natW, ch / natH)
-  const boxW = natW * fit * scale
-  const boxH = natH * fit * scale
   const cx = cw * x
   const cy = ch * y
   return { cx, cy, w: boxW, h: boxH, rotation }
@@ -405,8 +419,8 @@ function onBodyPointerDown(e: PointerEvent) {
     </div>
 
     <div class="transport">
-      <button class="ghost" @click="toStart" title="先頭へ">⏮</button>
-      <button class="primary play-btn" @click="togglePlay">
+      <button class="ghost" @click="toStart" :title="t('さいしょに もどる', '先頭へ')">⏮</button>
+      <button class="primary play-btn" :title="playing ? t('とめる', '一時停止') : t('さいせい', '再生')" @click="togglePlay">
         {{ playing ? '❙❙' : '▶' }}
       </button>
       <div class="time mono">

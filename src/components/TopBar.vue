@@ -10,6 +10,23 @@ import AudioMixer from './AudioMixer.vue'
 import RecorderDialog from './RecorderDialog.vue'
 import ProjectsDialog from './ProjectsDialog.vue'
 import ShortcutHelp from './ShortcutHelp.vue'
+import { useTutorial } from '../composables/useTutorial'
+import { useLocale } from '../composables/useLocale'
+
+const tutorial = useTutorial()
+const locale = useLocale()
+const { t } = locale
+
+const appVersion = __APP_VERSION__
+
+function onToggleLocale() {
+  locale.toggle()
+  toast.info(
+    locale.isEasy.value
+      ? 'やさしい にほんごに きりかえたよ'
+      : 'ふつうの日本語に切替えました'
+  )
+}
 
 const store = useProjectStore()
 const fileInputRef = ref<HTMLInputElement>()
@@ -24,10 +41,10 @@ async function onSave() {
   saving.value = true
   try {
     await exportBackup(store.serialize())
-    toast.success('バックアップを保存しました')
+    toast.success(t('まるごとほぞんできたよ', 'バックアップを保存しました'))
   } catch (e: any) {
     console.error(e)
-    toast.error('バックアップの保存に失敗しました: ' + (e?.message ?? ''))
+    toast.error(t('まるごとほぞんに しっぱいしたよ: ', 'バックアップの保存に失敗しました: ') + (e?.message ?? ''))
   } finally {
     saving.value = false
   }
@@ -43,34 +60,43 @@ async function onFileChosen(e: Event) {
   if (!file) return
   input.value = ''
   try {
-    if (!confirm('現在のプロジェクトを破棄してバックアップから復元します。よろしいですか？')) return
+    if (!confirm(t(
+      'いまの さくひんを すてて、ほぞんしたものを ひらきます。いいですか？',
+      '現在のプロジェクトを破棄してバックアップから復元します。よろしいですか？'
+    ))) return
     store.suspendAutosave()
     await clearProject(store.meta.id)
     const { project, assetCount } = await importBackup(file)
     store.replaceState(project)
-    toast.success(`復元しました (素材 ${assetCount} 件)`)
+    toast.success(t(`もどしたよ (ファイル ${assetCount} こ)`, `復元しました (素材 ${assetCount} 件)`))
   } catch (err: any) {
     console.error(err)
-    toast.error('復元に失敗しました: ' + (err?.message ?? ''))
+    toast.error(t('もどすのに しっぱいしたよ: ', '復元に失敗しました: ') + (err?.message ?? ''))
   } finally {
     store.resumeAutosave()
   }
 }
 
 async function onNew() {
-  if (!confirm('新規プロジェクトを開きます。現在の内容は破棄されます。')) return
+  if (!confirm(t(
+    'あたらしい さくひんを はじめます。いまの さくひんは きえます。',
+    '新規プロジェクトを開きます。現在の内容は破棄されます。'
+  ))) return
   store.suspendAutosave()
   const oldId = store.meta.id
   await clearProject(oldId)
   await deleteProjectState(oldId).catch(() => void 0)
   store.resetToEmpty()
   store.resumeAutosave()
-  toast.info('新しいプロジェクトを作成しました')
+  toast.info(t('あたらしい さくひんを はじめたよ', '新規プロジェクトを作成しました'))
 }
 
 function onExport() {
   if (!hasWebCodecs) {
-    toast.warn('このブラウザはエクスポート(WebCodecs)に対応していません')
+    toast.warn(t(
+      'このブラウザでは どうがファイルが つくれません',
+      'このブラウザはエクスポート (WebCodecs) に対応していません'
+    ))
     return
   }
   showExport.value = true
@@ -81,7 +107,8 @@ function onExport() {
   <div class="topbar">
     <div class="brand">
       <span class="logo-mark">◐</span>
-      <span class="logo-text serif">Local Video Editor</span>
+      <span class="logo-text serif">{{ t('どうがメーカー', 'Local Video Editor') }}</span>
+      <span class="version mono" :title="t('バージョン', 'Version')">v{{ appVersion }}</span>
     </div>
 
     <div class="project-name">
@@ -92,35 +119,55 @@ function onExport() {
       />
     </div>
 
-    <div class="actions">
+    <div class="actions" data-tour="topbar-actions">
       <button
         class="ghost icon-btn"
         :disabled="!store.canUndo"
-        :title="'元に戻す (Cmd/Ctrl+Z)'"
+        :title="t('もとに もどす', '元に戻す (Cmd/Ctrl+Z)')"
         @click="store.undo()"
       >↶</button>
       <button
         class="ghost icon-btn"
         :disabled="!store.canRedo"
-        :title="'やり直し (Cmd/Ctrl+Shift+Z)'"
+        :title="t('やりなおす', 'やり直し (Cmd/Ctrl+Shift+Z)')"
         @click="store.redo()"
       >↷</button>
       <div class="sep" />
-      <button class="ghost" @click="onNew">新規</button>
-      <button class="ghost" @click="onRestoreClick">復元</button>
+      <button class="ghost" @click="onNew">{{ t('あたらしく', '新規') }}</button>
+      <button class="ghost" @click="onRestoreClick">{{ t('よみこむ', '復元') }}</button>
       <button class="ghost" :disabled="saving" @click="onSave">
-        {{ saving ? '保存中…' : 'バックアップ' }}
+        {{ saving ? t('ほぞん ちゅう…', '保存中…') : t('まるごと ほぞん', 'バックアップ') }}
       </button>
-      <button class="ghost icon-btn" title="プロジェクト管理" @click="showProjects = true">📂</button>
-      <button class="ghost icon-btn" title="録音・録画" @click="showRecorder = true">🎙</button>
-      <button class="ghost icon-btn" title="オーディオミキサー" @click="showMixer = !showMixer" :class="{ active: showMixer }">🎚</button>
-      <button class="ghost icon-btn" title="キーボードショートカット" @click="showHelp = true">?</button>
+      <button class="ghost icon-btn" :title="t('さくひんの きりかえ', 'プロジェクト管理')" @click="showProjects = true">📂</button>
+      <button class="ghost icon-btn" :title="t('ろくおん・ろくが', '録音・録画')" @click="showRecorder = true">🎙</button>
+      <button class="ghost icon-btn" :title="t('おとの ちょうせい', 'オーディオミキサー')" @click="showMixer = !showMixer" :class="{ active: showMixer }">🎚</button>
+      <button
+        class="ghost icon-btn"
+        :title="t('つかいかたを みる', '使い方ツアー')"
+        @click="tutorial.open()"
+      >🎓</button>
+      <button
+        class="ghost icon-btn"
+        data-tour="help-btn"
+        :title="t('キーボードの ショートカット', 'キーボードショートカット')"
+        @click="showHelp = true"
+      >?</button>
+      <button
+        class="ghost icon-btn"
+        :class="{ active: locale.isEasy.value }"
+        :title="locale.isEasy.value
+          ? 'やさしい にほんご (おしてふつうの日本語にきりかえ)'
+          : 'ふつうの日本語 (押すとやさしい にほんごに切替)'"
+        @click="onToggleLocale"
+      >{{ locale.isEasy.value ? 'あ' : '漢' }}</button>
       <button
         class="primary"
         :disabled="!hasWebCodecs"
-        :title="hasWebCodecs ? 'エクスポート' : 'このブラウザは WebCodecs 未対応'"
+        :title="hasWebCodecs
+          ? t('どうがファイルに する', 'エクスポート')
+          : t('このブラウザでは つかえません', 'このブラウザは WebCodecs 未対応')"
         @click="onExport"
-      >▼ エクスポート</button>
+      >▼ {{ t('どうがで かきだす', 'エクスポート') }}</button>
       <input
         ref="fileInputRef"
         type="file"
@@ -168,6 +215,17 @@ function onExport() {
   letter-spacing: 0.01em;
 }
 
+.version {
+  font-size: 10px;
+  color: var(--fg-3);
+  letter-spacing: 0.04em;
+  padding: 2px 5px;
+  border: 1px solid var(--line-weak);
+  border-radius: 3px;
+  align-self: center;
+  user-select: none;
+}
+
 .project-name {
   flex: 1;
   display: flex;
@@ -195,6 +253,11 @@ function onExport() {
   font-size: 14px;
   min-width: 28px;
   padding: 4px 6px;
+}
+.icon-btn.active {
+  color: var(--accent-hi);
+  background: rgba(232, 168, 56, 0.12);
+  border-color: var(--accent-dim);
 }
 .sep {
   width: 1px;

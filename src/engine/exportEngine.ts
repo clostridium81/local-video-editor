@@ -352,8 +352,10 @@ function drawShape(
   }
   const cx = width * eff.x
   const cy = height * eff.y
-  const w = width * clip.width * eff.scale
-  const h = height * clip.height * eff.scale
+  // previewEngine と同じ: 短辺基準で図形を正規化する
+  const ref = Math.min(width, height)
+  const w = ref * clip.width * eff.scale
+  const h = ref * clip.height * eff.scale
   ctx.translate(cx, cy)
   if (eff.rotation) ctx.rotate((eff.rotation * Math.PI) / 180)
   ctx.fillStyle = clip.style.fill ?? 'transparent'
@@ -722,7 +724,7 @@ export async function exportProject(
   state: ProjectState,
   opts: ExportOptions
 ): Promise<ExportResult> {
-  if (!hasWebCodecs) throw new Error('このブラウザは WebCodecs に対応していません')
+  if (!hasWebCodecs) throw new Error('この ブラウザでは どうがの かきだしが できないよ')
 
   const { width, height, fps, videoBitrate, audioBitrate, format, includeAudio, signal } = opts
   state = {

@@ -1,5 +1,67 @@
 # Changelog
 
+## [0.4.0] — こども向けリリース対応 (やさしい日本語 + 表示切替)
+
+日本のこども向けリリース版として、UI 全体をやさしい日本語に書き換え、ふつうの日本語との切替も可能にした。
+
+### やさしい日本語 / ふつうの日本語 切替
+
+- 新規 [src/composables/useLocale.ts](src/composables/useLocale.ts): `mode: 'easy' | 'normal'` のシングルトン ref + `t(easy, normal)` ヘルパ
+- 設定は `localStorage('lve.locale.v1')` に永続化、デフォルトは `'easy'`
+- TopBar 右上に **「あ / 漢」 トグルボタン** を追加。クリックで切替 + Toast で通知
+- localStorage 不可な環境 (Safari プライベート等) でも動作するよう try/catch で囲んでガード
+- GitHub Pages の同一 origin (`*.github.io`) で衝突しないよう、キーは `lve.` プレフィックス済み
+
+### UI 全文を 2 モード対応
+
+- TopBar (Undo/Redo / 新規 / 復元 / バックアップ / 各アイコンボタンの title)
+- MediaLibrary (パネル名 / 検索プレースホルダ / フォルダ操作 / 空 state / ドロップ表示 / 素材種別ラベル)
+- PreviewPanel (再生・先頭ボタンの title)
+- TimelinePanel (＋もじ / ＋かたち / トラック追加 / スナップ・リップル・マーカー・In/Out ボタン / トラックヘッダ Solo/Mute / マーカーヒント)
+- InspectorPanel (時間 / 表示 / 配置 / もじ / 音声 / エフェクト / トランジション / 再生 / かさねかた / カラーグレード / クロマキー / もじの かざり / もじの うごき / 図形 / EQ / リンク / 削除 ほぼ全セクションヘッダ)
+- ExportDialog / ProjectsDialog / RecorderDialog / AudioMixer / ShortcutHelp (タイトル + ボタン + 説明文)
+- TutorialOverlay は `STEPS_EASY` / `STEPS_NORMAL` の 2 配列を持ち、computed でモード反応
+- ShortcutHelp の sections も computed でモード反応
+
+### こども向け語彙への置換 (前段の整理)
+
+- タイトル `Local Video Editor` → `どうがメーカー`
+- 「保存」→「ほぞん」、「復元」→「よみこむ」、「エクスポート」→「どうがで かきだす」
+- 「テキスト」→「もじ」、「図形」→「かたち」、「矩形」→「しかく」、「楕円」→「まる」、「三角形」→「さんかく」、「星」→「ほし」、「矢印」→「やじるし」、「線」→「せん」
+- 「不透明度」→「すけぐあい」、「スケール」→「おおきさ」、「回転」→「まわり」、「配置」→「いち」
+- 「カラーグレード」→「いろあい」、「クロマキー」→「いろを すきとおらせる」
+- 「キーフレーム」→「うごきポイント」、「トランジション」→「つなぎかた」
+- 「速度 ×」→「はやさ ばい」、「逆再生」→「うしろから ながす」
+- 「ミュート」→「おとを けす」、「ソロ」→「ここだけ ならす」
+- 「フォーマット」→「かたち」、「解像度」→「がめんの おおきさ」、「品質」→「きれいさ」
+- 「キャンセル」→「やめる」、「OK / 開始」→「はじめる」
+- エラー: 「失敗しました」→「できなかったよ」、「容量不足」→「ほぞんできる ばしょが いっぱいだよ」
+- デフォルト名: 「無題のプロジェクト」→「なまえなしの さくひん」、テキスト初期文 「テキスト」→「もじ」
+- ブレンドモード・テキストアニメ・形状などの選択肢も やさしい表現に (例: `fade` → 「じわじわ あらわれる」、`slide-left` → 「みぎから くる」、`typewriter` → 「タイプライター (1もじずつ)」)
+
+### バグ修正
+
+- **図形クリップのアスペクト比**: `width × canvas_w` / `height × canvas_h` で別々に正規化していたため、`width=height=0.3` でも 1920×1080 では 576×324 の長方形になっていた → 短辺 (`Math.min(w, h)`) を共通基準にし、`width=height` で常に正方形に ([previewEngine.ts](src/engine/previewEngine.ts), [exportEngine.ts](src/engine/exportEngine.ts))
+- **PreviewPanel の選択ボックスが図形に未対応**: 選択枠が常にキャンバス全域になっていた → `kind === 'shape'` 分岐を追加し、エンジンと同じ短辺基準で正しい枠を描画
+- `ShapeClip.scale?` を型に追加し、canvas ドラッグの一様スケールを明示化
+- `addShapeClip` で line / arrow のみ横長 (0.4×0.06)、他は 0.3×0.3 の正方形に初期化
+
+### その他
+
+- index.html の `<title>` を「どうがメーカー」に変更
+- README.md / CHANGELOG.md を Phase 2/3 状態へ更新
+
+---
+
+## [0.3.1] — 使い方ツアー
+
+- 初回アクセス時に自動表示される **対話型チュートリアル** を追加 ([TutorialOverlay.vue](src/components/TutorialOverlay.vue))
+- スポットライト + 吹き出しで主要領域 (素材ライブラリ / プレビュー / タイムライン / インスペクタ / ツールバー) を順に案内
+- ← / → / Enter / Esc のキー操作対応、進捗バー、「今後は表示しない」選択可
+- 完了状態は `localStorage` (`lve.tutorialDone.v1`) に保存
+- TopBar の 🎓 ボタンまたはショートカットダイアログから再生可能
+- 対象要素は `data-tour="..."` 属性で指定しており、将来のレイアウト変更でも追いやすい
+
 ## [0.3.0] — Phase 3 プロユース拡張
 
 Google Vids / Premiere 相当のプロレベル機能群を追加。

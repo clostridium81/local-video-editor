@@ -2,6 +2,9 @@
 import { ref, computed, onMounted } from 'vue'
 import { useProjectStore } from '../stores/projectStore'
 import { toast } from '../composables/useToast'
+import { useLocale } from '../composables/useLocale'
+
+const { t } = useLocale()
 import {
   canEncodeVideo,
   canEncodeAudio,
@@ -108,10 +111,10 @@ const etaSec = computed(() => {
 
 function fmtEta(s: number | null) {
   if (s == null) return '—'
-  if (s < 60) return `残り ${s}s`
+  if (s < 60) return `あと ${s}びょう`
   const m = Math.floor(s / 60)
   const r = s % 60
-  return `残り ${m}分 ${r}s`
+  return `あと ${m}ふん ${r}びょう`
 }
 
 async function onStart() {
@@ -159,14 +162,14 @@ async function onStart() {
   try {
     const { blob, filename } = await exportProject(store.serialize(), opts)
     await downloadBlob(blob, filename)
-    toast.success(`エクスポート完了: ${filename}`)
+    toast.success(`できたよ: ${filename}`)
     emit('close')
   } catch (err: any) {
     if (err?.name === 'AbortError') {
-      toast.info('エクスポートをキャンセルしました')
+      toast.info('かきだしを やめたよ')
     } else {
       console.error(err)
-      toast.error('エクスポートに失敗しました: ' + (err?.message ?? err))
+      toast.error('かきだしが できなかったよ: ' + (err?.message ?? err))
     }
   } finally {
     running.value = false
@@ -184,12 +187,24 @@ function onCancel() {
 }
 
 function phaseLabel(p: string) {
-  if (p === 'prepare') return '準備'
-  if (p === 'video') return '映像'
-  if (p === 'audio') return '音声'
-  if (p === 'mux') return '合成'
-  if (p === 'done') return '完了'
+  if (p === 'prepare') return 'じゅんびちゅう'
+  if (p === 'video') return 'えいぞうを つくっているよ'
+  if (p === 'audio') return 'おとを ちょうせいしているよ'
+  if (p === 'mux') return 'まとめているよ'
+  if (p === 'done') return 'できた'
   return p
+}
+
+function fmtPhaseMessage(m: string): string {
+  if (!m) return ''
+  // exportEngine から来る日本語メッセージはそのまま、英語は簡易訳
+  if (m === '準備中…') return 'じゅんびちゅう…'
+  if (m === '映像エンコード中…') return 'えいぞうを つくっているよ…'
+  if (m === '音声をミックス中…') return 'おとを ちょうせいちゅう…'
+  if (m === '出力中…') return 'まとめているよ…'
+  if (m === '完了') return 'できた'
+  if (m === 'GIF を合成中…') return 'GIF を つくっているよ…'
+  return m
 }
 </script>
 
@@ -197,28 +212,28 @@ function phaseLabel(p: string) {
   <div class="modal-backdrop" @click.self="onCancel">
     <div class="modal">
       <div class="modal-head">
-        <div class="title">エクスポート</div>
+        <div class="title">{{ t('どうがで かきだす', 'エクスポート') }}</div>
         <button class="ghost close" :disabled="running" @click="emit('close')">×</button>
       </div>
 
       <div v-if="!running" class="modal-body">
         <div class="row-2">
           <label class="field">
-            <span>フォーマット</span>
+            <span>かたち</span>
             <select v-model="format">
-              <option value="mp4" :disabled="!mp4Supported">MP4 (H.264 + AAC)</option>
-              <option value="webm" :disabled="!webmSupported">WebM (VP9 + Opus)</option>
-              <option value="gif">GIF</option>
+              <option value="mp4" :disabled="!mp4Supported">MP4 (どうが)</option>
+              <option value="webm" :disabled="!webmSupported">WebM (どうが)</option>
+              <option value="gif">GIF (うごく え)</option>
             </select>
           </label>
           <label class="field">
-            <span>FPS</span>
+            <span>1びょうあたりの コマすう</span>
             <select v-model.number="fps">
-              <option :value="24">24</option>
-              <option :value="30">30</option>
-              <option :value="60">60</option>
+              <option :value="24">24 コマ</option>
+              <option :value="30">30 コマ</option>
+              <option :value="60">60 コマ</option>
               <option :value="store.state.meta.fps">
-                プロジェクト ({{ store.state.meta.fps }})
+                さくひんと おなじ ({{ store.state.meta.fps }} コマ)
               </option>
             </select>
           </label>
@@ -226,32 +241,32 @@ function phaseLabel(p: string) {
 
         <div class="row-2">
           <label class="field">
-            <span>解像度</span>
+            <span>がめんの おおきさ</span>
             <select v-model="resolutionPreset">
               <option value="project">
-                プロジェクト ({{ store.state.meta.width }}×{{ store.state.meta.height }})
+                さくひんと おなじ ({{ store.state.meta.width }}×{{ store.state.meta.height }})
               </option>
-              <option value="1080p">1920 × 1080</option>
-              <option value="720p">1280 × 720</option>
-              <option value="480p">854 × 480</option>
+              <option value="1080p">1920 × 1080 (おおきい)</option>
+              <option value="720p">1280 × 720 (ふつう)</option>
+              <option value="480p">854 × 480 (ちいさい)</option>
             </select>
           </label>
           <label class="field">
-            <span>品質</span>
+            <span>きれいさ</span>
             <select v-model="bitratePreset">
-              <option value="low">低 (3 Mbps)</option>
-              <option value="medium">中 (6 Mbps)</option>
-              <option value="high">高 (12 Mbps)</option>
+              <option value="low">ふつう</option>
+              <option value="medium">きれい</option>
+              <option value="high">とても きれい</option>
             </select>
           </label>
         </div>
 
         <label class="field">
-          <span>カスタムビットレート (kbps, 空欄でプリセット使用)</span>
+          <span>もっと こまかく きめる (kbps)</span>
           <input
             type="number"
             :value="customBitrate ?? ''"
-            placeholder="例: 8000"
+            placeholder="からっぽで OK"
             @change="(e) => {
               const v = (e.target as HTMLInputElement).value
               customBitrate = v ? Number(v) : null
@@ -261,35 +276,35 @@ function phaseLabel(p: string) {
 
         <label class="toggle" v-if="format !== 'gif'">
           <input type="checkbox" v-model="includeAudio" />
-          <span>音声を含める</span>
+          <span>おとを いれる</span>
         </label>
 
         <div class="field">
-          <span>範囲</span>
+          <span>はんい</span>
           <div class="row-3">
             <label class="toggle">
               <input type="radio" value="full" v-model="useRange" />
-              <span>全体</span>
+              <span>ぜんぶ</span>
             </label>
             <label class="toggle">
               <input type="radio" value="inout" v-model="useRange" />
-              <span>In/Out</span>
+              <span>はじめ〜おわり</span>
             </label>
             <label class="toggle">
               <input type="radio" value="custom" v-model="useRange" />
-              <span>カスタム</span>
+              <span>じぶんで きめる</span>
             </label>
           </div>
         </div>
         <div v-if="useRange === 'custom'" class="row-2">
           <label class="field">
-            <span>開始 (s)</span>
+            <span>はじめ (びょう)</span>
             <input type="number" step="0.1" min="0"
               :max="store.state.timeline.duration"
               v-model.number="customStart" />
           </label>
           <label class="field">
-            <span>終了 (s)</span>
+            <span>おわり (びょう)</span>
             <input type="number" step="0.1" min="0"
               :max="store.state.timeline.duration"
               v-model.number="customEnd" />
@@ -297,20 +312,20 @@ function phaseLabel(p: string) {
         </div>
 
         <div class="summary muted">
-          <div>最終: {{ resolution.width }} × {{ resolution.height }} @ {{ fps }}fps</div>
-          <div>ビットレート: {{ Math.round(resolvedBitrate / 1000) }} kbps</div>
-          <div>長さ: {{ store.state.timeline.duration.toFixed(1) }}s</div>
+          <div>できあがり: {{ resolution.width }} × {{ resolution.height }} / {{ fps }} コマ</div>
+          <div>きれいさ: {{ Math.round(resolvedBitrate / 1000) }} kbps</div>
+          <div>ながさ: {{ store.state.timeline.duration.toFixed(1) }} びょう</div>
         </div>
 
         <div class="actions">
-          <button class="ghost" @click="emit('close')">キャンセル</button>
-          <button class="primary" @click="onStart">エクスポート開始</button>
+          <button class="ghost" @click="emit('close')">{{ t('やめる', 'キャンセル') }}</button>
+          <button class="primary" @click="onStart">{{ t('かきだしを はじめる', 'エクスポート開始') }}</button>
         </div>
       </div>
 
       <div v-else class="modal-body">
         <div class="phase-label">
-          {{ phaseLabel(progressPhase) }} — {{ progressMessage }}
+          {{ phaseLabel(progressPhase) }} — {{ fmtPhaseMessage(progressMessage) }}
         </div>
         <div class="progress-outer">
           <div class="progress-inner" :style="{ width: progressPct + '%' }" />
@@ -321,7 +336,7 @@ function phaseLabel(p: string) {
           <span>{{ fmtEta(etaSec) }}</span>
         </div>
         <div class="actions">
-          <button class="ghost danger" @click="onCancel">キャンセル</button>
+          <button class="ghost danger" @click="onCancel">{{ t('やめる', 'キャンセル') }}</button>
         </div>
       </div>
     </div>

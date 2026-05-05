@@ -24,7 +24,10 @@ import type {
   AudioEQ
 } from '../types/project'
 import { findKeyframeAt, neighborKeyframes } from '../engine/keyframes'
+import { useLocale } from '../composables/useLocale'
 import EffectSlider from './EffectSlider.vue'
+
+const { t } = useLocale()
 
 const store = useProjectStore()
 const selection = useSelection()
@@ -289,6 +292,64 @@ const TEXT_ANIMS: TextAnimType[] = [
 ]
 
 const SHAPE_KINDS: ShapeKind[] = ['rect','ellipse','triangle','star','arrow','line']
+
+function blendLabelJa(m: BlendMode): string {
+  const map: Record<BlendMode, string> = {
+    normal: 'ふつう',
+    multiply: 'かさねる (くらく)',
+    screen: 'かさねる (あかるく)',
+    overlay: 'うえに のせる',
+    darken: 'くらいほうを えらぶ',
+    lighten: 'あかるいほうを えらぶ',
+    'color-dodge': 'もっと あかるく',
+    'color-burn': 'もっと くらく',
+    'hard-light': 'つよい ひかり',
+    'soft-light': 'やさしい ひかり',
+    difference: 'いろの ちがいだけ',
+    exclusion: 'いろを すこし いれかえ',
+    hue: 'いろあいだけ',
+    saturation: 'こさだけ',
+    color: 'いろだけ',
+    luminosity: 'あかるさだけ',
+    add: 'たし算',
+    subtract: 'ひき算'
+  }
+  return map[m] ?? m
+}
+
+function animLabelJa(a: TextAnimType): string {
+  const map: Record<TextAnimType, string> = {
+    none: 'うごかない',
+    typewriter: 'タイプライター (1もじずつ)',
+    'fade-words': 'じわじわ あらわれる',
+    'slide-chars': 'したから あらわれる',
+    bounce: 'ぴょんぴょん',
+    'scale-pop': 'ぽーんと でる',
+    wave: 'なみのように うごく'
+  }
+  return map[a] ?? a
+}
+
+function shapeLabelJa(s: ShapeKind): string {
+  const easy: Record<ShapeKind, string> = {
+    rect: 'しかく', ellipse: 'まる', triangle: 'さんかく',
+    star: 'ほし', arrow: 'やじるし', line: 'せん'
+  }
+  const norm: Record<ShapeKind, string> = {
+    rect: '矩形', ellipse: '楕円', triangle: '三角形',
+    star: '星', arrow: '矢印', line: '線'
+  }
+  return t(easy[s] ?? s, norm[s] ?? s)
+}
+
+function kindNameJa(kind: string): string {
+  if (kind === 'video') return t('どうが', '動画')
+  if (kind === 'audio') return t('おと', '音声')
+  if (kind === 'image') return t('え', '画像')
+  if (kind === 'text') return t('もじ', 'テキスト')
+  if (kind === 'shape') return t('かたち', '図形')
+  return kind
+}
 </script>
 
 <template>
@@ -299,22 +360,22 @@ const SHAPE_KINDS: ShapeKind[] = ['rect','ellipse','triangle','star','arrow','li
   <div class="inspector-body">
     <div v-if="!selectedClip" class="empty">
       <div class="empty-icon">◇</div>
-      <div class="empty-text">クリップを選択してください</div>
+      <div class="empty-text">{{ t('クリップを えらんでね', 'クリップを選択してください') }}</div>
     </div>
 
     <template v-else>
       <section class="section">
         <div class="kind-badge" :class="'k-' + selectedClip.kind">
-          {{ selectedClip.kind }}
+          {{ kindNameJa(selectedClip.kind) }}
         </div>
       </section>
 
       <!-- 時間プロパティ -->
       <section class="section">
-        <div class="section-head">時間</div>
+        <div class="section-head">{{ t('じかん', '時間') }}</div>
         <div class="grid-2">
           <label class="field">
-            <span>開始</span>
+            <span>{{ t('はじめ', '開始') }}</span>
             <input
               type="number"
               step="0.01"
@@ -323,7 +384,7 @@ const SHAPE_KINDS: ShapeKind[] = ['rect','ellipse','triangle','star','arrow','li
             />
           </label>
           <label class="field">
-            <span>長さ</span>
+            <span>{{ t('ながさ', '長さ') }}</span>
             <input
               type="number"
               step="0.01"
@@ -335,7 +396,7 @@ const SHAPE_KINDS: ShapeKind[] = ['rect','ellipse','triangle','star','arrow','li
             v-if="selectedClip.kind === 'video' || selectedClip.kind === 'audio'"
             class="field"
           >
-            <span>素材内オフセット</span>
+            <span>{{ t('そざいの どこから', '素材内オフセット') }}</span>
             <input
               type="number"
               step="0.01"
@@ -344,7 +405,7 @@ const SHAPE_KINDS: ShapeKind[] = ['rect','ellipse','triangle','star','arrow','li
             />
           </label>
           <div class="field">
-            <span>終了</span>
+            <span>{{ t('おわり', '終了') }}</span>
             <div class="value mono">{{ fmtSec(selectedClip.start + selectedClip.duration) }}</div>
           </div>
         </div>
@@ -353,18 +414,18 @@ const SHAPE_KINDS: ShapeKind[] = ['rect','ellipse','triangle','star','arrow','li
       <!-- 不透明度 -->
       <section v-if="hasTransform(selectedClip)" class="section">
         <div class="section-head">
-          <span>表示</span>
+          <span>{{ t('みえかた', '表示') }}</span>
           <button
             class="kf-btn"
             :class="{ on: kfExistsAt('opacity') }"
             :disabled="!playheadInClip"
-            title="この時刻にキーフレームを追加/削除"
+            :title="t('ここに うごきポイントを たてる/けす', 'この時刻にキーフレームを追加/削除')"
             @click="toggleKeyframe('opacity')"
           >◆</button>
         </div>
         <label class="field">
           <span>
-            不透明度
+            {{ t('すけぐあい', '不透明度') }}
             <span class="mono muted">{{ (selectedClip.opacity * 100).toFixed(0) }}%</span>
           </span>
           <input
@@ -393,11 +454,11 @@ const SHAPE_KINDS: ShapeKind[] = ['rect','ellipse','triangle','star','arrow','li
 
       <!-- 配置 -->
       <section v-if="hasTransform(selectedClip)" class="section">
-        <div class="section-head">配置</div>
+        <div class="section-head">{{ t('いち', '配置') }}</div>
         <div class="grid-2">
           <label class="field">
             <span>
-              X (中央基準)
+              {{ t('よこ (まんなか=0.5)', 'X (中央基準)') }}
               <button
                 class="kf-btn inline"
                 :class="{ on: kfExistsAt('x') }"
@@ -414,7 +475,7 @@ const SHAPE_KINDS: ShapeKind[] = ['rect','ellipse','triangle','star','arrow','li
           </label>
           <label class="field">
             <span>
-              Y (中央基準)
+              {{ t('たて (まんなか=0.5)', 'Y (中央基準)') }}
               <button
                 class="kf-btn inline"
                 :class="{ on: kfExistsAt('y') }"
@@ -436,7 +497,7 @@ const SHAPE_KINDS: ShapeKind[] = ['rect','ellipse','triangle','star','arrow','li
         >
           <label v-if="selectedClip.kind !== 'text'" class="field">
             <span>
-              スケール
+              {{ t('おおきさ', 'スケール') }}
               <button
                 class="kf-btn inline"
                 :class="{ on: kfExistsAt('scale') }"
@@ -453,7 +514,7 @@ const SHAPE_KINDS: ShapeKind[] = ['rect','ellipse','triangle','star','arrow','li
           </label>
           <label v-if="selectedClip.kind !== 'text'" class="field">
             <span>
-              回転 (度)
+              {{ t('まわり (ど)', '回転 (度)') }}
               <button
                 class="kf-btn inline"
                 :class="{ on: kfExistsAt('rotation') }"
@@ -473,9 +534,9 @@ const SHAPE_KINDS: ShapeKind[] = ['rect','ellipse','triangle','star','arrow','li
 
       <!-- テキスト固有 -->
       <section v-if="selectedClip.kind === 'text'" class="section">
-        <div class="section-head">テキスト</div>
+        <div class="section-head">{{ t('もじ', 'テキスト') }}</div>
         <label class="field">
-          <span>内容</span>
+          <span>{{ t('かくこと', '内容') }}</span>
           <textarea
             rows="3"
             :value="(selectedClip as TextClip).text"
@@ -483,7 +544,7 @@ const SHAPE_KINDS: ShapeKind[] = ['rect','ellipse','triangle','star','arrow','li
           />
         </label>
         <label class="field">
-          <span>フォント</span>
+          <span>もじの かたち (フォント)</span>
           <select
             :value="(selectedClip as TextClip).fontFamily"
             @change="(e) => update({ fontFamily: (e.target as HTMLSelectElement).value })"
@@ -499,7 +560,7 @@ const SHAPE_KINDS: ShapeKind[] = ['rect','ellipse','triangle','star','arrow','li
         </label>
         <div class="grid-2">
           <label class="field">
-            <span>サイズ (px)</span>
+            <span>もじの おおきさ</span>
             <input
               type="number"
               min="8"
@@ -509,20 +570,20 @@ const SHAPE_KINDS: ShapeKind[] = ['rect','ellipse','triangle','star','arrow','li
             />
           </label>
           <label class="field">
-            <span>配置</span>
+            <span>そろえかた</span>
             <select
               :value="(selectedClip as TextClip).align"
               @change="(e) => update({ align: (e.target as HTMLSelectElement).value as any })"
             >
-              <option value="left">左</option>
-              <option value="center">中央</option>
-              <option value="right">右</option>
+              <option value="left">ひだり</option>
+              <option value="center">まんなか</option>
+              <option value="right">みぎ</option>
             </select>
           </label>
         </div>
         <div class="grid-2">
           <label class="field">
-            <span>文字色</span>
+            <span>もじの いろ</span>
             <input
               type="color"
               :value="(selectedClip as TextClip).color"
@@ -530,7 +591,7 @@ const SHAPE_KINDS: ShapeKind[] = ['rect','ellipse','triangle','star','arrow','li
             />
           </label>
           <label class="field">
-            <span>背景色</span>
+            <span>うしろの いろ</span>
             <div class="row gap-4">
               <input
                 type="color"
@@ -551,7 +612,7 @@ const SHAPE_KINDS: ShapeKind[] = ['rect','ellipse','triangle','star','arrow','li
               :checked="(selectedClip as TextClip).bold"
               @change="(e) => update({ bold: (e.target as HTMLInputElement).checked })"
             />
-            <span>太字</span>
+            <span>ふとじ</span>
           </label>
           <label class="toggle">
             <input
@@ -559,7 +620,7 @@ const SHAPE_KINDS: ShapeKind[] = ['rect','ellipse','triangle','star','arrow','li
               :checked="(selectedClip as TextClip).italic"
               @change="(e) => update({ italic: (e.target as HTMLInputElement).checked })"
             />
-            <span>斜体</span>
+            <span>ななめ</span>
           </label>
         </div>
       </section>
@@ -567,7 +628,7 @@ const SHAPE_KINDS: ShapeKind[] = ['rect','ellipse','triangle','star','arrow','li
       <!-- 音量 -->
       <section v-if="hasVolume(selectedClip)" class="section">
         <div class="section-head">
-          <span>音声</span>
+          <span>{{ t('おとの おおきさ', '音声') }}</span>
           <button
             class="kf-btn"
             :class="{ on: kfExistsAt('volume') }"
@@ -577,7 +638,7 @@ const SHAPE_KINDS: ShapeKind[] = ['rect','ellipse','triangle','star','arrow','li
         </div>
         <label class="field">
           <span>
-            音量 <span class="mono muted">{{ ((selectedClip.volume ?? 1) * 100).toFixed(0) }}%</span>
+            {{ t('おとの おおきさ', '音量') }} <span class="mono muted">{{ ((selectedClip.volume ?? 1) * 100).toFixed(0) }}%</span>
           </span>
           <input
             type="range"
@@ -594,18 +655,18 @@ const SHAPE_KINDS: ShapeKind[] = ['rect','ellipse','triangle','star','arrow','li
             :checked="!!selectedClip.muted"
             @change="(e) => update({ muted: (e.target as HTMLInputElement).checked })"
           />
-          <span>ミュート</span>
+          <span>おとを けす</span>
         </label>
       </section>
 
       <!-- エフェクト (映像/画像) -->
       <section v-if="hasEffects(selectedClip)" class="section">
         <div class="section-head">
-          <span>エフェクト</span>
-          <button class="ghost tiny" @click="resetEffects">リセット</button>
+          <span>{{ t('こうか', 'エフェクト') }}</span>
+          <button class="ghost tiny" @click="resetEffects">{{ t('もとに もどす', 'リセット') }}</button>
         </div>
         <EffectSlider
-          label="明るさ" :value="selectedClip.effects?.brightness ?? 1"
+          label="あかるさ" :value="selectedClip.effects?.brightness ?? 1"
           :min="0" :max="3" :step="0.01"
           @change="(v) => updateEffects({ brightness: v })"
         />
@@ -615,32 +676,32 @@ const SHAPE_KINDS: ShapeKind[] = ['rect','ellipse','triangle','star','arrow','li
           @change="(v) => updateEffects({ contrast: v })"
         />
         <EffectSlider
-          label="彩度" :value="selectedClip.effects?.saturation ?? 1"
+          label="いろの こさ" :value="selectedClip.effects?.saturation ?? 1"
           :min="0" :max="3" :step="0.01"
           @change="(v) => updateEffects({ saturation: v })"
         />
         <EffectSlider
-          label="ブラー" :value="selectedClip.effects?.blur ?? 0"
+          label="ぼかし" :value="selectedClip.effects?.blur ?? 0"
           :min="0" :max="50" :step="0.5"
           @change="(v) => updateEffects({ blur: v })"
         />
         <EffectSlider
-          label="色相回転" :value="selectedClip.effects?.hueRotate ?? 0"
+          label="いろあい" :value="selectedClip.effects?.hueRotate ?? 0"
           :min="-180" :max="180" :step="1"
           @change="(v) => updateEffects({ hueRotate: v })"
         />
         <EffectSlider
-          label="グレースケール" :value="selectedClip.effects?.grayscale ?? 0"
+          label="しろくろ" :value="selectedClip.effects?.grayscale ?? 0"
           :min="0" :max="1" :step="0.01"
           @change="(v) => updateEffects({ grayscale: v })"
         />
         <EffectSlider
-          label="反転" :value="selectedClip.effects?.invert ?? 0"
+          label="いろを はんてん" :value="selectedClip.effects?.invert ?? 0"
           :min="0" :max="1" :step="0.01"
           @change="(v) => updateEffects({ invert: v })"
         />
         <EffectSlider
-          label="セピア" :value="selectedClip.effects?.sepia ?? 0"
+          label="セピア (むかしふう)" :value="selectedClip.effects?.sepia ?? 0"
           :min="0" :max="1" :step="0.01"
           @change="(v) => updateEffects({ sepia: v })"
         />
@@ -648,11 +709,11 @@ const SHAPE_KINDS: ShapeKind[] = ['rect','ellipse','triangle','star','arrow','li
 
       <!-- トランジション -->
       <section class="section">
-        <div class="section-head">トランジション</div>
-        <div class="sub-title">入り</div>
+        <div class="section-head">{{ t('つなぎかた', 'トランジション') }}</div>
+        <div class="sub-title">{{ t('はじまり', '入り') }}</div>
         <div class="grid-2">
           <label class="field">
-            <span>種類</span>
+            <span>しゅるい</span>
             <select
               :value="selectedClip.transitionIn?.type ?? ''"
               @change="(e) => {
@@ -662,17 +723,17 @@ const SHAPE_KINDS: ShapeKind[] = ['rect','ellipse','triangle','star','arrow','li
               }"
             >
               <option value="">なし</option>
-              <option value="fade">fade</option>
-              <option value="slide-left">slide-left</option>
-              <option value="slide-right">slide-right</option>
-              <option value="slide-up">slide-up</option>
-              <option value="slide-down">slide-down</option>
-              <option value="zoom">zoom</option>
-              <option value="wipe">wipe</option>
+              <option value="fade">じわじわ あらわれる</option>
+              <option value="slide-left">みぎから くる</option>
+              <option value="slide-right">ひだりから くる</option>
+              <option value="slide-up">したから くる</option>
+              <option value="slide-down">うえから くる</option>
+              <option value="zoom">おおきく なる</option>
+              <option value="wipe">ぬれて あらわれる</option>
             </select>
           </label>
           <label class="field">
-            <span>時間 (s)</span>
+            <span>ながさ (びょう)</span>
             <input
               type="number"
               min="0"
@@ -687,13 +748,13 @@ const SHAPE_KINDS: ShapeKind[] = ['rect','ellipse','triangle','star','arrow','li
           </label>
         </div>
         <div class="row gap-4" style="margin-bottom: 8px;">
-          <button class="ghost tiny" @click="applyFadePreset('in')">フェードイン</button>
+          <button class="ghost tiny" @click="applyFadePreset('in')">じわじわ あらわれる</button>
         </div>
 
-        <div class="sub-title">出</div>
+        <div class="sub-title">{{ t('おわり', '出') }}</div>
         <div class="grid-2">
           <label class="field">
-            <span>種類</span>
+            <span>しゅるい</span>
             <select
               :value="selectedClip.transitionOut?.type ?? ''"
               @change="(e) => {
@@ -703,17 +764,17 @@ const SHAPE_KINDS: ShapeKind[] = ['rect','ellipse','triangle','star','arrow','li
               }"
             >
               <option value="">なし</option>
-              <option value="fade">fade</option>
-              <option value="slide-left">slide-left</option>
-              <option value="slide-right">slide-right</option>
-              <option value="slide-up">slide-up</option>
-              <option value="slide-down">slide-down</option>
-              <option value="zoom">zoom</option>
-              <option value="wipe">wipe</option>
+              <option value="fade">じわじわ きえる</option>
+              <option value="slide-left">ひだりへ いく</option>
+              <option value="slide-right">みぎへ いく</option>
+              <option value="slide-up">うえへ いく</option>
+              <option value="slide-down">したへ いく</option>
+              <option value="zoom">ちいさく なる</option>
+              <option value="wipe">ぬれて きえる</option>
             </select>
           </label>
           <label class="field">
-            <span>時間 (s)</span>
+            <span>ながさ (びょう)</span>
             <input
               type="number"
               min="0"
@@ -728,16 +789,16 @@ const SHAPE_KINDS: ShapeKind[] = ['rect','ellipse','triangle','star','arrow','li
           </label>
         </div>
         <div class="row gap-4">
-          <button class="ghost tiny" @click="applyFadePreset('out')">フェードアウト</button>
+          <button class="ghost tiny" @click="applyFadePreset('out')">じわじわ きえる</button>
         </div>
       </section>
 
       <!-- 速度 / 逆再生 / ブレンド -->
       <section v-if="selectedClip.kind !== 'text' && selectedClip.kind !== 'shape'" class="section">
-        <div class="section-head">再生</div>
+        <div class="section-head">{{ t('さいせい', '再生') }}</div>
         <div class="grid-2">
           <label class="field">
-            <span>速度 (×) <span class="mono muted">{{ (selectedClip.speed ?? 1).toFixed(2) }}</span></span>
+            <span>はやさ (ばい) <span class="mono muted">{{ (selectedClip.speed ?? 1).toFixed(2) }}</span></span>
             <input
               type="range"
               min="0.25"
@@ -753,20 +814,20 @@ const SHAPE_KINDS: ShapeKind[] = ['rect','ellipse','triangle','star','arrow','li
               :checked="!!selectedClip.reversed"
               @change="(e) => setReversed((e.target as HTMLInputElement).checked)"
             />
-            <span>逆再生</span>
+            <span>うしろから ながす</span>
           </label>
         </div>
       </section>
 
       <section v-if="hasEffects(selectedClip) || selectedClip.kind === 'shape' || selectedClip.kind === 'text'" class="section">
-        <div class="section-head">合成</div>
+        <div class="section-head">{{ t('かさねかた', '合成') }}</div>
         <label class="field">
-          <span>ブレンドモード</span>
+          <span>{{ t('かさねかた', 'ブレンドモード') }}</span>
           <select
             :value="selectedClip.blendMode ?? 'normal'"
             @change="(e) => setBlendMode((e.target as HTMLSelectElement).value as BlendMode)"
           >
-            <option v-for="m in BLEND_MODES" :key="m" :value="m">{{ m }}</option>
+            <option v-for="m in BLEND_MODES" :key="m" :value="m">{{ blendLabelJa(m) }}</option>
           </select>
         </label>
       </section>
@@ -774,47 +835,47 @@ const SHAPE_KINDS: ShapeKind[] = ['rect','ellipse','triangle','star','arrow','li
       <!-- カラーグレーディング -->
       <section v-if="hasEffects(selectedClip)" class="section">
         <div class="section-head">
-          <span>カラーグレード</span>
-          <button class="ghost tiny" @click="resetGrade">リセット</button>
+          <span>{{ t('いろあい (こまかい)', 'カラーグレード') }}</span>
+          <button class="ghost tiny" @click="resetGrade">{{ t('もとに もどす', 'リセット') }}</button>
         </div>
-        <div class="sub-title">Lift (シャドウ)</div>
+        <div class="sub-title">くらいところ</div>
         <div class="grid-3">
-          <EffectSlider label="R" :value="videoOrImageClip?.colorGrade?.lift?.r ?? 0" :min="-0.5" :max="0.5" :step="0.01"
+          <EffectSlider label="あか" :value="videoOrImageClip?.colorGrade?.lift?.r ?? 0" :min="-0.5" :max="0.5" :step="0.01"
             @change="(v) => updateGrade({ lift: { ...(videoOrImageClip?.colorGrade?.lift ?? { r: 0, g: 0, b: 0 }), r: v } })" />
-          <EffectSlider label="G" :value="videoOrImageClip?.colorGrade?.lift?.g ?? 0" :min="-0.5" :max="0.5" :step="0.01"
+          <EffectSlider label="みどり" :value="videoOrImageClip?.colorGrade?.lift?.g ?? 0" :min="-0.5" :max="0.5" :step="0.01"
             @change="(v) => updateGrade({ lift: { ...(videoOrImageClip?.colorGrade?.lift ?? { r: 0, g: 0, b: 0 }), g: v } })" />
-          <EffectSlider label="B" :value="videoOrImageClip?.colorGrade?.lift?.b ?? 0" :min="-0.5" :max="0.5" :step="0.01"
+          <EffectSlider label="あお" :value="videoOrImageClip?.colorGrade?.lift?.b ?? 0" :min="-0.5" :max="0.5" :step="0.01"
             @change="(v) => updateGrade({ lift: { ...(videoOrImageClip?.colorGrade?.lift ?? { r: 0, g: 0, b: 0 }), b: v } })" />
         </div>
-        <div class="sub-title">Gamma (ミッドトーン)</div>
+        <div class="sub-title">まんなか</div>
         <div class="grid-3">
-          <EffectSlider label="R" :value="videoOrImageClip?.colorGrade?.gamma?.r ?? 0" :min="-1" :max="1" :step="0.01"
+          <EffectSlider label="あか" :value="videoOrImageClip?.colorGrade?.gamma?.r ?? 0" :min="-1" :max="1" :step="0.01"
             @change="(v) => updateGrade({ gamma: { ...(videoOrImageClip?.colorGrade?.gamma ?? { r: 0, g: 0, b: 0 }), r: v } })" />
-          <EffectSlider label="G" :value="videoOrImageClip?.colorGrade?.gamma?.g ?? 0" :min="-1" :max="1" :step="0.01"
+          <EffectSlider label="みどり" :value="videoOrImageClip?.colorGrade?.gamma?.g ?? 0" :min="-1" :max="1" :step="0.01"
             @change="(v) => updateGrade({ gamma: { ...(videoOrImageClip?.colorGrade?.gamma ?? { r: 0, g: 0, b: 0 }), g: v } })" />
-          <EffectSlider label="B" :value="videoOrImageClip?.colorGrade?.gamma?.b ?? 0" :min="-1" :max="1" :step="0.01"
+          <EffectSlider label="あお" :value="videoOrImageClip?.colorGrade?.gamma?.b ?? 0" :min="-1" :max="1" :step="0.01"
             @change="(v) => updateGrade({ gamma: { ...(videoOrImageClip?.colorGrade?.gamma ?? { r: 0, g: 0, b: 0 }), b: v } })" />
         </div>
-        <div class="sub-title">Gain (ハイライト)</div>
+        <div class="sub-title">あかるいところ</div>
         <div class="grid-3">
-          <EffectSlider label="R" :value="videoOrImageClip?.colorGrade?.gain?.r ?? 0" :min="-0.5" :max="0.5" :step="0.01"
+          <EffectSlider label="あか" :value="videoOrImageClip?.colorGrade?.gain?.r ?? 0" :min="-0.5" :max="0.5" :step="0.01"
             @change="(v) => updateGrade({ gain: { ...(videoOrImageClip?.colorGrade?.gain ?? { r: 0, g: 0, b: 0 }), r: v } })" />
-          <EffectSlider label="G" :value="videoOrImageClip?.colorGrade?.gain?.g ?? 0" :min="-0.5" :max="0.5" :step="0.01"
+          <EffectSlider label="みどり" :value="videoOrImageClip?.colorGrade?.gain?.g ?? 0" :min="-0.5" :max="0.5" :step="0.01"
             @change="(v) => updateGrade({ gain: { ...(videoOrImageClip?.colorGrade?.gain ?? { r: 0, g: 0, b: 0 }), g: v } })" />
-          <EffectSlider label="B" :value="videoOrImageClip?.colorGrade?.gain?.b ?? 0" :min="-0.5" :max="0.5" :step="0.01"
+          <EffectSlider label="あお" :value="videoOrImageClip?.colorGrade?.gain?.b ?? 0" :min="-0.5" :max="0.5" :step="0.01"
             @change="(v) => updateGrade({ gain: { ...(videoOrImageClip?.colorGrade?.gain ?? { r: 0, g: 0, b: 0 }), b: v } })" />
         </div>
-        <EffectSlider label="色温度" :value="videoOrImageClip?.colorGrade?.temperature ?? 0" :min="-1" :max="1" :step="0.01"
+        <EffectSlider label="あたたかさ" :value="videoOrImageClip?.colorGrade?.temperature ?? 0" :min="-1" :max="1" :step="0.01"
           @change="(v) => updateGrade({ temperature: v })" />
-        <EffectSlider label="ティント" :value="videoOrImageClip?.colorGrade?.tint ?? 0" :min="-1" :max="1" :step="0.01"
+        <EffectSlider label="みどり/むらさき" :value="videoOrImageClip?.colorGrade?.tint ?? 0" :min="-1" :max="1" :step="0.01"
           @change="(v) => updateGrade({ tint: v })" />
       </section>
 
       <!-- クロマキー -->
       <section v-if="hasEffects(selectedClip)" class="section">
         <div class="section-head">
-          <span>クロマキー</span>
-          <button class="ghost tiny" @click="clearChroma">解除</button>
+          <span>{{ t('いろを すきとおらせる', 'クロマキー') }}</span>
+          <button class="ghost tiny" @click="clearChroma">{{ t('なし', '解除') }}</button>
         </div>
         <label class="toggle">
           <input
@@ -822,11 +883,11 @@ const SHAPE_KINDS: ShapeKind[] = ['rect','ellipse','triangle','star','arrow','li
             :checked="!!videoOrImageClip?.chromaKey?.enabled"
             @change="(e) => updateChroma({ enabled: (e.target as HTMLInputElement).checked })"
           />
-          <span>有効化</span>
+          <span>つかう</span>
         </label>
         <div v-if="videoOrImageClip?.chromaKey?.enabled" class="grid-2">
           <label class="field">
-            <span>キーカラー</span>
+            <span>けす いろ</span>
             <input
               type="color"
               :value="videoOrImageClip?.chromaKey.color"
@@ -834,11 +895,11 @@ const SHAPE_KINDS: ShapeKind[] = ['rect','ellipse','triangle','star','arrow','li
             />
           </label>
           <div />
-          <EffectSlider label="閾値" :value="videoOrImageClip?.chromaKey.threshold" :min="0" :max="1" :step="0.01"
+          <EffectSlider label="どのくらい けすか" :value="videoOrImageClip?.chromaKey.threshold" :min="0" :max="1" :step="0.01"
             @change="(v) => updateChroma({ threshold: v })" />
-          <EffectSlider label="柔らかさ" :value="videoOrImageClip?.chromaKey.softness" :min="0" :max="1" :step="0.01"
+          <EffectSlider label="ふちの やわらかさ" :value="videoOrImageClip?.chromaKey.softness" :min="0" :max="1" :step="0.01"
             @change="(v) => updateChroma({ softness: v })" />
-          <EffectSlider label="スピル抑制" :value="videoOrImageClip?.chromaKey.spillSuppress" :min="0" :max="1" :step="0.01"
+          <EffectSlider label="のこった いろを へらす" :value="videoOrImageClip?.chromaKey.spillSuppress" :min="0" :max="1" :step="0.01"
             @change="(v) => updateChroma({ spillSuppress: v })" />
         </div>
       </section>
@@ -846,12 +907,12 @@ const SHAPE_KINDS: ShapeKind[] = ['rect','ellipse','triangle','star','arrow','li
       <!-- テキスト装飾 / アニメ -->
       <section v-if="selectedClip.kind === 'text'" class="section">
         <div class="section-head">
-          <span>テキスト装飾</span>
-          <button class="ghost tiny" @click="clearDecor">解除</button>
+          <span>{{ t('もじの かざり', 'テキスト装飾') }}</span>
+          <button class="ghost tiny" @click="clearDecor">{{ t('なし', '解除') }}</button>
         </div>
         <div class="grid-2">
           <label class="field">
-            <span>影の色</span>
+            <span>かげの いろ</span>
             <input
               type="color"
               :value="textClip?.decor?.shadow?.color ?? '#000000'"
@@ -859,7 +920,7 @@ const SHAPE_KINDS: ShapeKind[] = ['rect','ellipse','triangle','star','arrow','li
             />
           </label>
           <label class="field">
-            <span>影のぼかし</span>
+            <span>かげの ぼかし</span>
             <input
               type="number"
               min="0" step="1"
@@ -868,7 +929,7 @@ const SHAPE_KINDS: ShapeKind[] = ['rect','ellipse','triangle','star','arrow','li
             />
           </label>
           <label class="field">
-            <span>影 X</span>
+            <span>かげ よこ</span>
             <input
               type="number"
               step="1"
@@ -877,7 +938,7 @@ const SHAPE_KINDS: ShapeKind[] = ['rect','ellipse','triangle','star','arrow','li
             />
           </label>
           <label class="field">
-            <span>影 Y</span>
+            <span>かげ たて</span>
             <input
               type="number"
               step="1"
@@ -886,7 +947,7 @@ const SHAPE_KINDS: ShapeKind[] = ['rect','ellipse','triangle','star','arrow','li
             />
           </label>
           <label class="field">
-            <span>アウトライン色</span>
+            <span>ふちの いろ</span>
             <input
               type="color"
               :value="textClip?.decor?.outline?.color ?? '#000000'"
@@ -894,7 +955,7 @@ const SHAPE_KINDS: ShapeKind[] = ['rect','ellipse','triangle','star','arrow','li
             />
           </label>
           <label class="field">
-            <span>アウトライン幅</span>
+            <span>ふちの ふとさ</span>
             <input
               type="number"
               min="0" step="0.5"
@@ -903,7 +964,7 @@ const SHAPE_KINDS: ShapeKind[] = ['rect','ellipse','triangle','star','arrow','li
             />
           </label>
           <label class="field">
-            <span>字間 (px)</span>
+            <span>もじと もじの あいだ</span>
             <input
               type="number"
               step="0.5"
@@ -912,7 +973,7 @@ const SHAPE_KINDS: ShapeKind[] = ['rect','ellipse','triangle','star','arrow','li
             />
           </label>
           <label class="field">
-            <span>行間 (倍)</span>
+            <span>ぎょうの あいだ (ばい)</span>
             <input
               type="number"
               min="1" max="3" step="0.05"
@@ -924,19 +985,19 @@ const SHAPE_KINDS: ShapeKind[] = ['rect','ellipse','triangle','star','arrow','li
       </section>
 
       <section v-if="selectedClip.kind === 'text'" class="section">
-        <div class="section-head">テキストアニメ</div>
+        <div class="section-head">{{ t('もじの うごき', 'テキストアニメ') }}</div>
         <div class="grid-2">
           <label class="field">
-            <span>種類</span>
+            <span>しゅるい</span>
             <select
               :value="textClip?.anim?.type ?? 'none'"
               @change="(e) => setAnim((e.target as HTMLSelectElement).value as TextAnimType, textClip?.anim?.duration ?? 1)"
             >
-              <option v-for="a in TEXT_ANIMS" :key="a" :value="a">{{ a }}</option>
+              <option v-for="a in TEXT_ANIMS" :key="a" :value="a">{{ animLabelJa(a) }}</option>
             </select>
           </label>
           <label class="field">
-            <span>時間 (s)</span>
+            <span>ながさ (びょう)</span>
             <input
               type="number"
               min="0.1" step="0.1"
@@ -950,19 +1011,19 @@ const SHAPE_KINDS: ShapeKind[] = ['rect','ellipse','triangle','star','arrow','li
 
       <!-- 図形 -->
       <section v-if="selectedClip.kind === 'shape'" class="section">
-        <div class="section-head">図形</div>
+        <div class="section-head">{{ t('かたち', '図形') }}</div>
         <label class="field">
-          <span>形状</span>
+          <span>{{ t('かたち', '形状') }}</span>
           <select
             :value="shapeClip!.shape"
             @change="(e) => updateShape({ shape: (e.target as HTMLSelectElement).value as ShapeKind })"
           >
-            <option v-for="s in SHAPE_KINDS" :key="s" :value="s">{{ s }}</option>
+            <option v-for="s in SHAPE_KINDS" :key="s" :value="s">{{ shapeLabelJa(s) }}</option>
           </select>
         </label>
         <div class="grid-2">
           <label class="field">
-            <span>幅 (0..1)</span>
+            <span>よこの ながさ</span>
             <input
               type="number"
               step="0.01" min="0.01" max="2"
@@ -971,7 +1032,7 @@ const SHAPE_KINDS: ShapeKind[] = ['rect','ellipse','triangle','star','arrow','li
             />
           </label>
           <label class="field">
-            <span>高さ (0..1)</span>
+            <span>たての ながさ</span>
             <input
               type="number"
               step="0.01" min="0.01" max="2"
@@ -980,7 +1041,7 @@ const SHAPE_KINDS: ShapeKind[] = ['rect','ellipse','triangle','star','arrow','li
             />
           </label>
           <label class="field">
-            <span>塗り</span>
+            <span>なかの いろ</span>
             <div class="row gap-4">
               <input
                 type="color"
@@ -991,7 +1052,7 @@ const SHAPE_KINDS: ShapeKind[] = ['rect','ellipse','triangle','star','arrow','li
             </div>
           </label>
           <label class="field">
-            <span>線</span>
+            <span>せんの いろ</span>
             <div class="row gap-4">
               <input
                 type="color"
@@ -1002,7 +1063,7 @@ const SHAPE_KINDS: ShapeKind[] = ['rect','ellipse','triangle','star','arrow','li
             </div>
           </label>
           <label class="field">
-            <span>線幅</span>
+            <span>せんの ふとさ</span>
             <input
               type="number"
               min="0" step="1"
@@ -1011,7 +1072,7 @@ const SHAPE_KINDS: ShapeKind[] = ['rect','ellipse','triangle','star','arrow','li
             />
           </label>
           <label class="field" v-if="shapeClip!.shape === 'rect'">
-            <span>角丸 (px)</span>
+            <span>かどの まるさ</span>
             <input
               type="number"
               min="0" step="1"
@@ -1024,13 +1085,13 @@ const SHAPE_KINDS: ShapeKind[] = ['rect','ellipse','triangle','star','arrow','li
 
       <!-- EQ (音声/映像) -->
       <section v-if="hasVolume(selectedClip)" class="section">
-        <div class="section-head">EQ (3 バンド)</div>
+        <div class="section-head">{{ t('おとの ちょうせい (ひくい / まんなか / たかい)', 'EQ (3 バンド)') }}</div>
         <div class="grid-3">
-          <EffectSlider label="低" :value="audioLikeClip?.eq?.low ?? 0" :min="-24" :max="24" :step="0.5"
+          <EffectSlider label="ひくい おと" :value="audioLikeClip?.eq?.low ?? 0" :min="-24" :max="24" :step="0.5"
             @change="(v) => updateEQ({ low: v })" />
-          <EffectSlider label="中" :value="audioLikeClip?.eq?.mid ?? 0" :min="-24" :max="24" :step="0.5"
+          <EffectSlider label="まんなか" :value="audioLikeClip?.eq?.mid ?? 0" :min="-24" :max="24" :step="0.5"
             @change="(v) => updateEQ({ mid: v })" />
-          <EffectSlider label="高" :value="audioLikeClip?.eq?.high ?? 0" :min="-24" :max="24" :step="0.5"
+          <EffectSlider label="たかい おと" :value="audioLikeClip?.eq?.high ?? 0" :min="-24" :max="24" :step="0.5"
             @change="(v) => updateEQ({ high: v })" />
         </div>
       </section>
@@ -1038,16 +1099,16 @@ const SHAPE_KINDS: ShapeKind[] = ['rect','ellipse','triangle','star','arrow','li
       <!-- リンク -->
       <section class="section">
         <div class="row gap-4">
-          <button class="ghost tiny" :disabled="selection.selectedClipIds.value.length < 2" @click="linkSelection">🔗 リンク</button>
-          <button class="ghost tiny" :disabled="!selectedClip.linkGroup" @click="unlinkSelection">🔗 解除</button>
-          <span v-if="selectedClip.linkGroup" class="muted mono" style="font-size: 10px">リンク済</span>
+          <button class="ghost tiny" :disabled="selection.selectedClipIds.value.length < 2" @click="linkSelection">🔗 {{ t('いっしょにする', 'リンク') }}</button>
+          <button class="ghost tiny" :disabled="!selectedClip.linkGroup" @click="unlinkSelection">🔗 {{ t('はずす', '解除') }}</button>
+          <span v-if="selectedClip.linkGroup" class="muted mono" style="font-size: 10px">{{ t('いっしょになっている', 'リンク済') }}</span>
         </div>
       </section>
 
       <!-- 削除 -->
       <section class="section">
         <button class="danger" @click="() => { if (selectedClip) { store.removeClip(selectedClip.id); selection.clearSelection() } }">
-          クリップを削除
+          {{ t('このクリップを けす', 'クリップを削除') }}
         </button>
       </section>
     </template>
