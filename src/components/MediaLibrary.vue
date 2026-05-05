@@ -3,6 +3,10 @@ import { ref, computed } from 'vue'
 import { useProjectStore } from '../stores/projectStore'
 import type { Asset } from '../types/project'
 import { toast } from '../composables/useToast'
+import { useLocale } from '../composables/useLocale'
+
+const locale = useLocale()
+const { t } = locale
 
 const searchQuery = ref('')
 const currentFolder = ref<string | null>(null)
@@ -31,17 +35,20 @@ const assetList = computed<Asset[]>(() => {
 const folders = computed(() => store.state.folders ?? [])
 
 function addFolderPrompt() {
-  const name = window.prompt('フォルダ名')
+  const name = window.prompt(t('いれものの なまえ', 'フォルダ名'))
   if (!name) return
   store.addFolder(name)
 }
 function deleteFolder(id: string) {
-  if (!confirm('このフォルダを削除しますか? (素材は残ります)')) return
+  if (!confirm(t(
+    'この いれものを けしますか? (なかみは のこります)',
+    'このフォルダを削除しますか? (素材は残ります)'
+  ))) return
   store.removeFolder(id)
   if (currentFolder.value === id) currentFolder.value = null
 }
 function renameFolderPrompt(id: string, cur: string) {
-  const name = window.prompt('新しいフォルダ名', cur)
+  const name = window.prompt(t('あたらしい なまえ', '新しい名前'), cur)
   if (name) store.renameFolder(id, name)
 }
 
@@ -78,10 +85,10 @@ async function uploadFiles(files: File[]) {
       const a = await store.addAssetFromFile(f)
       if (a) ok++
     }
-    if (ok > 0) toast.success(`${ok} 件の素材を追加しました`)
+    if (ok > 0) toast.success(t(`${ok} こ ファイルを いれたよ`, `${ok} 件の素材を追加しました`))
   } catch (e: any) {
     console.error(e)
-    toast.error('素材の追加に失敗しました: ' + (e?.message ?? ''))
+    toast.error(t('ファイルを いれられなかったよ: ', '素材の追加に失敗しました: ') + (e?.message ?? ''))
   } finally {
     uploading.value = false
   }
@@ -114,7 +121,10 @@ function onAssetDragStart(e: DragEvent, asset: Asset) {
 }
 
 async function onDelete(asset: Asset) {
-  if (!confirm(`素材「${asset.name}」を削除します。この素材を使っているクリップも消えます。`)) return
+  if (!confirm(t(
+    `「${asset.name}」を けしてもいい? つかっている クリップも きえるよ。`,
+    `素材「${asset.name}」を削除します。この素材を使っているクリップも消えます。`
+  ))) return
   await store.removeAsset(asset.id)
 }
 
@@ -138,19 +148,26 @@ function kindColor(kind: string): string {
   if (kind === 'image') return 'var(--image)'
   return 'var(--fg-2)'
 }
+
+function kindLabelJa(kind: string): string {
+  if (kind === 'video') return t('どうが', '動画')
+  if (kind === 'audio') return t('おと', '音声')
+  if (kind === 'image') return t('え', '画像')
+  return kind
+}
 </script>
 
 <template>
   <div class="panel-title">
-    <span>Media Library</span>
-    <button class="ghost" @click="onPickClick">＋ 追加</button>
+    <span>{{ t('そざい', 'メディア') }}</span>
+    <button class="ghost" @click="onPickClick">＋ {{ t('いれる', '追加') }}</button>
   </div>
 
   <div class="search-wrap">
     <input
       class="search"
       type="search"
-      placeholder="検索..."
+      :placeholder="t('さがす...', '検索...')"
       v-model="searchQuery"
     />
   </div>
@@ -162,7 +179,7 @@ function kindColor(kind: string): string {
       @click="currentFolder = null"
       @dragover="(e) => onAssetDragOverFolder(e, null)"
       @drop="(e) => onAssetDropOnFolder(e, null)"
-    >全て</div>
+    >{{ t('ぜんぶ', '全て') }}</div>
     <div
       v-for="f in folders"
       :key="f.id"
@@ -188,9 +205,10 @@ function kindColor(kind: string): string {
     <div v-if="assetList.length === 0" class="empty">
       <div class="empty-icon">⬒</div>
       <div class="empty-text">
-        動画・画像・音声ファイルを<br />ドラッグ&ドロップ
+        <template v-if="locale.isEasy.value">どうが・え・おとを<br />ここに ドラッグして いれてね</template>
+        <template v-else>動画・画像・音声ファイルを<br />ドラッグ&ドロップ</template>
       </div>
-      <button class="ghost" @click="onPickClick">ファイルを選ぶ</button>
+      <button class="ghost" @click="onPickClick">{{ t('ファイルを えらぶ', 'ファイルを選ぶ') }}</button>
     </div>
 
     <div v-else class="asset-list">
@@ -206,19 +224,19 @@ function kindColor(kind: string): string {
         <div class="asset-info">
           <div class="asset-name" :title="asset.name">{{ asset.name }}</div>
           <div class="asset-meta mono">
-            <span>{{ asset.kind }}</span>
+            <span>{{ kindLabelJa(asset.kind) }}</span>
             <span v-if="asset.duration">· {{ formatDuration(asset.duration) }}</span>
             <span v-if="asset.width">· {{ asset.width }}×{{ asset.height }}</span>
             <span>· {{ formatSize(asset.size) }}</span>
           </div>
         </div>
-        <button class="ghost del" title="削除" @click.stop="onDelete(asset)">×</button>
+        <button class="ghost del" :title="t('けす', '削除')" @click.stop="onDelete(asset)">×</button>
       </div>
     </div>
 
-    <div v-if="uploading" class="uploading">読み込み中…</div>
+    <div v-if="uploading" class="uploading">{{ t('よみこみちゅう…', '読み込み中…') }}</div>
     <div v-if="isDragging" class="drop-overlay">
-      <span>ここにドロップ</span>
+      <span>{{ t('ここに はなしてね', 'ここにドロップ') }}</span>
     </div>
   </div>
 

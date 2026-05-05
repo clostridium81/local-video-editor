@@ -3,6 +3,9 @@ import { ref, computed, onMounted, onBeforeUnmount, watch } from 'vue'
 import { useProjectStore } from '../stores/projectStore'
 import { loadAssetBlob } from '../persistence/assetStore'
 import { getOrGeneratePeaks } from '../engine/waveform'
+import { useLocale } from '../composables/useLocale'
+
+const { t } = useLocale()
 
 defineEmits<{ close: [] }>()
 
@@ -92,12 +95,12 @@ const audioTracks = computed(() => store.state.tracks.filter(t => t.kind === 'au
 <template>
   <div class="mixer-panel">
     <div class="head">
-      <div class="title">オーディオミキサー</div>
+      <div class="title">{{ t('おとの ちょうせい', 'オーディオミキサー') }}</div>
       <button class="ghost" @click="$emit('close')">×</button>
     </div>
     <div class="strips">
       <div class="strip master">
-        <div class="name mono">MASTER</div>
+        <div class="name mono">{{ t('ぜんたい', 'MASTER') }}</div>
         <div class="meter">
           <div class="meter-fill" :style="{ height: levelPct(Array.from(liveLevels.values()).reduce((a, b) => Math.max(a, b), 0)) + '%', background: levelColor(Array.from(liveLevels.values()).reduce((a, b) => Math.max(a, b), 0)) }" />
         </div>

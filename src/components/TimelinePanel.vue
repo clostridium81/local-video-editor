@@ -3,8 +3,11 @@ import { ref, computed, onMounted, onBeforeUnmount, watch } from 'vue'
 import { useProjectStore } from '../stores/projectStore'
 import type { Clip, Track, KeyframeableProperty } from '../types/project'
 import { useSelection } from '../composables/useSelection'
+import { useLocale } from '../composables/useLocale'
 import { getOrGeneratePeaks, drawPeaks, type Peaks } from '../engine/waveform'
 import { loadAssetBlob } from '../persistence/assetStore'
+
+const { t } = useLocale()
 
 const store = useProjectStore()
 const selection = useSelection()
@@ -330,7 +333,7 @@ function addTextClip() {
 }
 
 function renameMarker(id: string, cur: string) {
-  const l = window.prompt('マーカー名', cur)
+  const l = window.prompt(t('めじるしの なまえ', 'マーカー名'), cur)
   if (l !== null) store.updateMarker(id, { label: l })
 }
 
@@ -439,56 +442,56 @@ function hasWaveform(c: Clip): boolean {
 
 <template>
   <div class="timeline-panel">
-    <div class="tl-toolbar">
-      <button class="ghost" @click="addTextClip">＋ テキスト</button>
+    <div class="tl-toolbar" data-tour="timeline-toolbar">
+      <button class="ghost" @click="addTextClip">＋ {{ t('もじ', 'テキスト') }}</button>
       <div class="dropdown">
-        <button class="ghost">＋ 図形 ▾</button>
+        <button class="ghost">＋ {{ t('かたち', '図形') }} ▾</button>
         <div class="dropdown-menu">
-          <button class="ghost" @click="store.addShapeClip('rect')">矩形</button>
-          <button class="ghost" @click="store.addShapeClip('ellipse')">楕円</button>
-          <button class="ghost" @click="store.addShapeClip('triangle')">三角形</button>
-          <button class="ghost" @click="store.addShapeClip('star')">星</button>
-          <button class="ghost" @click="store.addShapeClip('arrow')">矢印</button>
-          <button class="ghost" @click="store.addShapeClip('line')">線</button>
+          <button class="ghost" @click="store.addShapeClip('rect')">{{ t('しかく', '矩形') }}</button>
+          <button class="ghost" @click="store.addShapeClip('ellipse')">{{ t('まる', '楕円') }}</button>
+          <button class="ghost" @click="store.addShapeClip('triangle')">{{ t('さんかく', '三角形') }}</button>
+          <button class="ghost" @click="store.addShapeClip('star')">{{ t('ほし', '星') }}</button>
+          <button class="ghost" @click="store.addShapeClip('arrow')">{{ t('やじるし', '矢印') }}</button>
+          <button class="ghost" @click="store.addShapeClip('line')">{{ t('せん', '線') }}</button>
         </div>
       </div>
-      <button class="ghost" @click="store.addTrack('video')">＋ V トラック</button>
-      <button class="ghost" @click="store.addTrack('audio')">＋ A トラック</button>
+      <button class="ghost" @click="store.addTrack('video')">＋ {{ t('え/どうがの だん', '映像トラック') }}</button>
+      <button class="ghost" @click="store.addTrack('audio')">＋ {{ t('おとの だん', '音声トラック') }}</button>
       <div class="spacer" />
       <button
         class="ghost tiny"
         :class="{ active: store.state.timeline.snapping }"
-        title="スナップ (N)"
+        :title="t('ぴったり あわせる (N)', 'スナップ (N)')"
         @click="store.toggleSnapping()"
       >🧲</button>
       <button
         class="ghost tiny"
         :class="{ active: store.state.timeline.rippleMode }"
-        title="リップル (Shift+R)"
+        :title="t('あとを つめる (Shift+R)', 'リップル (Shift+R)')"
         @click="store.toggleRipple()"
       >⇆</button>
       <button
         class="ghost tiny"
-        title="マーカー追加 (M)"
+        :title="t('めじるしを たてる (M)', 'マーカー追加 (M)')"
         @click="store.addMarker(store.state.timeline.playhead)"
       >🚩</button>
       <button
         class="ghost tiny"
-        title="In点 (I)"
+        :title="t('はじめに する (I)', 'In点 (I)')"
         @click="store.setInPoint(store.state.timeline.playhead)"
       >I</button>
       <button
         class="ghost tiny"
-        title="Out点 (O)"
+        :title="t('おわりに する (O)', 'Out点 (O)')"
         @click="store.setOutPoint(store.state.timeline.playhead)"
       >O</button>
       <button
         class="ghost tiny"
-        title="In/Out 解除 (Shift+I)"
+        :title="t('はじめ/おわりを なしにする (Shift+I)', 'In/Out 解除 (Shift+I)')"
         @click="store.clearInOut()"
       >×</button>
       <div class="sep" />
-      <span class="muted mono" style="font-size: 11px">zoom</span>
+      <span class="muted mono" style="font-size: 11px">{{ t('おおきさ', 'zoom') }}</span>
       <input
         type="range"
         min="10"
@@ -499,7 +502,7 @@ function hasWaveform(c: Clip): boolean {
       />
     </div>
 
-    <div class="tl-body">
+    <div class="tl-body" data-tour="timeline-body">
       <div class="tl-headers">
         <div class="header-spacer" />
         <div
@@ -513,13 +516,13 @@ function hasWaveform(c: Clip): boolean {
           <button
             class="ghost tiny"
             :class="{ active: !!track.solo }"
-            title="ソロ"
+            :title="t('ここだけ ならす', 'ソロ')"
             @click="store.updateTrack(track.id, { solo: !track.solo })"
           >S</button>
           <button
             class="ghost tiny"
             :class="{ active: track.muted }"
-            :title="track.muted ? 'ミュート解除' : 'ミュート'"
+            :title="track.muted ? t('おとを ならす', 'ミュート解除') : t('おとを けす', 'ミュート')"
             @click="store.updateTrack(track.id, { muted: !track.muted })"
           >M</button>
         </div>
@@ -547,7 +550,7 @@ function hasWaveform(c: Clip): boolean {
               :key="m.id"
               class="marker"
               :style="{ left: m.time * zoom + 'px', color: m.color ?? 'var(--accent)' }"
-              :title="m.label"
+              :title="m.label + t(' (ダブルクリックで なまえへんこう / みぎクリックで けす)', ' (ダブルクリックで改名 / 右クリックで削除)')"
               @click.stop="store.setPlayhead(m.time)"
               @dblclick.stop="renameMarker(m.id, m.label)"
               @contextmenu.stop.prevent="() => store.removeMarker(m.id)"
@@ -568,13 +571,13 @@ function hasWaveform(c: Clip): boolean {
               v-if="store.state.timeline.inPoint != null"
               class="inout-marker in-marker"
               :style="{ left: (store.state.timeline.inPoint * zoom) + 'px' }"
-              title="In 点"
+              :title="t('はじめ', 'In 点')"
             >I</div>
             <div
               v-if="store.state.timeline.outPoint != null"
               class="inout-marker out-marker"
               :style="{ left: (store.state.timeline.outPoint * zoom) + 'px' }"
-              title="Out 点"
+              :title="t('おわり', 'Out 点')"
             >O</div>
           </div>
 

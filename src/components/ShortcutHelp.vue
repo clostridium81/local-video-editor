@@ -1,11 +1,62 @@
 <script setup lang="ts">
-defineEmits<{ close: [] }>()
+import { useTutorial } from '../composables/useTutorial'
+import { useLocale } from '../composables/useLocale'
+import { computed } from 'vue'
 
-const sections = [
+const emit = defineEmits<{ close: [] }>()
+const tutorial = useTutorial()
+const locale = useLocale()
+const { t } = locale
+
+const appVersion = __APP_VERSION__
+
+function replayTour() {
+  emit('close')
+  setTimeout(() => tutorial.open(), 200)
+}
+
+const sections = computed(() => locale.isEasy.value ? [
+  {
+    title: 'さいせい',
+    items: [
+      ['スペース', 'さいせい / とめる'],
+      ['← / →', '1 コマずつ うごかす'],
+      ['Shift + ← / →', '1 びょうずつ うごかす'],
+      ['Home / End', 'はじめへ / おわりへ']
+    ]
+  },
+  {
+    title: 'へんしゅう',
+    items: [
+      ['Cmd/Ctrl + Z', 'もとに もどす'],
+      ['Cmd/Ctrl + Shift + Z', 'やりなおす'],
+      ['Cmd/Ctrl + C', 'コピー'],
+      ['Cmd/Ctrl + X', 'きりとり'],
+      ['Cmd/Ctrl + V', 'はりつけ'],
+      ['Cmd/Ctrl + D', 'コピーを つくる'],
+      ['Cmd/Ctrl + A', 'ぜんぶ えらぶ'],
+      ['S', 'クリップを ふたつに わける'],
+      ['Cmd/Ctrl + L', 'クリップを いっしょにする'],
+      ['Cmd/Ctrl + Shift + L', 'クリップを はずす'],
+      ['Delete / Backspace', 'えらんだ クリップを けす']
+    ]
+  },
+  {
+    title: 'タイムライン',
+    items: [
+      ['M', 'いまの ところに めじるしを たてる'],
+      ['I', 'はじめに する'],
+      ['O', 'おわりに する'],
+      ['Shift + I', 'はじめ/おわりを なしにする'],
+      ['N', 'ぴったり あわせる を きりかえる'],
+      ['Shift + R', 'あとを つめる を きりかえる']
+    ]
+  }
+] : [
   {
     title: '再生',
     items: [
-      ['Space', '再生 / 一時停止'],
+      ['スペース', '再生 / 一時停止'],
       ['← / →', 'playhead を 1 フレーム移動'],
       ['Shift + ← / →', 'playhead を 1 秒移動'],
       ['Home / End', '先頭 / 末尾へ']
@@ -38,18 +89,22 @@ const sections = [
       ['Shift + R', 'リップル切替']
     ]
   }
-]
+])
 </script>
 
 <template>
   <div class="modal-backdrop" @click.self="$emit('close')">
     <div class="modal">
       <div class="modal-head">
-        <div class="title">キーボードショートカット</div>
-        <button class="ghost close" @click="$emit('close')">×</button>
+        <div class="title">{{ t('キーボードの しょうとかっと', 'キーボードショートカット') }}</div>
+        <div class="row">
+          <button class="ghost tiny" @click="replayTour">🎓 {{ t('つかいかたを みる', '使い方ツアー') }}</button>
+          <button class="ghost close" @click="$emit('close')">×</button>
+        </div>
       </div>
       <div class="modal-body">
         <div v-for="sec in sections" :key="sec.title" class="section">
+
           <div class="sec-title">{{ sec.title }}</div>
           <div class="grid">
             <div v-for="[k, d] in sec.items" :key="k" class="row">
@@ -57,6 +112,9 @@ const sections = [
               <span class="desc">{{ d }}</span>
             </div>
           </div>
+        </div>
+        <div class="version-line muted mono">
+          {{ t('どうがメーカー', 'Local Video Editor') }} v{{ appVersion }}
         </div>
       </div>
     </div>
@@ -91,11 +149,21 @@ const sections = [
 }
 .title { font-size: 14px; font-weight: 600; }
 .close { background: none; border: none; font-size: 18px; color: var(--fg-2); cursor: pointer; }
+.row { display: flex; align-items: center; gap: 8px; }
+.tiny { padding: 4px 10px; font-size: 11px; }
 .modal-body {
   padding: 14px 18px 18px;
   overflow-y: auto;
 }
 .section { margin-bottom: 14px; }
+.version-line {
+  margin-top: 18px;
+  text-align: center;
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  padding-top: 10px;
+  border-top: 1px solid var(--line-weak);
+}
 .sec-title {
   font-size: 10px;
   letter-spacing: 0.12em;

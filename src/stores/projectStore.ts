@@ -56,7 +56,7 @@ const DEFAULT_HEIGHT = 1080
 const DEFAULT_FPS = 30
 const AUTOSAVE_DEBOUNCE_MS = 1200
 
-function makeEmptyProject(name = '無題のプロジェクト'): ProjectState {
+function makeEmptyProject(name = 'なまえなしの さくひん'): ProjectState {
   const now = Date.now()
   return {
     meta: {
@@ -155,7 +155,7 @@ export const useProjectStore = defineStore('project', () => {
   async function addAssetFromFile(file: File): Promise<Asset | null> {
     const kind = detectAssetKind(file)
     if (!kind) {
-      toast.warn(`対応していないファイル形式: ${file.name}`)
+      toast.warn(`この ファイルは つかえないよ: ${file.name}`)
       return null
     }
     const assetId = nanoid()
@@ -175,9 +175,9 @@ export const useProjectStore = defineStore('project', () => {
       await saveAssetBlob(state.value.meta.id, assetId, file)
     } catch (err: any) {
       if (err?.name === 'QuotaExceededError') {
-        toast.error(`ストレージ容量が不足しています: ${file.name}`)
+        toast.error(`ほぞんできる ばしょが いっぱいだよ: ${file.name}`)
       } else {
-        toast.error(`素材の保存に失敗しました: ${file.name}`)
+        toast.error(`ファイルを いれられなかったよ: ${file.name}`)
       }
       return null
     }
@@ -198,7 +198,7 @@ export const useProjectStore = defineStore('project', () => {
     try {
       await deleteAssetBlob(state.value.meta.id, assetId)
     } catch (err) {
-      toast.error('素材の削除に失敗しました')
+      toast.error('そざいを けせなかったよ')
     }
     touch()
   }
@@ -282,7 +282,7 @@ export const useProjectStore = defineStore('project', () => {
       start,
       duration: 3,
       opacity: 1,
-      text: 'テキスト',
+      text: 'もじ',
       fontFamily: 'sans-serif',
       fontSize: 72,
       color: '#ffffff',
@@ -604,7 +604,7 @@ export const useProjectStore = defineStore('project', () => {
         lastSavedAt = Date.now()
       } catch (err: any) {
         if (err?.name === 'QuotaExceededError') {
-          toast.error('ストレージ容量が不足しています (自動保存失敗)')
+          toast.error('ほぞんできる ばしょが いっぱいだよ (じどうほぞん)')
         } else {
           // 連続エラー時のスパム防止: 最後の保存失敗から 10s 経過時のみ
           console.error('autosave error', err)
@@ -807,6 +807,13 @@ export const useProjectStore = defineStore('project', () => {
       state.value.tracks[0].id
     const start = opts.start ?? state.value.timeline.playhead
     recordHistory('shape:add')
+    // 形状別の自然なアスペクト比で初期化 (line と arrow は横長、他は正方形)
+    let defaultW = 0.3
+    let defaultH = 0.3
+    if (shape === 'line' || shape === 'arrow') {
+      defaultW = 0.4
+      defaultH = 0.06
+    }
     const clip: ShapeClip = {
       id: nanoid(),
       kind: 'shape',
@@ -817,9 +824,10 @@ export const useProjectStore = defineStore('project', () => {
       shape,
       x: 0.5,
       y: 0.5,
-      width: 0.3,
-      height: 0.3,
+      width: defaultW,
+      height: defaultH,
       rotation: 0,
+      scale: 1,
       style: {
         fill: '#e8a838',
         stroke: undefined,

@@ -355,7 +355,7 @@ export class PreviewEngine {
     el.playsInline = true
     el.preload = 'auto'
     el.addEventListener('error', () => {
-      this.onError?.(`動画の読み込みに失敗しました`)
+      this.onError?.(`どうがを よみこめなかったよ`)
     })
     node = { el, loaded: false }
     this.videoNodes.set(clip.id, node)
@@ -373,7 +373,7 @@ export class PreviewEngine {
     el.src = url
     el.preload = 'auto'
     el.addEventListener('error', () => {
-      this.onError?.(`音声の読み込みに失敗しました`)
+      this.onError?.(`おとを よみこめなかったよ`)
     })
     node = { el, loaded: false }
     this.audioNodes.set(clip.id, node)
@@ -532,8 +532,11 @@ export class PreviewEngine {
     }
     const cx = width * eff.x
     const cy = height * eff.y
-    const w = width * clip.width * eff.scale
-    const h = height * clip.height * eff.scale
+    // 図形のサイズはキャンバスの短辺を基準に正規化する。
+    // 例: 1920x1080 で width=0.3, height=0.3 → 324x324 の正方形になる。
+    const ref = Math.min(width, height)
+    const w = ref * clip.width * eff.scale
+    const h = ref * clip.height * eff.scale
     ctx.translate(cx, cy)
     if (eff.rotation) ctx.rotate((eff.rotation * Math.PI) / 180)
     ctx.fillStyle = clip.style.fill ?? 'transparent'

@@ -253,12 +253,16 @@ export interface TextClip extends BaseClip {
 export interface ShapeClip extends BaseClip {
   kind: 'shape'
   shape: ShapeKind
-  // 矩形サイズ (0..1, キャンバス基準)
+  // 位置 (0..1, キャンバス基準、中心)
   x: number
   y: number
-  width: number // normalized
-  height: number // normalized
+  // サイズ (0..1, キャンバス「短辺」基準)
+  // 例: width=0.3, height=0.3 なら、1920x1080 でも 1080x1080 でも正方形
+  width: number
+  height: number
   rotation: number
+  // 追加の一様スケール (キーフレームや canvas ドラッグ用)
+  scale?: number
   style: ShapeStyle
   effects?: ClipEffects
 }
