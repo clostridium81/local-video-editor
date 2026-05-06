@@ -458,6 +458,9 @@ function onBodyPointerDown(e: PointerEvent) {
 }
 
 .canvas-stage {
+  /* flex 親で flex-shrink:1 に縮められるとアスペクト比が崩れるため固定 */
+  flex-shrink: 0;
+  flex-grow: 0;
   transform-origin: center center;
   box-shadow:
     0 0 0 1px var(--line),
