@@ -9,7 +9,13 @@ const pkg = JSON.parse(
   readFileSync(fileURLToPath(new URL('./package.json', import.meta.url)), 'utf-8')
 ) as { version: string }
 
+// GitHub Pages で `https://<user>.github.io/local-video-editor/` 配信のため、
+// アセット参照のベースパスをサブディレクトリに合わせる。
+// 独自ドメインに移行する場合は '/' に戻すこと。
+const BASE = process.env.VITE_BASE ?? '/local-video-editor/'
+
 export default defineConfig({
+  base: BASE,
   plugins: [vue()],
   define: {
     __APP_VERSION__: JSON.stringify(pkg.version)
