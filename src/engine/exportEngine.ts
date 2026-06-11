@@ -651,22 +651,28 @@ async function renderAudioMix(
     const transIn = c.transitionIn
     const transOut = c.transitionOut
 
+    // 出力 OfflineAudioContext の時間軸 = (絶対時刻 - rangeOffset)。
+    // src.start も rangeOffset を引いた相対時刻で予約しているので、gain も
+    // 同じ時間軸でないと、範囲指定エクスポート時にエンベロープが音源とずれる。
+    // 0 未満になる時刻は AudioParam が受け付けないため 0 にクランプする。
+    const toOutT = (absT: number) => Math.max(0, absT - rangeOffset)
+
     if (keyframes && keyframes.length > 0) {
-      gain.gain.setValueAtTime(vol, c.start)
+      gain.gain.setValueAtTime(vol, toOutT(c.start))
       const stepSec = 0.05
       for (let lt = 0; lt <= c.duration; lt += stepSec) {
         const v = sampleKeyframes(keyframes, lt, vol)
-        gain.gain.linearRampToValueAtTime(v, c.start + lt)
+        gain.gain.linearRampToValueAtTime(v, toOutT(c.start + lt))
       }
     }
     if (transIn && transIn.type === 'fade' && transIn.duration > 0) {
-      gain.gain.setValueAtTime(0, c.start)
-      gain.gain.linearRampToValueAtTime(vol, c.start + transIn.duration)
+      gain.gain.setValueAtTime(0, toOutT(c.start))
+      gain.gain.linearRampToValueAtTime(vol, toOutT(c.start + transIn.duration))
     }
     if (transOut && transOut.type === 'fade' && transOut.duration > 0) {
       const outStart = c.start + c.duration - transOut.duration
-      gain.gain.setValueAtTime(vol, outStart)
-      gain.gain.linearRampToValueAtTime(0, c.start + c.duration)
+      gain.gain.setValueAtTime(vol, toOutT(outStart))
+      gain.gain.linearRampToValueAtTime(0, toOutT(c.start + c.duration))
     }
 
     // EQ 3-band (optional)
@@ -850,8 +856,10 @@ export async function exportProject(
         const local = (t - vc.start) * speed
         let inT: number
         if (vc.reversed) {
-          const base = (vc.sourceIn ?? 0) + (el.duration || vc.duration * speed)
-          inT = Math.max(0, base - local)
+          // クリップが指す素材区間の終端基準で逆再生
+          // (素材ファイル全長 el.duration ではない)
+          const segmentEnd = (vc.sourceIn ?? 0) + vc.duration * speed
+          inT = Math.max(0, segmentEnd - local)
         } else {
           inT = local + (vc.sourceIn ?? 0)
         }
@@ -1040,7 +1048,7 @@ async function exportGIF(state: ProjectState, opts: ExportOptions): Promise<Expo
         const speed = vc.speed ?? 1
         const local = (t - vc.start) * speed
         const inT = vc.reversed
-          ? Math.max(0, (vc.sourceIn ?? 0) + (el.duration || vc.duration * speed) - local)
+          ? Math.max(0, (vc.sourceIn ?? 0) + vc.duration * speed - local)
           : local + (vc.sourceIn ?? 0)
         seeks.push(seekVideo(el, inT))
       }

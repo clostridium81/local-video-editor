@@ -213,10 +213,21 @@ export const useProjectStore = defineStore('project', () => {
     if (!asset) return null
 
     const trackKind = asset.kind === 'audio' ? 'audio' : 'video'
-    const trackId =
-      opts.trackId ??
-      tracks.value.find(t => t.kind === trackKind)?.id ??
-      state.value.tracks[0].id
+    // 適合トラックが無ければ自動で作る (例: video トラック全削除済みに image を投入)。
+    // fallback で逆種別のトラック (例: audio に image) に置くと、タイムラインから
+    // 消えたように見えてしまうのを防ぐ。
+    let trackId = opts.trackId
+    if (!trackId) {
+      const compat = tracks.value.find(t => t.kind === trackKind)
+      if (compat) {
+        trackId = compat.id
+      } else {
+        addTrack(trackKind)
+        // addTrack 直後の tracks computed には新しい order の track が入っている
+        const created = state.value.tracks.filter(t => t.kind === trackKind).pop()
+        trackId = created?.id ?? state.value.tracks[0].id
+      }
+    }
 
     const start = opts.start ?? state.value.timeline.playhead
     const duration = asset.duration ?? (asset.kind === 'image' ? 5 : 3)
@@ -362,8 +373,14 @@ export const useProjectStore = defineStore('project', () => {
       transitionIn: undefined
     }
     if (c.kind === 'video' || c.kind === 'audio') {
-      ;(rightBase as VideoClip | AudioClip).sourceIn =
-        (c.sourceIn ?? 0) + localSplit
+      // タイムライン上で localSplit 秒進んだ間に、素材は localSplit * speed 秒
+      // 進んでいる (speed=2 なら倍消費)。逆再生時は素材側オフセット (sourceIn)
+      // は終端基準なので動かさず、再生中の "残り素材時間" が短くなる扱いにする。
+      const speed = (c as any).speed ?? 1
+      const reversed = !!(c as any).reversed
+      ;(rightBase as VideoClip | AudioClip).sourceIn = reversed
+        ? (c.sourceIn ?? 0)
+        : (c.sourceIn ?? 0) + localSplit * speed
     }
 
     state.value.clips.splice(idx, 1, leftClip, rightBase as Clip)
