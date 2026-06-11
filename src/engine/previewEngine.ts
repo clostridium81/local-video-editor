@@ -264,11 +264,13 @@ export class PreviewEngine {
         if (!node) continue
         const speed = clip.speed ?? 1
         const local = this.localTime(clip, t)
-        // reverse: sourceIn を終端基準にして逆方向
+        // reverse: クリップが指す素材区間の「終端」から逆方向へ。
+        // 素材ファイル全長 (node.el.duration) ではなく、クリップが使う
+        // 区間長 (clip.duration * speed) を基準にする。
         let inClipTime: number
         if (clip.reversed) {
-          const base = (clip.sourceIn ?? 0) + (node.el.duration || clip.duration * speed)
-          inClipTime = Math.max(0, base - local)
+          const segmentEnd = (clip.sourceIn ?? 0) + clip.duration * speed
+          inClipTime = Math.max(0, segmentEnd - local)
         } else {
           inClipTime = local + (clip.sourceIn ?? 0)
         }
@@ -292,8 +294,8 @@ export class PreviewEngine {
         const local = this.localTime(clip, t)
         let inClipTime: number
         if (clip.reversed) {
-          const base = (clip.sourceIn ?? 0) + (node.el.duration || clip.duration * speed)
-          inClipTime = Math.max(0, base - local)
+          const segmentEnd = (clip.sourceIn ?? 0) + clip.duration * speed
+          inClipTime = Math.max(0, segmentEnd - local)
         } else {
           inClipTime = local + (clip.sourceIn ?? 0)
         }
@@ -323,8 +325,8 @@ export class PreviewEngine {
         const local = this.localTime(clip, t)
         let inClipTime: number
         if (clip.reversed) {
-          const base = (clip.sourceIn ?? 0) + (node.el.duration || clip.duration * speed)
-          inClipTime = Math.max(0, base - local)
+          const segmentEnd = (clip.sourceIn ?? 0) + clip.duration * speed
+          inClipTime = Math.max(0, segmentEnd - local)
         } else {
           inClipTime = local + (clip.sourceIn ?? 0)
         }

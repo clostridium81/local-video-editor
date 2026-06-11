@@ -113,6 +113,11 @@ interface DragState {
   origStart: number
   origDuration: number
   origSourceIn: number
+  // リンクされた全クリップの開始位置スナップショット (move 用)
+  origStarts?: Map<string, number>
+  // sourceIn 計算で speed/reversed 補正に使う
+  origSpeed: number
+  origReversed: boolean
 }
 
 const dragRef = ref<DragState | null>(null)
@@ -124,13 +129,26 @@ function onClipMouseDown(c: Clip, e: MouseEvent, mode: DragState['mode']) {
     const additive = e.shiftKey || e.metaKey || e.ctrlKey
     selection.selectClip(c.id, additive)
   }
+  // リンクされている場合は、開始時の start を全クリップぶん控えておく
+  // (drag 中に store.state.clips が更新されると現在値が動くため、
+  //  最新値ベースで delta を足し続けると指数的に飛ぶ)
+  let origStarts: Map<string, number> | undefined
+  if (mode === 'move') {
+    const linked = store.getLinkedClips(c.id)
+    if (linked.length > 1) {
+      origStarts = new Map(linked.map(l => [l.id, l.start]))
+    }
+  }
   dragRef.value = {
     mode,
     clipId: c.id,
     startX: e.clientX,
     origStart: c.start,
     origDuration: c.duration,
-    origSourceIn: c.sourceIn ?? 0
+    origSourceIn: c.sourceIn ?? 0,
+    origStarts,
+    origSpeed: (c as any).speed ?? 1,
+    origReversed: !!(c as any).reversed
   }
   window.addEventListener('mousemove', onDragMove)
   window.addEventListener('mouseup', onDragEnd)
@@ -144,24 +162,24 @@ function onDragMove(e: MouseEvent) {
   const threshold = 8 / zoom.value // 8px 以内でスナップ
 
   const mergeKey = `tl-${drag.mode}:${drag.clipId}`
-  // リンクされたクリップを取得 (まとめて移動用)
-  const linked = store.getLinkedClips(drag.clipId)
-  const linkedIds = linked.map(l => l.id)
-  const isLinked = linked.length > 1
+  const isLinked = !!drag.origStarts && drag.origStarts.size > 1
+  const linkedIds = drag.origStarts ? [...drag.origStarts.keys()] : [drag.clipId]
 
   if (drag.mode === 'move') {
     let newStart = Math.max(0, drag.origStart + dt)
     newStart = store.snapTime(newStart, threshold, isLinked ? linkedIds : [drag.clipId])
-    // リップル: 以降のクリップを push
-    if (store.state.timeline.rippleMode && dt !== 0) {
-      // 単純化: drag 対象のみ start を変える (他のリップル動作は非自動)
-    }
     const delta = newStart - drag.origStart
-    if (isLinked) {
-      for (const l of linked) {
+    if (isLinked && drag.origStarts) {
+      // origStarts (= drag 開始時のスナップショット) + 共通 delta で全クリップを動かす。
+      // 現在 start を読むと毎フレーム delta が積み重なってしまう。
+      // 最も左のクリップが 0 を切らないよう、delta をクランプして全体で揃える。
+      let minOrig = Infinity
+      for (const v of drag.origStarts.values()) if (v < minOrig) minOrig = v
+      const clampedDelta = Math.max(-minOrig, delta)
+      for (const [id, origStart] of drag.origStarts) {
         store.updateClip(
-          l.id,
-          { start: Math.max(0, l.start + (l.id === drag.clipId ? delta : delta)) } as any,
+          id,
+          { start: origStart + clampedDelta } as any,
           mergeKey
         )
       }
@@ -169,17 +187,24 @@ function onDragMove(e: MouseEvent) {
       store.updateClip(drag.clipId, { start: newStart } as any, mergeKey)
     }
   } else if (drag.mode === 'trim-left') {
+    const speed = drag.origSpeed
+    // 素材内方向の最大引き戻し量は sourceIn / speed (タイムライン秒換算)
+    const minDelta = -drag.origSourceIn / Math.max(0.0001, speed)
     const maxDelta = drag.origDuration - 0.05
-    let delta = Math.max(-drag.origSourceIn, Math.min(maxDelta, dt))
+    let delta = Math.max(minDelta, Math.min(maxDelta, dt))
     const newStart = store.snapTime(drag.origStart + delta, threshold, [drag.clipId])
     delta = newStart - drag.origStart
-    delta = Math.max(-drag.origSourceIn, Math.min(maxDelta, delta))
+    delta = Math.max(minDelta, Math.min(maxDelta, delta))
+    // sourceIn は素材時間軸で増減 (delta * speed)。逆再生時は素材側オフセットを動かさない
+    const sourceInPatch = drag.origReversed
+      ? drag.origSourceIn
+      : drag.origSourceIn + delta * speed
     store.updateClip(
       drag.clipId,
       {
         start: drag.origStart + delta,
         duration: drag.origDuration - delta,
-        sourceIn: drag.origSourceIn + delta
+        sourceIn: sourceInPatch
       } as any,
       mergeKey
     )
