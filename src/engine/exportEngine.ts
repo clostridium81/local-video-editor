@@ -16,6 +16,7 @@ import {
   applyColorGrade,
   applyChromaKey
 } from './previewEngine'
+import { applyPixelEffects, hasPixelEffects } from './pixelEffects'
 import { AVC_CODECS, AAC_CODEC, VP9_CODEC, OPUS_CODEC, hasWebCodecs } from './capabilities'
 
 // ============================================================
@@ -143,8 +144,9 @@ interface RenderContext {
 }
 
 function computeEffective(clip: Clip, t: number) {
-  const speed = (clip as any).speed ?? 1
-  const local = (t - clip.start) * speed
+  // キーフレーム/テキストアニメはタイムライン経過秒 (speed 非依存) で評価。
+  // previewEngine.computeEffective および renderAudioMix の音量エンベロープと同軸。
+  const local = t - clip.start
   const base: any = {
     x: (clip as any).x ?? 0.5,
     y: (clip as any).y ?? 0.5,
@@ -216,6 +218,7 @@ function drawFrame(rc: RenderContext, t: number) {
         (clip as VideoClip).effects,
         (clip as VideoClip).colorGrade,
         (clip as VideoClip).chromaKey,
+        (clip as VideoClip).pixelFx,
         trans,
         width,
         height
@@ -236,6 +239,7 @@ function drawFrame(rc: RenderContext, t: number) {
         (clip as ImageClip).effects,
         (clip as ImageClip).colorGrade,
         (clip as ImageClip).chromaKey,
+        (clip as ImageClip).pixelFx,
         trans,
         width,
         height
@@ -259,6 +263,7 @@ function drawVisualSource(
   effects: any,
   grade: any,
   chroma: any,
+  pixelFx: any,
   trans: any,
   width: number,
   height: number
@@ -266,7 +271,8 @@ function drawVisualSource(
   if (!srcW || !srcH) return
   const needsPixelPass = !!(
     (grade && (grade.lift || grade.gamma || grade.gain || grade.temperature || grade.tint)) ||
-    chroma?.enabled
+    chroma?.enabled ||
+    hasPixelEffects(pixelFx)
   )
   const fit = Math.min(width / srcW, height / srcH)
   const drawW = srcW * fit * eff.scale
@@ -306,6 +312,7 @@ function drawVisualSource(
       const img = pctx.getImageData(0, 0, pbufW, pbufH)
       if (chroma?.enabled) applyChromaKey(img, chroma)
       if (grade) applyColorGrade(img, grade)
+      if (hasPixelEffects(pixelFx)) applyPixelEffects(img, pixelFx)
       pctx.putImageData(img, 0, 0)
     } catch {
       // ignore
@@ -710,13 +717,19 @@ async function renderAudioMix(
 
     const offsetInAsset = c.sourceIn ?? 0
     const clipDurAtSourceRate = c.duration * speed
+    // 逆再生時はバッファ全体を反転済みなので、元素材の区間
+    // [sourceIn, sourceIn + 区間長] は反転バッファ内では
+    // [bufDur - sourceIn - 区間長, bufDur - sourceIn] に対応する
+    const baseOffset = c.reversed
+      ? Math.max(0, srcBuf.duration - offsetInAsset - clipDurAtSourceRate)
+      : offsetInAsset
     const startInOutput = c.start - rangeOffset
     if (startInOutput + c.duration <= 0) continue
     const actualStart = Math.max(0, startInOutput)
     const skip = actualStart - startInOutput // 範囲開始で途中再生の場合
     src.start(
       actualStart,
-      offsetInAsset + skip * speed,
+      baseOffset + skip * speed,
       Math.max(0, clipDurAtSourceRate - skip * speed)
     )
   }
@@ -738,7 +751,15 @@ export async function exportProject(
     meta: { ...state.meta, width, height, fps }
   }
   const rangeStart = Math.max(0, opts.startTime ?? 0)
-  const rangeEnd = Math.min(state.timeline.duration, opts.endTime ?? state.timeline.duration)
+  // 範囲未指定 (「ぜんぶ」) のときはコンテンツの末尾までにする。
+  // timeline.duration は伸びる一方 (初期値 60s) なので、そのまま使うと
+  // 中身のない黒い尾が出力されてしまう。
+  const contentEnd =
+    state.clips.length > 0
+      ? Math.max(...state.clips.map(c => c.start + c.duration))
+      : state.timeline.duration
+  const defaultEnd = Math.max(rangeStart + 0.01, contentEnd)
+  const rangeEnd = Math.min(state.timeline.duration, opts.endTime ?? defaultEnd)
   const rangeDur = Math.max(0.01, rangeEnd - rangeStart)
   const totalFrames = Math.max(1, Math.ceil(rangeDur * fps))
 
@@ -757,7 +778,9 @@ export async function exportProject(
 
   if (format === 'mp4') {
     const { Muxer, ArrayBufferTarget } = await import('mp4-muxer')
-    videoCodecStr = AVC_CODECS.high_1080p
+    // H.264 Level 4.0 は 1080p30 まで。60fps や 1080p 超は Level 4.2 を使う
+    videoCodecStr =
+      fps > 30 || height > 1080 ? AVC_CODECS.high_1080p60 : AVC_CODECS.high_1080p
     audioCodecStr = AAC_CODEC
     muxer = new (Muxer as any)({
       target: new ArrayBufferTarget(),

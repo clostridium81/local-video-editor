@@ -19,12 +19,14 @@ import type {
   ClipEffects,
   ColorGrade,
   ChromaKey,
+  PixelEffects,
   Transition,
   TextAnim,
   TextDecor,
   BlendMode,
   AudioEQ
 } from '../types/project'
+import { getPreset } from '../engine/effectPresets'
 import {
   saveAssetBlob,
   deleteAssetBlob,
@@ -878,6 +880,37 @@ export const useProjectStore = defineStore('project', () => {
     state.value.clips[idx] = { ...c, chromaKey: ck } as Clip
     touch()
   }
+  function setPixelEffects(clipId: string, fx: PixelEffects | undefined) {
+    const idx = state.value.clips.findIndex(c => c.id === clipId)
+    if (idx < 0) return
+    const c = state.value.clips[idx]
+    if (c.kind !== 'video' && c.kind !== 'image') return
+    recordHistory(`pixelfx:${clipId}`)
+    state.value.clips[idx] = { ...c, pixelFx: fx } as Clip
+    touch()
+  }
+  /**
+   * プリセットを適用。effects / colorGrade / pixelFx を丸ごと差し替える
+   * (= 一度クリアしてプリセットの内容をセット)。
+   */
+  function applyEffectPreset(clipId: string, presetId: string) {
+    const preset = getPreset(presetId)
+    if (!preset) return
+    const idx = state.value.clips.findIndex(c => c.id === clipId)
+    if (idx < 0) return
+    const c = state.value.clips[idx]
+    if (c.kind !== 'video' && c.kind !== 'image') return
+    recordHistory(`preset:${clipId}`)
+    const clone = <T>(v: T | undefined): T | undefined =>
+      v ? (JSON.parse(JSON.stringify(v)) as T) : undefined
+    state.value.clips[idx] = {
+      ...c,
+      effects: clone(preset.effects),
+      colorGrade: clone(preset.colorGrade),
+      pixelFx: clone(preset.pixelFx)
+    } as Clip
+    touch()
+  }
   function setTextDecor(clipId: string, decor: TextDecor | undefined) {
     const idx = state.value.clips.findIndex(c => c.id === clipId)
     if (idx < 0) return
@@ -1020,6 +1053,8 @@ export const useProjectStore = defineStore('project', () => {
     // grading
     setColorGrade,
     setChromaKey,
+    setPixelEffects,
+    applyEffectPreset,
     setTextDecor,
     setTextAnim,
     setBlendMode,

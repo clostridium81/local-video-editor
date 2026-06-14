@@ -9,6 +9,7 @@ import type {
   ShapeClip,
   ColorGrade,
   ChromaKey,
+  PixelEffects,
   BlendMode,
   TextAnim,
   TextDecor
@@ -16,6 +17,7 @@ import type {
 import { getAssetObjectURL } from '../persistence/assetStore'
 import { sampleKeyframes } from './keyframes'
 import { sampleTransition, type TransitionSample } from './transitions'
+import { applyPixelEffects, hasPixelEffects } from './pixelEffects'
 
 interface VideoMediaNode {
   el: HTMLVideoElement
@@ -94,8 +96,12 @@ export class PreviewEngine {
   }
 
   private resizeCanvas() {
-    this.canvas.width = this.state.meta.width
-    this.canvas.height = this.state.meta.height
+    // canvas.width への代入は同値でもキャンバスをクリアするため、変化時のみ。
+    // (再生中は毎フレーム setState が呼ばれるので、無条件代入だと点滅する)
+    const w = this.state.meta.width
+    const h = this.state.meta.height
+    if (this.canvas.width !== w) this.canvas.width = w
+    if (this.canvas.height !== h) this.canvas.height = h
   }
 
   private pruneNodes() {
@@ -141,11 +147,20 @@ export class PreviewEngine {
     const dt = (now - this.lastWallClock) / 1000
     this.lastWallClock = now
 
-    // 範囲再生: in/out が設定されていればその中でループ
+    // 範囲再生: out 点が設定されていれば in 点へ戻ってループ。
+    // out 点なしで末尾に達した場合は停止。
     const tl = this.state.timeline
     let t = tl.playhead + dt
     const rangeEnd = tl.outPoint ?? tl.duration
     if (t >= rangeEnd) {
+      if (tl.outPoint != null) {
+        t = tl.inPoint ?? 0
+        tl.playhead = t
+        this.renderAt(t, true).catch(console.error)
+        this.onFrame?.(t)
+        this.rafId = requestAnimationFrame(this.loop)
+        return
+      }
       t = rangeEnd
       tl.playhead = t
       this.renderAt(t, true).catch(console.error)
@@ -206,7 +221,11 @@ export class PreviewEngine {
     t: number,
     transition: TransitionSample
   ): EffectiveTransform {
-    const local = this.localTime(clip, t)
+    // キーフレームはタイムライン上の経過秒 (speed 非依存) でサンプリングする。
+    // UI (Inspector のキーフレーム追加・タイムラインのドット表示) や
+    // エクスポートの音量エンベロープと同じ時間軸に揃える。
+    // speed 換算 (localTime) はメディアのシーク位置にのみ使う。
+    const local = t - clip.start
     const base: EffectiveTransform = {
       x: (clip as any).x ?? 0.5,
       y: (clip as any).y ?? 0.5,
@@ -417,6 +436,7 @@ export class PreviewEngine {
         clip.effects,
         clip.colorGrade,
         clip.chromaKey,
+        clip.pixelFx,
         trans
       )
     } else if (clip.kind === 'image') {
@@ -433,10 +453,11 @@ export class PreviewEngine {
         clip.effects,
         clip.colorGrade,
         clip.chromaKey,
+        clip.pixelFx,
         trans
       )
     } else if (clip.kind === 'text') {
-      this.drawText(clip as TextClip, eff, trans, this.localTime(clip, t))
+      this.drawText(clip as TextClip, eff, trans, t - clip.start)
     } else if (clip.kind === 'shape') {
       this.drawShape(clip as ShapeClip, eff, trans)
     }
@@ -456,6 +477,7 @@ export class PreviewEngine {
     effects: ClipEffects | undefined,
     grade: ColorGrade | undefined,
     chroma: ChromaKey | undefined,
+    pixelFx: PixelEffects | undefined,
     trans: TransitionSample
   ) {
     const { ctx } = this
@@ -465,7 +487,8 @@ export class PreviewEngine {
     const needsPixelPass = !!(
       (grade &&
         (grade.lift || grade.gamma || grade.gain || grade.temperature || grade.tint)) ||
-      chroma?.enabled
+      chroma?.enabled ||
+      hasPixelEffects(pixelFx)
     )
 
     const fit = Math.min(width / srcW, height / srcH)
@@ -508,6 +531,7 @@ export class PreviewEngine {
         const img = pctx.getImageData(0, 0, pbufW, pbufH)
         if (chroma?.enabled) applyChromaKey(img, chroma)
         if (grade) applyColorGrade(img, grade)
+        if (hasPixelEffects(pixelFx)) applyPixelEffects(img, pixelFx)
         pctx.putImageData(img, 0, 0)
       } catch (e) {
         // tainted canvas 等で失敗した場合は、フィルタ済みだけを描く

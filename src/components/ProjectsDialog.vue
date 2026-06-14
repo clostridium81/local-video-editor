@@ -42,9 +42,13 @@ async function openProject(id: string) {
       toast.error('さくひんを ひらけなかったよ')
       return
     }
+    // 再読込時に loadLatestProjectState がこのプロジェクトを選ぶよう
+    // updatedAt を進めて即保存する
+    next.meta.updatedAt = Date.now()
     store.suspendAutosave()
     store.replaceState(next)
     store.resumeAutosave()
+    await saveProjectState(store.serialize())
     toast.success(`さくひんを きりかえたよ: ${next.meta.name}`)
     emit('close')
   } finally {

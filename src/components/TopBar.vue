@@ -2,7 +2,7 @@
 import { ref } from 'vue'
 import { useProjectStore } from '../stores/projectStore'
 import { exportBackup, importBackup } from '../persistence/backup'
-import { clearProject, deleteProjectState } from '../persistence/assetStore'
+import { clearProject, deleteProjectState, saveProjectState } from '../persistence/assetStore'
 import { toast } from '../composables/useToast'
 import { hasWebCodecs } from '../engine/capabilities'
 import ExportDialog from './ExportDialog.vue'
@@ -65,9 +65,15 @@ async function onFileChosen(e: Event) {
       '現在のプロジェクトを破棄してバックアップから復元します。よろしいですか？'
     ))) return
     store.suspendAutosave()
-    await clearProject(store.meta.id)
+    // 先にインポートを完了させてから切り替える。
+    // (先に現プロジェクトの素材を消すと、ZIP が壊れていた場合に
+    //  現プロジェクトまで失われる。旧プロジェクトはプロジェクト管理から
+    //  開き直せるよう、素材ごと残しておく)
     const { project, assetCount } = await importBackup(file)
+    project.meta.updatedAt = Date.now()
     store.replaceState(project)
+    // 再読込時に「最新プロジェクト」として復元されるよう即保存
+    await saveProjectState(store.serialize())
     toast.success(t(`もどしたよ (ファイル ${assetCount} こ)`, `復元しました (素材 ${assetCount} 件)`))
   } catch (err: any) {
     console.error(err)

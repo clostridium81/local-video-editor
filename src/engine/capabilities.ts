@@ -42,10 +42,11 @@ export async function canEncodeAudio(cfg: CodecConfig): Promise<boolean> {
 }
 
 export const AVC_CODECS = {
-  // H.264 Baseline L3.1 (720p30) / L4.0 (1080p30)
+  // H.264 Baseline L3.1 (720p30) / L4.0 (1080p30) / L4.2 (1080p60)
   baseline_1080p: 'avc1.42E028',
   main_1080p: 'avc1.4D0028',
-  high_1080p: 'avc1.640028'
+  high_1080p: 'avc1.640028',
+  high_1080p60: 'avc1.64002A'
 }
 
 export const AAC_CODEC = 'mp4a.40.2'

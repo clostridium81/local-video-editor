@@ -18,12 +18,15 @@ import type {
   BlendMode,
   ColorGrade,
   ChromaKey,
+  PixelEffects,
+  Duotone,
   TextDecor,
   TextAnim,
   TextAnimType,
   AudioEQ
 } from '../types/project'
 import { findKeyframeAt, neighborKeyframes } from '../engine/keyframes'
+import { EFFECT_PRESETS } from '../engine/effectPresets'
 import { useLocale } from '../composables/useLocale'
 import EffectSlider from './EffectSlider.vue'
 
@@ -225,6 +228,38 @@ function clearChroma() {
   const c = selectedClip.value
   if (!c || (c.kind !== 'video' && c.kind !== 'image')) return
   store.setChromaKey(c.id, undefined)
+}
+
+// ---------- ピクセルエフェクト ----------
+
+function updatePixelFx(patch: Partial<PixelEffects>) {
+  const c = selectedClip.value
+  if (!c || (c.kind !== 'video' && c.kind !== 'image')) return
+  const prev = (c as VideoClip | ImageClip).pixelFx ?? {}
+  store.setPixelEffects(c.id, { ...prev, ...patch })
+}
+function updateDuotone(patch: Partial<Duotone>) {
+  const c = selectedClip.value
+  if (!c || (c.kind !== 'video' && c.kind !== 'image')) return
+  const prev = (c as VideoClip | ImageClip).pixelFx?.duotone ?? {
+    enabled: false,
+    shadow: '#1a1a4a',
+    highlight: '#ffd98a'
+  }
+  updatePixelFx({ duotone: { ...prev, ...patch } })
+}
+function resetPixelFx() {
+  const c = selectedClip.value
+  if (!c || (c.kind !== 'video' && c.kind !== 'image')) return
+  store.setPixelEffects(c.id, undefined)
+}
+
+// ---------- プリセット ----------
+
+function applyPreset(id: string) {
+  const c = selectedClip.value
+  if (!c || (c.kind !== 'video' && c.kind !== 'image')) return
+  store.applyEffectPreset(c.id, id)
 }
 
 // ---------- テキスト装飾・アニメ ----------
@@ -659,6 +694,19 @@ function kindNameJa(kind: string): string {
         </label>
       </section>
 
+      <!-- プリセット (ワンタッチ) -->
+      <section v-if="hasEffects(selectedClip)" class="section">
+        <div class="section-head">{{ t('プリセット (ワンタッチ)', 'プリセット') }}</div>
+        <div class="preset-grid">
+          <button
+            v-for="p in EFFECT_PRESETS"
+            :key="p.id"
+            class="preset-chip"
+            @click="applyPreset(p.id)"
+          >{{ t(p.labelEasy, p.labelNormal) }}</button>
+        </div>
+      </section>
+
       <!-- エフェクト (映像/画像) -->
       <section v-if="hasEffects(selectedClip)" class="section">
         <div class="section-head">
@@ -901,6 +949,76 @@ function kindNameJa(kind: string): string {
             @change="(v) => updateChroma({ softness: v })" />
           <EffectSlider label="のこった いろを へらす" :value="videoOrImageClip?.chromaKey.spillSuppress" :min="0" :max="1" :step="0.01"
             @change="(v) => updateChroma({ spillSuppress: v })" />
+        </div>
+      </section>
+
+      <!-- ピクセルエフェクト (特殊効果) -->
+      <section v-if="hasEffects(selectedClip)" class="section">
+        <div class="section-head">
+          <span>{{ t('とくしゅ こうか', 'ピクセルエフェクト') }}</span>
+          <button class="ghost tiny" @click="resetPixelFx">{{ t('もとに もどす', 'リセット') }}</button>
+        </div>
+        <EffectSlider
+          :label="t('まわりを くらく (ビネット)', 'ビネット')"
+          :value="videoOrImageClip?.pixelFx?.vignette ?? 0" :min="0" :max="1" :step="0.01"
+          @change="(v) => updatePixelFx({ vignette: v })" />
+        <EffectSlider
+          :label="t('くっきり (シャープ)', 'シャープ')"
+          :value="videoOrImageClip?.pixelFx?.sharpen ?? 0" :min="0" :max="1" :step="0.01"
+          @change="(v) => updatePixelFx({ sharpen: v })" />
+        <EffectSlider
+          :label="t('しぜんな あざやかさ', 'バイブランス')"
+          :value="videoOrImageClip?.pixelFx?.vibrance ?? 0" :min="-1" :max="1" :step="0.01"
+          @change="(v) => updatePixelFx({ vibrance: v })" />
+        <EffectSlider
+          :label="t('ざらざら (フィルムグレイン)', 'フィルムグレイン')"
+          :value="videoOrImageClip?.pixelFx?.grain ?? 0" :min="0" :max="1" :step="0.01"
+          @change="(v) => updatePixelFx({ grain: v })" />
+        <EffectSlider
+          :label="t('モザイク (おおきさ)', 'モザイク')"
+          :value="videoOrImageClip?.pixelFx?.pixelate ?? 0" :min="0" :max="40" :step="1"
+          @change="(v) => updatePixelFx({ pixelate: v })" />
+        <EffectSlider
+          :label="t('いろの だんかい (ポスタライズ)', 'ポスタライズ')"
+          :value="videoOrImageClip?.pixelFx?.posterize ?? 0" :min="0" :max="16" :step="1"
+          @change="(v) => updatePixelFx({ posterize: v })" />
+        <EffectSlider
+          :label="t('しろくろ 2かい (しきい値)', '二値化しきい値')"
+          :value="videoOrImageClip?.pixelFx?.threshold ?? 0" :min="0" :max="1" :step="0.01"
+          @change="(v) => updatePixelFx({ threshold: v })" />
+        <EffectSlider
+          :label="t('よこじま (そうさせん)', '走査線')"
+          :value="videoOrImageClip?.pixelFx?.scanlines ?? 0" :min="0" :max="1" :step="0.01"
+          @change="(v) => updatePixelFx({ scanlines: v })" />
+        <EffectSlider
+          :label="t('いろの ずれ (RGB)', '色収差')"
+          :value="videoOrImageClip?.pixelFx?.chromaticAberration ?? 0" :min="0" :max="10" :step="0.5"
+          @change="(v) => updatePixelFx({ chromaticAberration: v })" />
+        <label class="toggle" style="margin-top: 6px;">
+          <input
+            type="checkbox"
+            :checked="!!videoOrImageClip?.pixelFx?.duotone?.enabled"
+            @change="(e) => updateDuotone({ enabled: (e.target as HTMLInputElement).checked })"
+          />
+          <span>{{ t('ふたいろ にする (デュオトーン)', 'デュオトーン') }}</span>
+        </label>
+        <div v-if="videoOrImageClip?.pixelFx?.duotone?.enabled" class="grid-2">
+          <label class="field">
+            <span>{{ t('くらい ところの いろ', '暗部の色') }}</span>
+            <input
+              type="color"
+              :value="videoOrImageClip?.pixelFx?.duotone?.shadow ?? '#1a1a4a'"
+              @input="(e) => updateDuotone({ shadow: (e.target as HTMLInputElement).value })"
+            />
+          </label>
+          <label class="field">
+            <span>{{ t('あかるい ところの いろ', '明部の色') }}</span>
+            <input
+              type="color"
+              :value="videoOrImageClip?.pixelFx?.duotone?.highlight ?? '#ffd98a'"
+              @input="(e) => updateDuotone({ highlight: (e.target as HTMLInputElement).value })"
+            />
+          </label>
         </div>
       </section>
 
@@ -1283,5 +1401,27 @@ button.tiny {
 .row {
   display: flex;
   align-items: center;
+}
+
+.preset-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 5px;
+}
+.preset-chip {
+  font-size: 11px;
+  padding: 6px 8px;
+  background: var(--bg-2);
+  border: 1px solid var(--line-weak);
+  border-radius: var(--radius-sm);
+  color: var(--fg-1);
+  cursor: pointer;
+  text-align: center;
+  transition: background 120ms, border-color 120ms, color 120ms;
+}
+.preset-chip:hover {
+  background: var(--bg-3);
+  border-color: var(--accent);
+  color: var(--accent-hi);
 }
 </style>
