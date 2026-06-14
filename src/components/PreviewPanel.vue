@@ -27,7 +27,9 @@ onMounted(() => {
   if (!canvasRef.value) return
   engine = new PreviewEngine(canvasRef.value, store.state)
   engine.setOnFrame(() => {
-    // 再生時に state が更新されるので Vue が再レンダリング
+    // 再生時に state が更新されるので Vue が再レンダリング。
+    // 末尾到達などで engine が自動 pause した場合にボタン表示を同期する
+    playing.value = engine?.isPlaying() ?? false
   })
   engine.setOnError(msg => toast.error(msg))
   engine.renderCurrent()
@@ -86,8 +88,11 @@ function togglePlay() {
     engine.pause()
     playing.value = false
   } else {
-    if (store.state.timeline.playhead >= store.state.timeline.duration - 0.01) {
-      store.setPlayhead(0)
+    // 範囲 (Out 点) または末尾に到達済みなら、範囲先頭 (In 点) へ戻して再生
+    const tl = store.state.timeline
+    const rangeEnd = tl.outPoint ?? tl.duration
+    if (tl.playhead >= rangeEnd - 0.01) {
+      store.setPlayhead(tl.inPoint ?? 0)
     }
     engine.play()
     playing.value = true

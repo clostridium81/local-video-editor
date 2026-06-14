@@ -47,13 +47,39 @@ function extractImageMeta(url: string): Promise<MediaMeta> {
   })
 }
 
+/**
+ * MediaRecorder 由来の WebM 等は loadedmetadata 時点で duration が
+ * Infinity のことがある。末尾へ仮シークすると durationchange で
+ * 実時間が確定するので、それを待つ (上限 3 秒)。
+ */
+function resolveDuration(
+  el: HTMLVideoElement | HTMLAudioElement
+): Promise<number | undefined> {
+  if (isFinite(el.duration)) return Promise.resolve(el.duration)
+  return new Promise(resolve => {
+    const timeout = window.setTimeout(() => {
+      el.ondurationchange = null
+      resolve(undefined)
+    }, 3000)
+    el.ondurationchange = () => {
+      if (isFinite(el.duration) && el.duration > 0) {
+        window.clearTimeout(timeout)
+        el.ondurationchange = null
+        resolve(el.duration)
+      }
+    }
+    el.currentTime = 1e101
+  })
+}
+
 function extractVideoMeta(url: string): Promise<MediaMeta> {
   return new Promise((resolve, reject) => {
     const v = document.createElement('video')
     v.preload = 'metadata'
-    v.onloadedmetadata = () => {
+    v.onloadedmetadata = async () => {
+      const duration = await resolveDuration(v)
       resolve({
-        duration: isFinite(v.duration) ? v.duration : undefined,
+        duration,
         width: v.videoWidth,
         height: v.videoHeight
       })
@@ -67,8 +93,9 @@ function extractAudioMeta(url: string): Promise<MediaMeta> {
   return new Promise((resolve, reject) => {
     const a = document.createElement('audio')
     a.preload = 'metadata'
-    a.onloadedmetadata = () => {
-      resolve({ duration: isFinite(a.duration) ? a.duration : undefined })
+    a.onloadedmetadata = async () => {
+      const duration = await resolveDuration(a)
+      resolve({ duration })
     }
     a.onerror = () => reject(new Error('音声のメタデータ取得に失敗しました'))
     a.src = url

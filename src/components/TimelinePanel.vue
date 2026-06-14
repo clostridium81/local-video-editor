@@ -216,6 +216,17 @@ function onDragMove(e: MouseEvent) {
       [drag.clipId]
     )
     newDur = Math.max(0.1, rightEdge - drag.origStart)
+    // video/audio は素材の残り時間を超えて伸ばせない
+    // (タイムライン秒 = 素材秒 / speed)
+    const c = store.getClip(drag.clipId)
+    if (c && (c.kind === 'video' || c.kind === 'audio')) {
+      const asset = store.getAsset((c as any).assetId)
+      if (asset?.duration) {
+        const maxDur =
+          (asset.duration - drag.origSourceIn) / Math.max(0.0001, drag.origSpeed)
+        newDur = Math.min(newDur, Math.max(0.1, maxDur))
+      }
+    }
     store.updateClip(drag.clipId, { duration: newDur } as any, mergeKey)
   }
 }
@@ -230,8 +241,10 @@ function onDragEnd() {
 
 function onRulerClick(e: MouseEvent) {
   if (!trackAreaRef.value) return
+  // trackAreaRef はスクロールされる要素そのものなので、rect.left には
+  // すでにスクロール分が反映されている (scrollLeft を足すと2重加算になる)
   const rect = trackAreaRef.value.getBoundingClientRect()
-  const x = e.clientX - rect.left + (scrollAreaRef.value?.scrollLeft ?? 0)
+  const x = e.clientX - rect.left
   const t = Math.max(0, Math.min(duration.value, x / zoom.value))
   store.setPlayhead(t)
 }
@@ -266,7 +279,7 @@ function onTrackDrop(e: DragEvent, track: Track) {
   if (!assetId) return
   if (!trackAreaRef.value) return
   const rect = trackAreaRef.value.getBoundingClientRect()
-  const x = e.clientX - rect.left + (scrollAreaRef.value?.scrollLeft ?? 0)
+  const x = e.clientX - rect.left
   const t = Math.max(0, x / zoom.value)
   const asset = store.getAsset(assetId)
   if (!asset) return
@@ -290,10 +303,8 @@ function onContentMouseDown(e: MouseEvent) {
   // 空白領域クリックで選択解除 + ラバーバンド開始
   if (!(e.target as HTMLElement).classList.contains('track-row')) return
   const rect = trackAreaRef.value!.getBoundingClientRect()
-  const scroll = scrollAreaRef.value?.scrollLeft ?? 0
-  const scrollY = scrollAreaRef.value?.scrollTop ?? 0
-  const x = e.clientX - rect.left + scroll
-  const y = e.clientY - rect.top + scrollY
+  const x = e.clientX - rect.left
+  const y = e.clientY - rect.top
   rubber.value = { active: true, startX: x, startY: y, x, y }
   if (!(e.shiftKey || e.metaKey || e.ctrlKey)) {
     selection.clearSelection()
@@ -306,10 +317,8 @@ function onRubberMove(e: MouseEvent) {
   const rb = rubber.value
   if (!rb.active) return
   const rect = trackAreaRef.value!.getBoundingClientRect()
-  const scroll = scrollAreaRef.value?.scrollLeft ?? 0
-  const scrollY = scrollAreaRef.value?.scrollTop ?? 0
-  const x = e.clientX - rect.left + scroll
-  const y = e.clientY - rect.top + scrollY
+  const x = e.clientX - rect.left
+  const y = e.clientY - rect.top
   rubber.value = { ...rb, x, y }
 }
 
@@ -419,8 +428,9 @@ function renderWaveforms() {
     const ctx = canvas.getContext('2d')
     if (!ctx) continue
     ctx.clearRect(0, 0, canvas.width, canvas.height)
+    // クリップがタイムライン上で duration 秒占めるとき、素材は duration * speed 秒消費する
     const sourceStart = c.sourceIn ?? 0
-    const sourceEnd = sourceStart + c.duration
+    const sourceEnd = sourceStart + c.duration * ((c as any).speed ?? 1)
     const color =
       c.kind === 'audio' ? 'rgba(180, 230, 180, 0.9)' : 'rgba(180, 210, 240, 0.7)'
     drawPeaks(

@@ -64,6 +64,24 @@ const resolvedBitrate = computed(() => {
 
 const abortCtrl = ref<AbortController | null>(null)
 
+// 実際に書き出される長さ (秒)。エンジン側のデフォルト範囲と同じ計算
+const exportLength = computed(() => {
+  const dur = store.state.timeline.duration
+  if (useRange.value === 'inout') {
+    const s = store.state.timeline.inPoint ?? 0
+    const e = store.state.timeline.outPoint ?? dur
+    return Math.max(0, e - s)
+  }
+  if (useRange.value === 'custom') {
+    return Math.max(0, Math.min(dur, customEnd.value) - Math.max(0, customStart.value))
+  }
+  const clips = store.state.clips
+  const contentEnd = clips.length > 0
+    ? Math.max(...clips.map(c => c.start + c.duration))
+    : dur
+  return Math.min(dur, contentEnd)
+})
+
 onMounted(async () => {
   if (!hasWebCodecs) {
     mp4Supported.value = false
@@ -119,16 +137,6 @@ function fmtEta(s: number | null) {
 
 async function onStart() {
   if (running.value) return
-  running.value = true
-  startTime.value = Date.now()
-  progressPhase.value = 'prepare'
-  progressDone.value = 0
-  progressTotal.value = 1
-  progressMessage.value = '準備中…'
-
-  const ctrl = new AbortController()
-  abortCtrl.value = ctrl
-  store.suspendAutosave()
 
   let rangeStart: number | undefined = undefined
   let rangeEnd: number | undefined = undefined
@@ -139,6 +147,24 @@ async function onStart() {
     rangeStart = Math.max(0, customStart.value)
     rangeEnd = Math.min(store.state.timeline.duration, customEnd.value)
   }
+  if (rangeStart != null && rangeEnd != null && rangeEnd <= rangeStart) {
+    toast.warn(t(
+      '「おわり」は「はじめ」より あとに してね',
+      '終了時刻は開始時刻より後にしてください'
+    ))
+    return
+  }
+
+  running.value = true
+  startTime.value = Date.now()
+  progressPhase.value = 'prepare'
+  progressDone.value = 0
+  progressTotal.value = 1
+  progressMessage.value = '準備中…'
+
+  const ctrl = new AbortController()
+  abortCtrl.value = ctrl
+  store.suspendAutosave()
 
   const opts: ExportOptions = {
     format: format.value,
@@ -314,7 +340,7 @@ function fmtPhaseMessage(m: string): string {
         <div class="summary muted">
           <div>できあがり: {{ resolution.width }} × {{ resolution.height }} / {{ fps }} コマ</div>
           <div>きれいさ: {{ Math.round(resolvedBitrate / 1000) }} kbps</div>
-          <div>ながさ: {{ store.state.timeline.duration.toFixed(1) }} びょう</div>
+          <div>ながさ: {{ exportLength.toFixed(1) }} びょう</div>
         </div>
 
         <div class="actions">

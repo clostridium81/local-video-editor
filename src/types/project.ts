@@ -91,6 +91,29 @@ export interface ColorGrade {
   tint?: number // -1..1 (負=緑寄り、正=マゼンタ寄り)
 }
 
+// ---------- ピクセルエフェクト (Canvas ImageData 処理) ----------
+// ClipEffects (CSS filter) では表現できない、画素単位の特殊効果。
+// preview/export で同一の applyPixelEffects() を共有する。
+
+export interface Duotone {
+  enabled: boolean
+  shadow: string // 暗部の色 #rrggbb
+  highlight: string // 明部の色 #rrggbb
+}
+
+export interface PixelEffects {
+  vignette?: number // 0..1 周辺減光
+  sharpen?: number // 0..1 シャープ
+  grain?: number // 0..1 フィルムグレイン
+  pixelate?: number // 0=なし, ブロックサイズ (px)
+  posterize?: number // 0=なし, 2..16 階調数
+  scanlines?: number // 0..1 走査線
+  chromaticAberration?: number // 0=なし, シフト量 (px)
+  threshold?: number // 0=なし, 0..1 二値化しきい値
+  vibrance?: number // -1..1 自然な彩度
+  duotone?: Duotone
+}
+
 // ---------- クロマキー ----------
 
 export interface ChromaKey {
@@ -213,6 +236,7 @@ export interface VideoClip extends BaseClip {
   effects?: ClipEffects
   colorGrade?: ColorGrade
   chromaKey?: ChromaKey
+  pixelFx?: PixelEffects
   eq?: AudioEQ
 }
 
@@ -226,6 +250,7 @@ export interface ImageClip extends BaseClip {
   effects?: ClipEffects
   colorGrade?: ColorGrade
   chromaKey?: ChromaKey
+  pixelFx?: PixelEffects
 }
 
 export interface AudioClip extends BaseClip {
