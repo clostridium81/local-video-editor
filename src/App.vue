@@ -57,7 +57,7 @@ onMounted(() => {
 }
 
 .left {
-  border-right: 1px solid var(--line-weak);
+  border-right: 1px solid var(--line-region);
   background: var(--bg-1);
   min-height: 0;
   display: flex;
@@ -78,7 +78,7 @@ onMounted(() => {
 }
 
 .right {
-  border-left: 1px solid var(--line-weak);
+  border-left: 1px solid var(--line-region);
   background: var(--bg-1);
   min-height: 0;
   display: flex;

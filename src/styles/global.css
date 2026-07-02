@@ -12,6 +12,8 @@
   --line-weak: #1f2328;
   --line: #2a2f36;
   --line-strong: #3a4049;
+  /* エリア (パネル/タイムライン/トップバー) 間の主要な境界。少し明るめ */
+  --line-region: #414852;
 
   /* foreground */
   --fg-0: #f5f5f3;
