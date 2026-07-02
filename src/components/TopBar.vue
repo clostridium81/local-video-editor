@@ -194,7 +194,7 @@ function onExport() {
 <style scoped>
 .topbar {
   height: 48px;
-  border-bottom: 1px solid var(--line);
+  border-bottom: 1px solid var(--line-region);
   background: var(--bg-1);
   display: flex;
   align-items: center;

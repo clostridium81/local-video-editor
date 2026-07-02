@@ -687,7 +687,7 @@ function hasWaveform(c: Clip): boolean {
 <style scoped>
 .timeline-panel {
   height: 340px;
-  border-top: 1px solid var(--line);
+  border-top: 1px solid var(--line-region);
   background: var(--bg-1);
   display: flex;
   flex-direction: column;
