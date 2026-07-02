@@ -17,39 +17,39 @@ function replayTour() {
 
 const sections = computed(() => locale.isEasy.value ? [
   {
-    title: 'さいせい',
+    title: '再生',
     items: [
-      ['スペース', 'さいせい / とめる'],
-      ['← / →', '1 コマずつ うごかす'],
-      ['Shift + ← / →', '1 びょうずつ うごかす'],
-      ['Home / End', 'はじめへ / おわりへ']
+      ['スペース', '再生 / 一時停止'],
+      ['← / →', '1 コマずつ移動'],
+      ['Shift + ← / →', '1 秒ずつ移動'],
+      ['Home / End', '先頭へ / 末尾へ']
     ]
   },
   {
-    title: 'へんしゅう',
+    title: '編集',
     items: [
-      ['Cmd/Ctrl + Z', 'もとに もどす'],
-      ['Cmd/Ctrl + Shift + Z', 'やりなおす'],
+      ['Cmd/Ctrl + Z', '元に戻す'],
+      ['Cmd/Ctrl + Shift + Z', 'やり直し'],
       ['Cmd/Ctrl + C', 'コピー'],
-      ['Cmd/Ctrl + X', 'きりとり'],
-      ['Cmd/Ctrl + V', 'はりつけ'],
-      ['Cmd/Ctrl + D', 'コピーを つくる'],
-      ['Cmd/Ctrl + A', 'ぜんぶ えらぶ'],
-      ['S', 'クリップを ふたつに わける'],
-      ['Cmd/Ctrl + L', 'クリップを いっしょにする'],
-      ['Cmd/Ctrl + Shift + L', 'クリップを はずす'],
-      ['Delete / Backspace', 'えらんだ クリップを けす']
+      ['Cmd/Ctrl + X', '切り取り'],
+      ['Cmd/Ctrl + V', '貼り付け'],
+      ['Cmd/Ctrl + D', '複製'],
+      ['Cmd/Ctrl + A', 'すべて選択'],
+      ['S', 'クリップを分割'],
+      ['Cmd/Ctrl + L', 'クリップをリンク'],
+      ['Cmd/Ctrl + Shift + L', 'リンクを解除'],
+      ['Delete / Backspace', '選んだクリップを削除']
     ]
   },
   {
     title: 'タイムライン',
     items: [
-      ['M', 'いまの ところに めじるしを たてる'],
-      ['I', 'はじめに する'],
-      ['O', 'おわりに する'],
-      ['Shift + I', 'はじめ/おわりを なしにする'],
-      ['N', 'ぴったり あわせる を きりかえる'],
-      ['Shift + R', 'あとを つめる を きりかえる']
+      ['M', '今の位置にマーカーを追加'],
+      ['I', '開始点 (In) を設定'],
+      ['O', '終了点 (Out) を設定'],
+      ['Shift + I', '範囲を解除'],
+      ['N', 'スナップの切り替え'],
+      ['Shift + R', 'リップルの切り替え']
     ]
   }
 ] : [
@@ -96,9 +96,9 @@ const sections = computed(() => locale.isEasy.value ? [
   <div class="modal-backdrop" @click.self="$emit('close')">
     <div class="modal">
       <div class="modal-head">
-        <div class="title">{{ t('キーボードの しょうとかっと', 'キーボードショートカット') }}</div>
+        <div class="title">{{ t('キーボードショートカット', 'キーボードショートカット') }}</div>
         <div class="row">
-          <button class="ghost tiny" @click="replayTour">🎓 {{ t('つかいかたを みる', '使い方ツアー') }}</button>
+          <button class="ghost tiny" @click="replayTour">🎓 {{ t('使い方を見る', '使い方ツアー') }}</button>
           <button class="ghost close" @click="$emit('close')">×</button>
         </div>
       </div>
@@ -114,7 +114,7 @@ const sections = computed(() => locale.isEasy.value ? [
           </div>
         </div>
         <div class="version-line muted mono">
-          {{ t('どうがメーカー', 'Local Video Editor') }} v{{ appVersion }}
+          {{ t('動画メーカー', 'Local Video Editor') }} v{{ appVersion }}
         </div>
       </div>
     </div>

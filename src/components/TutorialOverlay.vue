@@ -16,64 +16,64 @@ const STEPS_EASY: Step[] = [
   {
     title: 'ようこそ 👋',
     body:
-      'こんにちは！「どうがメーカー」へ ようこそ。\n' +
-      'すこし つかいかたを いっしょに みていこう。1ぷんで おわるよ。',
+      'こんにちは。「動画メーカー」へようこそ。\n' +
+      '使い方を一緒に見ていきましょう。1分ほどで終わります。',
     placement: 'center'
   },
   {
     target: '[data-tour="media-library"]',
-    title: '① そざい (どうが・え・おと)',
+    title: '① 素材 (動画・画像・音声)',
     body:
-      'ここに どうがや え、おとを いれます。\n' +
-      'パソコンの ファイルを ここに ドラッグして いれてもいいし、＋ ボタンから えらんでもいいよ。',
+      'ここに動画や画像、音声を取り込みます。\n' +
+      'パソコンのファイルをここにドラッグするか、＋ ボタンから選んで追加できます。',
     placement: 'right'
   },
   {
     target: '[data-tour="preview"]',
-    title: '② みるところ (プレビュー)',
+    title: '② プレビュー (再生画面)',
     body:
-      'できあがった どうがを ここで みれるよ。\n' +
-      'スペースキーで さいせい / とめる。えらんだ クリップは ここで ドラッグして うごかしたり、おおきさを かえたり できるよ。',
+      'できあがった動画をここで確認できます。\n' +
+      'スペースキーで再生 / 一時停止。選んだクリップは、ここでドラッグして動かしたり、大きさを変えたりできます。',
     placement: 'right'
   },
   {
     target: '[data-tour="timeline-body"]',
-    title: '③ ならべるところ (タイムライン)',
+    title: '③ タイムライン (並べる場所)',
     body:
-      'クリップを ドラッグで うごかせるよ。クリップの はしっこを ひっぱると、ながさも かえられる。\n' +
-      'S キーで ふたつに わけられる。けすときは Delete キー。',
+      'クリップをドラッグで移動できます。クリップの端をドラッグすると、長さも変えられます。\n' +
+      'S キーで分割、Delete キーで削除できます。',
     placement: 'top'
   },
   {
     target: '[data-tour="timeline-toolbar"]',
-    title: '④ どうぐばこ',
+    title: '④ ツールバー',
     body:
-      'もじ や かたち を ふやしたり、めじるしを たてたり できるよ。\n' +
-      '🧲 で「ぴったり あわせる」、🚩 で「めじるしを たてる」が つかえるよ。',
+      'テキストや図形を追加したり、マーカーを立てたりできます。\n' +
+      '🧲 はスナップ (ぴったり合わせる)、🚩 はマーカー追加です。',
     placement: 'bottom'
   },
   {
     target: '[data-tour="inspector"]',
-    title: '⑤ こまかい せってい',
+    title: '⑤ インスペクター (詳しい設定)',
     body:
-      'えらんだ クリップの いろ・おおきさ・おとの おおきさ などを ここで かえれるよ。\n' +
-      '◆ ボタンで「うごきポイント」を たてると、じかんが すすむと いっしょに かわるよ。',
+      '選んだクリップの色・大きさ・音量・エフェクトなどをここで調整します。\n' +
+      '◆ ボタンでキーフレーム (動きの記録点) を打つと、時間の経過に合わせて変化させられます。',
     placement: 'left'
   },
   {
     target: '[data-tour="topbar-actions"]',
-    title: '⑥ うえの メニュー',
+    title: '⑥ 上のメニュー',
     body:
-      '↶↷ で「もとに もどす / やりなおす」。\n' +
-      '📂 さくひんの きりかえ、🎙 ろくが・ろくおん、🎚 おとの ちょうせい、? しょうとかっと、▼ どうがで かきだす。\n' +
-      'いちばん みぎの あ ボタンで、ふつうの 日本語に きりかえも できるよ。',
+      '↶↷ で元に戻す / やり直し。\n' +
+      '📂 作品の切り替え、🎙 録画・録音、🎚 音声ミキサー、? ショートカット一覧、▼ 動画の書き出し。\n' +
+      '右端の「あ / 漢」ボタンで、通常の日本語表示にも切り替えられます。',
     placement: 'bottom'
   },
   {
-    title: 'じゅんび OK ✨',
+    title: '準備完了 ✨',
     body:
-      'さあ、すきな どうがを つくってみよう！\n' +
-      'もう いちど みたい ときは、うえの 🎓 ボタンを おしてね。',
+      'さあ、好きな動画を作ってみましょう。\n' +
+      'もう一度見たいときは、上の 🎓 ボタンを押してください。',
     placement: 'center'
   }
 ]
@@ -339,7 +339,7 @@ const pct = computed(() => ((step.value + 1) / STEPS.value.length) * 100)
     <div class="tour-arrow" :style="arrowStyle" />
     <div class="tour-head">
       <div class="tour-title">{{ current.title }}</div>
-      <button class="tour-skip" title="つかいかたを とじる (Esc)" @click="skipAll">とじる</button>
+      <button class="tour-skip" title="チュートリアルを閉じる (Esc)" @click="skipAll">閉じる</button>
     </div>
     <div class="tour-body" style="white-space: pre-line">{{ current.body }}</div>
     <div class="tour-progress-wrap">
@@ -352,12 +352,12 @@ const pct = computed(() => ((step.value + 1) / STEPS.value.length) * 100)
     <div class="tour-foot">
       <label v-if="isLast" class="tour-dsa">
         <input type="checkbox" v-model="dontShowAgain" />
-        <span>つぎから ださない</span>
+        span>/span>
       </label>
       <div class="spacer" />
-      <button v-if="!isFirst" class="ghost" @click="prev">← もどる</button>
+      <button v-if="!isFirst" class="ghost" @click="prev">← 戻る</button>
       <button class="primary" @click="next">
-        {{ isLast ? 'はじめる' : 'つぎへ →' }}
+        {{ isLast ? '始める' : '次へ →' }}
       </button>
     </div>
   </div>

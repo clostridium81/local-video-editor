@@ -329,46 +329,75 @@ const TEXT_ANIMS: TextAnimType[] = [
 const SHAPE_KINDS: ShapeKind[] = ['rect','ellipse','triangle','star','arrow','line']
 
 function blendLabelJa(m: BlendMode): string {
-  const map: Record<BlendMode, string> = {
-    normal: 'ふつう',
-    multiply: 'かさねる (くらく)',
-    screen: 'かさねる (あかるく)',
-    overlay: 'うえに のせる',
-    darken: 'くらいほうを えらぶ',
-    lighten: 'あかるいほうを えらぶ',
-    'color-dodge': 'もっと あかるく',
-    'color-burn': 'もっと くらく',
-    'hard-light': 'つよい ひかり',
-    'soft-light': 'やさしい ひかり',
-    difference: 'いろの ちがいだけ',
-    exclusion: 'いろを すこし いれかえ',
-    hue: 'いろあいだけ',
-    saturation: 'こさだけ',
-    color: 'いろだけ',
-    luminosity: 'あかるさだけ',
-    add: 'たし算',
-    subtract: 'ひき算'
+  const easy: Record<BlendMode, string> = {
+    normal: '通常',
+    multiply: '乗算 (重ねて暗く)',
+    screen: 'スクリーン (重ねて明るく)',
+    overlay: 'オーバーレイ (上に重ねる)',
+    darken: '比較 (暗)',
+    lighten: '比較 (明)',
+    'color-dodge': '覆い焼き (明るく)',
+    'color-burn': '焼き込み (暗く)',
+    'hard-light': 'ハードライト (強い光)',
+    'soft-light': 'ソフトライト (柔らかい光)',
+    difference: '差の絶対値',
+    exclusion: '除外',
+    hue: '色相のみ',
+    saturation: '彩度のみ',
+    color: '色のみ',
+    luminosity: '明るさのみ',
+    add: '加算',
+    subtract: '減算'
   }
-  return map[m] ?? m
+  const norm: Record<BlendMode, string> = {
+    normal: '通常',
+    multiply: '乗算',
+    screen: 'スクリーン',
+    overlay: 'オーバーレイ',
+    darken: '比較 (暗)',
+    lighten: '比較 (明)',
+    'color-dodge': '覆い焼き',
+    'color-burn': '焼き込み',
+    'hard-light': 'ハードライト',
+    'soft-light': 'ソフトライト',
+    difference: '差の絶対値',
+    exclusion: '除外',
+    hue: '色相',
+    saturation: '彩度',
+    color: 'カラー',
+    luminosity: '輝度',
+    add: '加算',
+    subtract: '減算'
+  }
+  return t(easy[m] ?? m, norm[m] ?? m)
 }
 
 function animLabelJa(a: TextAnimType): string {
-  const map: Record<TextAnimType, string> = {
-    none: 'うごかない',
-    typewriter: 'タイプライター (1もじずつ)',
-    'fade-words': 'じわじわ あらわれる',
-    'slide-chars': 'したから あらわれる',
-    bounce: 'ぴょんぴょん',
-    'scale-pop': 'ぽーんと でる',
-    wave: 'なみのように うごく'
+  const easy: Record<TextAnimType, string> = {
+    none: 'なし',
+    typewriter: 'タイプライター (1文字ずつ)',
+    'fade-words': 'フェード (じわっと表示)',
+    'slide-chars': 'スライド (下から表示)',
+    bounce: 'バウンド (弾む)',
+    'scale-pop': 'ポップ (跳び出す)',
+    wave: 'ウェーブ (波打つ)'
   }
-  return map[a] ?? a
+  const norm: Record<TextAnimType, string> = {
+    none: 'なし',
+    typewriter: 'タイプライター',
+    'fade-words': 'フェード',
+    'slide-chars': 'スライド',
+    bounce: 'バウンド',
+    'scale-pop': 'スケールポップ',
+    wave: 'ウェーブ'
+  }
+  return t(easy[a] ?? a, norm[a] ?? a)
 }
 
 function shapeLabelJa(s: ShapeKind): string {
   const easy: Record<ShapeKind, string> = {
-    rect: 'しかく', ellipse: 'まる', triangle: 'さんかく',
-    star: 'ほし', arrow: 'やじるし', line: 'せん'
+    rect: '四角', ellipse: '円', triangle: '三角',
+    star: '星', arrow: '矢印', line: '線'
   }
   const norm: Record<ShapeKind, string> = {
     rect: '矩形', ellipse: '楕円', triangle: '三角形',
@@ -378,11 +407,11 @@ function shapeLabelJa(s: ShapeKind): string {
 }
 
 function kindNameJa(kind: string): string {
-  if (kind === 'video') return t('どうが', '動画')
-  if (kind === 'audio') return t('おと', '音声')
-  if (kind === 'image') return t('え', '画像')
-  if (kind === 'text') return t('もじ', 'テキスト')
-  if (kind === 'shape') return t('かたち', '図形')
+  if (kind === 'video') return t('動画', '動画')
+  if (kind === 'audio') return t('音声', '音声')
+  if (kind === 'image') return t('画像', '画像')
+  if (kind === 'text') return t('テキスト', 'テキスト')
+  if (kind === 'shape') return t('図形', '図形')
   return kind
 }
 </script>
@@ -395,7 +424,7 @@ function kindNameJa(kind: string): string {
   <div class="inspector-body">
     <div v-if="!selectedClip" class="empty">
       <div class="empty-icon">◇</div>
-      <div class="empty-text">{{ t('クリップを えらんでね', 'クリップを選択してください') }}</div>
+      <div class="empty-text">{{ t('クリップを選んでください', 'クリップを選択してください') }}</div>
     </div>
 
     <template v-else>
@@ -407,10 +436,10 @@ function kindNameJa(kind: string): string {
 
       <!-- 時間プロパティ -->
       <section class="section">
-        <div class="section-head">{{ t('じかん', '時間') }}</div>
+        <div class="section-head">{{ t('時間', '時間') }}</div>
         <div class="grid-2">
           <label class="field">
-            <span>{{ t('はじめ', '開始') }}</span>
+            <span>{{ t('開始', '開始') }}</span>
             <input
               type="number"
               step="0.01"
@@ -419,7 +448,7 @@ function kindNameJa(kind: string): string {
             />
           </label>
           <label class="field">
-            <span>{{ t('ながさ', '長さ') }}</span>
+            <span>{{ t('長さ', '長さ') }}</span>
             <input
               type="number"
               step="0.01"
@@ -431,7 +460,7 @@ function kindNameJa(kind: string): string {
             v-if="selectedClip.kind === 'video' || selectedClip.kind === 'audio'"
             class="field"
           >
-            <span>{{ t('そざいの どこから', '素材内オフセット') }}</span>
+            <span>{{ t('素材の開始位置', '素材内オフセット') }}</span>
             <input
               type="number"
               step="0.01"
@@ -440,7 +469,7 @@ function kindNameJa(kind: string): string {
             />
           </label>
           <div class="field">
-            <span>{{ t('おわり', '終了') }}</span>
+            <span>{{ t('終了', '終了') }}</span>
             <div class="value mono">{{ fmtSec(selectedClip.start + selectedClip.duration) }}</div>
           </div>
         </div>
@@ -449,18 +478,18 @@ function kindNameJa(kind: string): string {
       <!-- 不透明度 -->
       <section v-if="hasTransform(selectedClip)" class="section">
         <div class="section-head">
-          <span>{{ t('みえかた', '表示') }}</span>
+          <span>{{ t('表示', '表示') }}</span>
           <button
             class="kf-btn"
             :class="{ on: kfExistsAt('opacity') }"
             :disabled="!playheadInClip"
-            :title="t('ここに うごきポイントを たてる/けす', 'この時刻にキーフレームを追加/削除')"
+            :title="t('この位置にキーフレームを追加/削除', 'この時刻にキーフレームを追加/削除')"
             @click="toggleKeyframe('opacity')"
           >◆</button>
         </div>
         <label class="field">
           <span>
-            {{ t('すけぐあい', '不透明度') }}
+            {{ t('透明度', '不透明度') }}
             <span class="mono muted">{{ (selectedClip.opacity * 100).toFixed(0) }}%</span>
           </span>
           <input
@@ -489,11 +518,11 @@ function kindNameJa(kind: string): string {
 
       <!-- 配置 -->
       <section v-if="hasTransform(selectedClip)" class="section">
-        <div class="section-head">{{ t('いち', '配置') }}</div>
+        <div class="section-head">{{ t('配置', '配置') }}</div>
         <div class="grid-2">
           <label class="field">
             <span>
-              {{ t('よこ (まんなか=0.5)', 'X (中央基準)') }}
+              {{ t('横位置 (中央=0.5)', 'X (中央基準)') }}
               <button
                 class="kf-btn inline"
                 :class="{ on: kfExistsAt('x') }"
@@ -510,7 +539,7 @@ function kindNameJa(kind: string): string {
           </label>
           <label class="field">
             <span>
-              {{ t('たて (まんなか=0.5)', 'Y (中央基準)') }}
+              {{ t('縦位置 (中央=0.5)', 'Y (中央基準)') }}
               <button
                 class="kf-btn inline"
                 :class="{ on: kfExistsAt('y') }"
@@ -532,7 +561,7 @@ function kindNameJa(kind: string): string {
         >
           <label v-if="selectedClip.kind !== 'text'" class="field">
             <span>
-              {{ t('おおきさ', 'スケール') }}
+              {{ t('大きさ', 'スケール') }}
               <button
                 class="kf-btn inline"
                 :class="{ on: kfExistsAt('scale') }"
@@ -549,7 +578,7 @@ function kindNameJa(kind: string): string {
           </label>
           <label v-if="selectedClip.kind !== 'text'" class="field">
             <span>
-              {{ t('まわり (ど)', '回転 (度)') }}
+              {{ t('回転 (度)', '回転 (度)') }}
               <button
                 class="kf-btn inline"
                 :class="{ on: kfExistsAt('rotation') }"
@@ -569,9 +598,9 @@ function kindNameJa(kind: string): string {
 
       <!-- テキスト固有 -->
       <section v-if="selectedClip.kind === 'text'" class="section">
-        <div class="section-head">{{ t('もじ', 'テキスト') }}</div>
+        <div class="section-head">{{ t('文字', 'テキスト') }}</div>
         <label class="field">
-          <span>{{ t('かくこと', '内容') }}</span>
+          <span>{{ t('内容', '内容') }}</span>
           <textarea
             rows="3"
             :value="(selectedClip as TextClip).text"
@@ -579,7 +608,7 @@ function kindNameJa(kind: string): string {
           />
         </label>
         <label class="field">
-          <span>もじの かたち (フォント)</span>
+          <span>フォント (書体)</span>
           <select
             :value="(selectedClip as TextClip).fontFamily"
             @change="(e) => update({ fontFamily: (e.target as HTMLSelectElement).value })"
@@ -595,7 +624,7 @@ function kindNameJa(kind: string): string {
         </label>
         <div class="grid-2">
           <label class="field">
-            <span>もじの おおきさ</span>
+            <span>文字の大きさ</span>
             <input
               type="number"
               min="8"
@@ -605,20 +634,20 @@ function kindNameJa(kind: string): string {
             />
           </label>
           <label class="field">
-            <span>そろえかた</span>
+            <span>そろえ方</span>
             <select
               :value="(selectedClip as TextClip).align"
               @change="(e) => update({ align: (e.target as HTMLSelectElement).value as any })"
             >
-              <option value="left">ひだり</option>
-              <option value="center">まんなか</option>
-              <option value="right">みぎ</option>
+              <option value="left">左揃え</option>
+              <option value="center">中央揃え</option>
+              <option value="right">右揃え</option>
             </select>
           </label>
         </div>
         <div class="grid-2">
           <label class="field">
-            <span>もじの いろ</span>
+            <span>文字の色</span>
             <input
               type="color"
               :value="(selectedClip as TextClip).color"
@@ -626,7 +655,7 @@ function kindNameJa(kind: string): string {
             />
           </label>
           <label class="field">
-            <span>うしろの いろ</span>
+            <span>背景の色</span>
             <div class="row gap-4">
               <input
                 type="color"
@@ -647,7 +676,7 @@ function kindNameJa(kind: string): string {
               :checked="(selectedClip as TextClip).bold"
               @change="(e) => update({ bold: (e.target as HTMLInputElement).checked })"
             />
-            <span>ふとじ</span>
+            <span>太字</span>
           </label>
           <label class="toggle">
             <input
@@ -655,7 +684,7 @@ function kindNameJa(kind: string): string {
               :checked="(selectedClip as TextClip).italic"
               @change="(e) => update({ italic: (e.target as HTMLInputElement).checked })"
             />
-            <span>ななめ</span>
+            <span>斜体</span>
           </label>
         </div>
       </section>
@@ -663,7 +692,7 @@ function kindNameJa(kind: string): string {
       <!-- 音量 -->
       <section v-if="hasVolume(selectedClip)" class="section">
         <div class="section-head">
-          <span>{{ t('おとの おおきさ', '音声') }}</span>
+          <span>{{ t('音声', '音声') }}</span>
           <button
             class="kf-btn"
             :class="{ on: kfExistsAt('volume') }"
@@ -673,7 +702,7 @@ function kindNameJa(kind: string): string {
         </div>
         <label class="field">
           <span>
-            {{ t('おとの おおきさ', '音量') }} <span class="mono muted">{{ ((selectedClip.volume ?? 1) * 100).toFixed(0) }}%</span>
+            {{ t('音量', '音量') }} <span class="mono muted">{{ ((selectedClip.volume ?? 1) * 100).toFixed(0) }}%</span>
           </span>
           <input
             type="range"
@@ -710,11 +739,11 @@ function kindNameJa(kind: string): string {
       <!-- エフェクト (映像/画像) -->
       <section v-if="hasEffects(selectedClip)" class="section">
         <div class="section-head">
-          <span>{{ t('こうか', 'エフェクト') }}</span>
-          <button class="ghost tiny" @click="resetEffects">{{ t('もとに もどす', 'リセット') }}</button>
+          <span>{{ t('効果', 'エフェクト') }}</span>
+          <button class="ghost tiny" @click="resetEffects">{{ t('リセット', 'リセット') }}</button>
         </div>
         <EffectSlider
-          label="あかるさ" :value="selectedClip.effects?.brightness ?? 1"
+          label="明るさ" :value="selectedClip.effects?.brightness ?? 1"
           :min="0" :max="3" :step="0.01"
           @change="(v) => updateEffects({ brightness: v })"
         />
@@ -724,7 +753,7 @@ function kindNameJa(kind: string): string {
           @change="(v) => updateEffects({ contrast: v })"
         />
         <EffectSlider
-          label="いろの こさ" :value="selectedClip.effects?.saturation ?? 1"
+          :label="t('色の濃さ', '彩度')" :value="selectedClip.effects?.saturation ?? 1"
           :min="0" :max="3" :step="0.01"
           @change="(v) => updateEffects({ saturation: v })"
         />
@@ -734,22 +763,22 @@ function kindNameJa(kind: string): string {
           @change="(v) => updateEffects({ blur: v })"
         />
         <EffectSlider
-          label="いろあい" :value="selectedClip.effects?.hueRotate ?? 0"
+          :label="t('色あい', '色相')" :value="selectedClip.effects?.hueRotate ?? 0"
           :min="-180" :max="180" :step="1"
           @change="(v) => updateEffects({ hueRotate: v })"
         />
         <EffectSlider
-          label="しろくろ" :value="selectedClip.effects?.grayscale ?? 0"
+          :label="t('白黒', 'グレースケール')" :value="selectedClip.effects?.grayscale ?? 0"
           :min="0" :max="1" :step="0.01"
           @change="(v) => updateEffects({ grayscale: v })"
         />
         <EffectSlider
-          label="いろを はんてん" :value="selectedClip.effects?.invert ?? 0"
+          label="色を反転" :value="selectedClip.effects?.invert ?? 0"
           :min="0" :max="1" :step="0.01"
           @change="(v) => updateEffects({ invert: v })"
         />
         <EffectSlider
-          label="セピア (むかしふう)" :value="selectedClip.effects?.sepia ?? 0"
+          :label="t('セピア (古い写真風)', 'セピア')" :value="selectedClip.effects?.sepia ?? 0"
           :min="0" :max="1" :step="0.01"
           @change="(v) => updateEffects({ sepia: v })"
         />
@@ -757,11 +786,11 @@ function kindNameJa(kind: string): string {
 
       <!-- トランジション -->
       <section class="section">
-        <div class="section-head">{{ t('つなぎかた', 'トランジション') }}</div>
-        <div class="sub-title">{{ t('はじまり', '入り') }}</div>
+        <div class="section-head">{{ t('トランジション (つなぎ)', 'トランジション') }}</div>
+        <div class="sub-title">{{ t('入り', '入り') }}</div>
         <div class="grid-2">
           <label class="field">
-            <span>しゅるい</span>
+            <span>種類</span>
             <select
               :value="selectedClip.transitionIn?.type ?? ''"
               @change="(e) => {
@@ -771,17 +800,17 @@ function kindNameJa(kind: string): string {
               }"
             >
               <option value="">なし</option>
-              <option value="fade">じわじわ あらわれる</option>
-              <option value="slide-left">みぎから くる</option>
-              <option value="slide-right">ひだりから くる</option>
-              <option value="slide-up">したから くる</option>
-              <option value="slide-down">うえから くる</option>
-              <option value="zoom">おおきく なる</option>
-              <option value="wipe">ぬれて あらわれる</option>
+              <option value="fade">フェードイン (じわっと出る)</option>
+              <option value="slide-left">右から入る</option>
+              <option value="slide-right">左から入る</option>
+              <option value="slide-up">下から入る</option>
+              <option value="slide-down">上から入る</option>
+              <option value="zoom">ズームイン (大きくなる)</option>
+              <option value="wipe">ワイプ (拭って出る)</option>
             </select>
           </label>
           <label class="field">
-            <span>ながさ (びょう)</span>
+            <span>長さ (秒)</span>
             <input
               type="number"
               min="0"
@@ -796,13 +825,13 @@ function kindNameJa(kind: string): string {
           </label>
         </div>
         <div class="row gap-4" style="margin-bottom: 8px;">
-          <button class="ghost tiny" @click="applyFadePreset('in')">じわじわ あらわれる</button>
+          <button class="ghost tiny" @click="applyFadePreset('in')">フェードインを設定</button>
         </div>
 
-        <div class="sub-title">{{ t('おわり', '出') }}</div>
+        <div class="sub-title">{{ t('出', '出') }}</div>
         <div class="grid-2">
           <label class="field">
-            <span>しゅるい</span>
+            <span>種類</span>
             <select
               :value="selectedClip.transitionOut?.type ?? ''"
               @change="(e) => {
@@ -812,17 +841,17 @@ function kindNameJa(kind: string): string {
               }"
             >
               <option value="">なし</option>
-              <option value="fade">じわじわ きえる</option>
-              <option value="slide-left">ひだりへ いく</option>
-              <option value="slide-right">みぎへ いく</option>
-              <option value="slide-up">うえへ いく</option>
-              <option value="slide-down">したへ いく</option>
-              <option value="zoom">ちいさく なる</option>
-              <option value="wipe">ぬれて きえる</option>
+              <option value="fade">フェードアウト (じわっと消える)</option>
+              <option value="slide-left">左へ出る</option>
+              <option value="slide-right">右へ出る</option>
+              <option value="slide-up">上へ出る</option>
+              <option value="slide-down">下へ出る</option>
+              <option value="zoom">ズームアウト (小さくなる)</option>
+              <option value="wipe">ワイプ (拭って消える)</option>
             </select>
           </label>
           <label class="field">
-            <span>ながさ (びょう)</span>
+            <span>長さ (秒)</span>
             <input
               type="number"
               min="0"
@@ -837,16 +866,16 @@ function kindNameJa(kind: string): string {
           </label>
         </div>
         <div class="row gap-4">
-          <button class="ghost tiny" @click="applyFadePreset('out')">じわじわ きえる</button>
+          <button class="ghost tiny" @click="applyFadePreset('out')">フェードアウトを設定</button>
         </div>
       </section>
 
       <!-- 速度 / 逆再生 / ブレンド -->
       <section v-if="selectedClip.kind !== 'text' && selectedClip.kind !== 'shape'" class="section">
-        <div class="section-head">{{ t('さいせい', '再生') }}</div>
+        <div class="section-head">{{ t('再生', '再生') }}</div>
         <div class="grid-2">
           <label class="field">
-            <span>はやさ (ばい) <span class="mono muted">{{ (selectedClip.speed ?? 1).toFixed(2) }}</span></span>
+            <span>速さ (倍) <span class="mono muted">{{ (selectedClip.speed ?? 1).toFixed(2) }}</span></span>
             <input
               type="range"
               min="0.25"
@@ -862,15 +891,15 @@ function kindNameJa(kind: string): string {
               :checked="!!selectedClip.reversed"
               @change="(e) => setReversed((e.target as HTMLInputElement).checked)"
             />
-            <span>うしろから ながす</span>
+            <span>逆再生</span>
           </label>
         </div>
       </section>
 
       <section v-if="hasEffects(selectedClip) || selectedClip.kind === 'shape' || selectedClip.kind === 'text'" class="section">
-        <div class="section-head">{{ t('かさねかた', '合成') }}</div>
+        <div class="section-head">{{ t('合成', '合成') }}</div>
         <label class="field">
-          <span>{{ t('かさねかた', 'ブレンドモード') }}</span>
+          <span>{{ t('ブレンド', 'ブレンドモード') }}</span>
           <select
             :value="selectedClip.blendMode ?? 'normal'"
             @change="(e) => setBlendMode((e.target as HTMLSelectElement).value as BlendMode)"
@@ -883,47 +912,47 @@ function kindNameJa(kind: string): string {
       <!-- カラーグレーディング -->
       <section v-if="hasEffects(selectedClip)" class="section">
         <div class="section-head">
-          <span>{{ t('いろあい (こまかい)', 'カラーグレード') }}</span>
-          <button class="ghost tiny" @click="resetGrade">{{ t('もとに もどす', 'リセット') }}</button>
+          <span>{{ t('カラーグレード (色調整)', 'カラーグレード') }}</span>
+          <button class="ghost tiny" @click="resetGrade">{{ t('リセット', 'リセット') }}</button>
         </div>
-        <div class="sub-title">くらいところ</div>
+        <div class="sub-title">暗い部分 (シャドウ)</div>
         <div class="grid-3">
-          <EffectSlider label="あか" :value="videoOrImageClip?.colorGrade?.lift?.r ?? 0" :min="-0.5" :max="0.5" :step="0.01"
+          <EffectSlider label="赤" :value="videoOrImageClip?.colorGrade?.lift?.r ?? 0" :min="-0.5" :max="0.5" :step="0.01"
             @change="(v) => updateGrade({ lift: { ...(videoOrImageClip?.colorGrade?.lift ?? { r: 0, g: 0, b: 0 }), r: v } })" />
-          <EffectSlider label="みどり" :value="videoOrImageClip?.colorGrade?.lift?.g ?? 0" :min="-0.5" :max="0.5" :step="0.01"
+          <EffectSlider label="緑" :value="videoOrImageClip?.colorGrade?.lift?.g ?? 0" :min="-0.5" :max="0.5" :step="0.01"
             @change="(v) => updateGrade({ lift: { ...(videoOrImageClip?.colorGrade?.lift ?? { r: 0, g: 0, b: 0 }), g: v } })" />
-          <EffectSlider label="あお" :value="videoOrImageClip?.colorGrade?.lift?.b ?? 0" :min="-0.5" :max="0.5" :step="0.01"
+          <EffectSlider label="青" :value="videoOrImageClip?.colorGrade?.lift?.b ?? 0" :min="-0.5" :max="0.5" :step="0.01"
             @change="(v) => updateGrade({ lift: { ...(videoOrImageClip?.colorGrade?.lift ?? { r: 0, g: 0, b: 0 }), b: v } })" />
         </div>
-        <div class="sub-title">まんなか</div>
+        <div class="sub-title">中間 (ガンマ)</div>
         <div class="grid-3">
-          <EffectSlider label="あか" :value="videoOrImageClip?.colorGrade?.gamma?.r ?? 0" :min="-1" :max="1" :step="0.01"
+          <EffectSlider label="赤" :value="videoOrImageClip?.colorGrade?.gamma?.r ?? 0" :min="-1" :max="1" :step="0.01"
             @change="(v) => updateGrade({ gamma: { ...(videoOrImageClip?.colorGrade?.gamma ?? { r: 0, g: 0, b: 0 }), r: v } })" />
-          <EffectSlider label="みどり" :value="videoOrImageClip?.colorGrade?.gamma?.g ?? 0" :min="-1" :max="1" :step="0.01"
+          <EffectSlider label="緑" :value="videoOrImageClip?.colorGrade?.gamma?.g ?? 0" :min="-1" :max="1" :step="0.01"
             @change="(v) => updateGrade({ gamma: { ...(videoOrImageClip?.colorGrade?.gamma ?? { r: 0, g: 0, b: 0 }), g: v } })" />
-          <EffectSlider label="あお" :value="videoOrImageClip?.colorGrade?.gamma?.b ?? 0" :min="-1" :max="1" :step="0.01"
+          <EffectSlider label="青" :value="videoOrImageClip?.colorGrade?.gamma?.b ?? 0" :min="-1" :max="1" :step="0.01"
             @change="(v) => updateGrade({ gamma: { ...(videoOrImageClip?.colorGrade?.gamma ?? { r: 0, g: 0, b: 0 }), b: v } })" />
         </div>
-        <div class="sub-title">あかるいところ</div>
+        <div class="sub-title">明るい部分 (ハイライト)</div>
         <div class="grid-3">
-          <EffectSlider label="あか" :value="videoOrImageClip?.colorGrade?.gain?.r ?? 0" :min="-0.5" :max="0.5" :step="0.01"
+          <EffectSlider label="赤" :value="videoOrImageClip?.colorGrade?.gain?.r ?? 0" :min="-0.5" :max="0.5" :step="0.01"
             @change="(v) => updateGrade({ gain: { ...(videoOrImageClip?.colorGrade?.gain ?? { r: 0, g: 0, b: 0 }), r: v } })" />
-          <EffectSlider label="みどり" :value="videoOrImageClip?.colorGrade?.gain?.g ?? 0" :min="-0.5" :max="0.5" :step="0.01"
+          <EffectSlider label="緑" :value="videoOrImageClip?.colorGrade?.gain?.g ?? 0" :min="-0.5" :max="0.5" :step="0.01"
             @change="(v) => updateGrade({ gain: { ...(videoOrImageClip?.colorGrade?.gain ?? { r: 0, g: 0, b: 0 }), g: v } })" />
-          <EffectSlider label="あお" :value="videoOrImageClip?.colorGrade?.gain?.b ?? 0" :min="-0.5" :max="0.5" :step="0.01"
+          <EffectSlider label="青" :value="videoOrImageClip?.colorGrade?.gain?.b ?? 0" :min="-0.5" :max="0.5" :step="0.01"
             @change="(v) => updateGrade({ gain: { ...(videoOrImageClip?.colorGrade?.gain ?? { r: 0, g: 0, b: 0 }), b: v } })" />
         </div>
-        <EffectSlider label="あたたかさ" :value="videoOrImageClip?.colorGrade?.temperature ?? 0" :min="-1" :max="1" :step="0.01"
+        <EffectSlider :label="t('暖かさ', '色温度')" :value="videoOrImageClip?.colorGrade?.temperature ?? 0" :min="-1" :max="1" :step="0.01"
           @change="(v) => updateGrade({ temperature: v })" />
-        <EffectSlider label="みどり/むらさき" :value="videoOrImageClip?.colorGrade?.tint ?? 0" :min="-1" :max="1" :step="0.01"
+        <EffectSlider :label="t('緑〜紫', 'ティント')" :value="videoOrImageClip?.colorGrade?.tint ?? 0" :min="-1" :max="1" :step="0.01"
           @change="(v) => updateGrade({ tint: v })" />
       </section>
 
       <!-- クロマキー -->
       <section v-if="hasEffects(selectedClip)" class="section">
         <div class="section-head">
-          <span>{{ t('いろを すきとおらせる', 'クロマキー') }}</span>
-          <button class="ghost tiny" @click="clearChroma">{{ t('なし', '解除') }}</button>
+          <span>{{ t('クロマキー (色を透明に)', 'クロマキー') }}</span>
+          <button class="ghost tiny" @click="clearChroma">{{ t('解除', '解除') }}</button>
         </div>
         <label class="toggle">
           <input
@@ -931,7 +960,7 @@ function kindNameJa(kind: string): string {
             :checked="!!videoOrImageClip?.chromaKey?.enabled"
             @change="(e) => updateChroma({ enabled: (e.target as HTMLInputElement).checked })"
           />
-          <span>つかう</span>
+          <span>使う</span>
         </label>
         <div v-if="videoOrImageClip?.chromaKey?.enabled" class="grid-2">
           <label class="field">
@@ -943,11 +972,11 @@ function kindNameJa(kind: string): string {
             />
           </label>
           <div />
-          <EffectSlider label="どのくらい けすか" :value="videoOrImageClip?.chromaKey.threshold" :min="0" :max="1" :step="0.01"
+          <EffectSlider :label="t('消す範囲', 'しきい値')" :value="videoOrImageClip?.chromaKey.threshold" :min="0" :max="1" :step="0.01"
             @change="(v) => updateChroma({ threshold: v })" />
-          <EffectSlider label="ふちの やわらかさ" :value="videoOrImageClip?.chromaKey.softness" :min="0" :max="1" :step="0.01"
+          <EffectSlider label="ふちの柔らかさ" :value="videoOrImageClip?.chromaKey.softness" :min="0" :max="1" :step="0.01"
             @change="(v) => updateChroma({ softness: v })" />
-          <EffectSlider label="のこった いろを へらす" :value="videoOrImageClip?.chromaKey.spillSuppress" :min="0" :max="1" :step="0.01"
+          <EffectSlider label="色残りを減らす" :value="videoOrImageClip?.chromaKey.spillSuppress" :min="0" :max="1" :step="0.01"
             @change="(v) => updateChroma({ spillSuppress: v })" />
         </div>
       </section>
@@ -955,43 +984,43 @@ function kindNameJa(kind: string): string {
       <!-- ピクセルエフェクト (特殊効果) -->
       <section v-if="hasEffects(selectedClip)" class="section">
         <div class="section-head">
-          <span>{{ t('とくしゅ こうか', 'ピクセルエフェクト') }}</span>
-          <button class="ghost tiny" @click="resetPixelFx">{{ t('もとに もどす', 'リセット') }}</button>
+          <span>{{ t('特殊効果', 'ピクセルエフェクト') }}</span>
+          <button class="ghost tiny" @click="resetPixelFx">{{ t('リセット', 'リセット') }}</button>
         </div>
         <EffectSlider
-          :label="t('まわりを くらく (ビネット)', 'ビネット')"
+          :label="t('ビネット (周辺を暗く)', 'ビネット')"
           :value="videoOrImageClip?.pixelFx?.vignette ?? 0" :min="0" :max="1" :step="0.01"
           @change="(v) => updatePixelFx({ vignette: v })" />
         <EffectSlider
-          :label="t('くっきり (シャープ)', 'シャープ')"
+          :label="t('シャープ (くっきり)', 'シャープ')"
           :value="videoOrImageClip?.pixelFx?.sharpen ?? 0" :min="0" :max="1" :step="0.01"
           @change="(v) => updatePixelFx({ sharpen: v })" />
         <EffectSlider
-          :label="t('しぜんな あざやかさ', 'バイブランス')"
+          :label="t('バイブランス (自然な鮮やかさ)', 'バイブランス')"
           :value="videoOrImageClip?.pixelFx?.vibrance ?? 0" :min="-1" :max="1" :step="0.01"
           @change="(v) => updatePixelFx({ vibrance: v })" />
         <EffectSlider
-          :label="t('ざらざら (フィルムグレイン)', 'フィルムグレイン')"
+          :label="t('フィルムグレイン (ざらつき)', 'フィルムグレイン')"
           :value="videoOrImageClip?.pixelFx?.grain ?? 0" :min="0" :max="1" :step="0.01"
           @change="(v) => updatePixelFx({ grain: v })" />
         <EffectSlider
-          :label="t('モザイク (おおきさ)', 'モザイク')"
+          :label="t('モザイク', 'モザイク')"
           :value="videoOrImageClip?.pixelFx?.pixelate ?? 0" :min="0" :max="40" :step="1"
           @change="(v) => updatePixelFx({ pixelate: v })" />
         <EffectSlider
-          :label="t('いろの だんかい (ポスタライズ)', 'ポスタライズ')"
+          :label="t('ポスタライズ (階調を減らす)', 'ポスタライズ')"
           :value="videoOrImageClip?.pixelFx?.posterize ?? 0" :min="0" :max="16" :step="1"
           @change="(v) => updatePixelFx({ posterize: v })" />
         <EffectSlider
-          :label="t('しろくろ 2かい (しきい値)', '二値化しきい値')"
+          :label="t('二値化 (白黒2階調)', '二値化しきい値')"
           :value="videoOrImageClip?.pixelFx?.threshold ?? 0" :min="0" :max="1" :step="0.01"
           @change="(v) => updatePixelFx({ threshold: v })" />
         <EffectSlider
-          :label="t('よこじま (そうさせん)', '走査線')"
+          :label="t('走査線 (横じま)', '走査線')"
           :value="videoOrImageClip?.pixelFx?.scanlines ?? 0" :min="0" :max="1" :step="0.01"
           @change="(v) => updatePixelFx({ scanlines: v })" />
         <EffectSlider
-          :label="t('いろの ずれ (RGB)', '色収差')"
+          :label="t('色収差 (RGBずれ)', '色収差')"
           :value="videoOrImageClip?.pixelFx?.chromaticAberration ?? 0" :min="0" :max="10" :step="0.5"
           @change="(v) => updatePixelFx({ chromaticAberration: v })" />
         <label class="toggle" style="margin-top: 6px;">
@@ -1000,11 +1029,11 @@ function kindNameJa(kind: string): string {
             :checked="!!videoOrImageClip?.pixelFx?.duotone?.enabled"
             @change="(e) => updateDuotone({ enabled: (e.target as HTMLInputElement).checked })"
           />
-          <span>{{ t('ふたいろ にする (デュオトーン)', 'デュオトーン') }}</span>
+          <span>{{ t('デュオトーン (2色)', 'デュオトーン') }}</span>
         </label>
         <div v-if="videoOrImageClip?.pixelFx?.duotone?.enabled" class="grid-2">
           <label class="field">
-            <span>{{ t('くらい ところの いろ', '暗部の色') }}</span>
+            <span>{{ t('暗い部分の色', '暗部の色') }}</span>
             <input
               type="color"
               :value="videoOrImageClip?.pixelFx?.duotone?.shadow ?? '#1a1a4a'"
@@ -1012,7 +1041,7 @@ function kindNameJa(kind: string): string {
             />
           </label>
           <label class="field">
-            <span>{{ t('あかるい ところの いろ', '明部の色') }}</span>
+            <span>{{ t('明るい部分の色', '明部の色') }}</span>
             <input
               type="color"
               :value="videoOrImageClip?.pixelFx?.duotone?.highlight ?? '#ffd98a'"
@@ -1025,12 +1054,12 @@ function kindNameJa(kind: string): string {
       <!-- テキスト装飾 / アニメ -->
       <section v-if="selectedClip.kind === 'text'" class="section">
         <div class="section-head">
-          <span>{{ t('もじの かざり', 'テキスト装飾') }}</span>
-          <button class="ghost tiny" @click="clearDecor">{{ t('なし', '解除') }}</button>
+          <span>{{ t('文字の飾り', 'テキスト装飾') }}</span>
+          <button class="ghost tiny" @click="clearDecor">{{ t('解除', '解除') }}</button>
         </div>
         <div class="grid-2">
           <label class="field">
-            <span>かげの いろ</span>
+            <span>影の色</span>
             <input
               type="color"
               :value="textClip?.decor?.shadow?.color ?? '#000000'"
@@ -1038,7 +1067,7 @@ function kindNameJa(kind: string): string {
             />
           </label>
           <label class="field">
-            <span>かげの ぼかし</span>
+            <span>影のぼかし</span>
             <input
               type="number"
               min="0" step="1"
@@ -1047,7 +1076,7 @@ function kindNameJa(kind: string): string {
             />
           </label>
           <label class="field">
-            <span>かげ よこ</span>
+            <span>影 (横)</span>
             <input
               type="number"
               step="1"
@@ -1056,7 +1085,7 @@ function kindNameJa(kind: string): string {
             />
           </label>
           <label class="field">
-            <span>かげ たて</span>
+            <span>影 (縦)</span>
             <input
               type="number"
               step="1"
@@ -1065,7 +1094,7 @@ function kindNameJa(kind: string): string {
             />
           </label>
           <label class="field">
-            <span>ふちの いろ</span>
+            <span>ふちの色</span>
             <input
               type="color"
               :value="textClip?.decor?.outline?.color ?? '#000000'"
@@ -1073,7 +1102,7 @@ function kindNameJa(kind: string): string {
             />
           </label>
           <label class="field">
-            <span>ふちの ふとさ</span>
+            <span>ふちの太さ</span>
             <input
               type="number"
               min="0" step="0.5"
@@ -1082,7 +1111,7 @@ function kindNameJa(kind: string): string {
             />
           </label>
           <label class="field">
-            <span>もじと もじの あいだ</span>
+            <span>字間</span>
             <input
               type="number"
               step="0.5"
@@ -1091,7 +1120,7 @@ function kindNameJa(kind: string): string {
             />
           </label>
           <label class="field">
-            <span>ぎょうの あいだ (ばい)</span>
+            <span>行間 (倍)</span>
             <input
               type="number"
               min="1" max="3" step="0.05"
@@ -1103,10 +1132,10 @@ function kindNameJa(kind: string): string {
       </section>
 
       <section v-if="selectedClip.kind === 'text'" class="section">
-        <div class="section-head">{{ t('もじの うごき', 'テキストアニメ') }}</div>
+        <div class="section-head">{{ t('文字のアニメーション', 'テキストアニメ') }}</div>
         <div class="grid-2">
           <label class="field">
-            <span>しゅるい</span>
+            <span>種類</span>
             <select
               :value="textClip?.anim?.type ?? 'none'"
               @change="(e) => setAnim((e.target as HTMLSelectElement).value as TextAnimType, textClip?.anim?.duration ?? 1)"
@@ -1115,7 +1144,7 @@ function kindNameJa(kind: string): string {
             </select>
           </label>
           <label class="field">
-            <span>ながさ (びょう)</span>
+            <span>長さ (秒)</span>
             <input
               type="number"
               min="0.1" step="0.1"
@@ -1129,9 +1158,9 @@ function kindNameJa(kind: string): string {
 
       <!-- 図形 -->
       <section v-if="selectedClip.kind === 'shape'" class="section">
-        <div class="section-head">{{ t('かたち', '図形') }}</div>
+        <div class="section-head">{{ t('図形', '図形') }}</div>
         <label class="field">
-          <span>{{ t('かたち', '形状') }}</span>
+          <span>{{ t('図形', '形状') }}</span>
           <select
             :value="shapeClip!.shape"
             @change="(e) => updateShape({ shape: (e.target as HTMLSelectElement).value as ShapeKind })"
@@ -1141,7 +1170,7 @@ function kindNameJa(kind: string): string {
         </label>
         <div class="grid-2">
           <label class="field">
-            <span>よこの ながさ</span>
+            <span>横幅</span>
             <input
               type="number"
               step="0.01" min="0.01" max="2"
@@ -1150,7 +1179,7 @@ function kindNameJa(kind: string): string {
             />
           </label>
           <label class="field">
-            <span>たての ながさ</span>
+            <span>高さ</span>
             <input
               type="number"
               step="0.01" min="0.01" max="2"
@@ -1159,7 +1188,7 @@ function kindNameJa(kind: string): string {
             />
           </label>
           <label class="field">
-            <span>なかの いろ</span>
+            <span>塗りの色</span>
             <div class="row gap-4">
               <input
                 type="color"
@@ -1170,7 +1199,7 @@ function kindNameJa(kind: string): string {
             </div>
           </label>
           <label class="field">
-            <span>せんの いろ</span>
+            <span>線の色</span>
             <div class="row gap-4">
               <input
                 type="color"
@@ -1181,7 +1210,7 @@ function kindNameJa(kind: string): string {
             </div>
           </label>
           <label class="field">
-            <span>せんの ふとさ</span>
+            <span>線の太さ</span>
             <input
               type="number"
               min="0" step="1"
@@ -1190,7 +1219,7 @@ function kindNameJa(kind: string): string {
             />
           </label>
           <label class="field" v-if="shapeClip!.shape === 'rect'">
-            <span>かどの まるさ</span>
+            <span>角の丸み</span>
             <input
               type="number"
               min="0" step="1"
@@ -1203,13 +1232,13 @@ function kindNameJa(kind: string): string {
 
       <!-- EQ (音声/映像) -->
       <section v-if="hasVolume(selectedClip)" class="section">
-        <div class="section-head">{{ t('おとの ちょうせい (ひくい / まんなか / たかい)', 'EQ (3 バンド)') }}</div>
+        <div class="section-head">{{ t('イコライザー (低・中・高音)', 'EQ (3 バンド)') }}</div>
         <div class="grid-3">
-          <EffectSlider label="ひくい おと" :value="audioLikeClip?.eq?.low ?? 0" :min="-24" :max="24" :step="0.5"
+          <EffectSlider label="低音" :value="audioLikeClip?.eq?.low ?? 0" :min="-24" :max="24" :step="0.5"
             @change="(v) => updateEQ({ low: v })" />
-          <EffectSlider label="まんなか" :value="audioLikeClip?.eq?.mid ?? 0" :min="-24" :max="24" :step="0.5"
+          <EffectSlider label="中音" :value="audioLikeClip?.eq?.mid ?? 0" :min="-24" :max="24" :step="0.5"
             @change="(v) => updateEQ({ mid: v })" />
-          <EffectSlider label="たかい おと" :value="audioLikeClip?.eq?.high ?? 0" :min="-24" :max="24" :step="0.5"
+          <EffectSlider label="高音" :value="audioLikeClip?.eq?.high ?? 0" :min="-24" :max="24" :step="0.5"
             @change="(v) => updateEQ({ high: v })" />
         </div>
       </section>
@@ -1217,16 +1246,16 @@ function kindNameJa(kind: string): string {
       <!-- リンク -->
       <section class="section">
         <div class="row gap-4">
-          <button class="ghost tiny" :disabled="selection.selectedClipIds.value.length < 2" @click="linkSelection">🔗 {{ t('いっしょにする', 'リンク') }}</button>
-          <button class="ghost tiny" :disabled="!selectedClip.linkGroup" @click="unlinkSelection">🔗 {{ t('はずす', '解除') }}</button>
-          <span v-if="selectedClip.linkGroup" class="muted mono" style="font-size: 10px">{{ t('いっしょになっている', 'リンク済') }}</span>
+          <button class="ghost tiny" :disabled="selection.selectedClipIds.value.length < 2" @click="linkSelection">🔗 {{ t('リンク', 'リンク') }}</button>
+          <button class="ghost tiny" :disabled="!selectedClip.linkGroup" @click="unlinkSelection">🔗 {{ t('リンク解除', '解除') }}</button>
+          <span v-if="selectedClip.linkGroup" class="muted mono" style="font-size: 10px">{{ t('リンク中', 'リンク済') }}</span>
         </div>
       </section>
 
       <!-- 削除 -->
       <section class="section">
         <button class="danger" @click="() => { if (selectedClip) { store.removeClip(selectedClip.id); selection.clearSelection() } }">
-          {{ t('このクリップを けす', 'クリップを削除') }}
+          {{ t('このクリップを削除', 'クリップを削除') }}
         </button>
       </section>
     </template>

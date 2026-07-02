@@ -157,7 +157,7 @@ export const useProjectStore = defineStore('project', () => {
   async function addAssetFromFile(file: File): Promise<Asset | null> {
     const kind = detectAssetKind(file)
     if (!kind) {
-      toast.warn(`この ファイルは つかえないよ: ${file.name}`)
+      toast.warn(`この形式のファイルは使えません: ${file.name}`)
       return null
     }
     const assetId = nanoid()
@@ -177,9 +177,9 @@ export const useProjectStore = defineStore('project', () => {
       await saveAssetBlob(state.value.meta.id, assetId, file)
     } catch (err: any) {
       if (err?.name === 'QuotaExceededError') {
-        toast.error(`ほぞんできる ばしょが いっぱいだよ: ${file.name}`)
+        toast.error(`保存できる容量がいっぱいです: ${file.name}`)
       } else {
-        toast.error(`ファイルを いれられなかったよ: ${file.name}`)
+        toast.error(`ファイルを追加できませんでした: ${file.name}`)
       }
       return null
     }
@@ -200,7 +200,7 @@ export const useProjectStore = defineStore('project', () => {
     try {
       await deleteAssetBlob(state.value.meta.id, assetId)
     } catch (err) {
-      toast.error('そざいを けせなかったよ')
+      toast.error('素材を削除できませんでした')
     }
     touch()
   }
@@ -623,7 +623,7 @@ export const useProjectStore = defineStore('project', () => {
         lastSavedAt = Date.now()
       } catch (err: any) {
         if (err?.name === 'QuotaExceededError') {
-          toast.error('ほぞんできる ばしょが いっぱいだよ (じどうほぞん)')
+          toast.error('保存できる容量がいっぱいです (自動保存)')
         } else {
           // 連続エラー時のスパム防止: 最後の保存失敗から 10s 経過時のみ
           console.error('autosave error', err)

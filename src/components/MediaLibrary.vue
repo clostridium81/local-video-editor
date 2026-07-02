@@ -35,20 +35,20 @@ const assetList = computed<Asset[]>(() => {
 const folders = computed(() => store.state.folders ?? [])
 
 function addFolderPrompt() {
-  const name = window.prompt(t('いれものの なまえ', 'フォルダ名'))
+  const name = window.prompt(t('フォルダの名前', 'フォルダ名'))
   if (!name) return
   store.addFolder(name)
 }
 function deleteFolder(id: string) {
   if (!confirm(t(
-    'この いれものを けしますか? (なかみは のこります)',
+    'このフォルダを削除しますか? (中の素材は残ります)',
     'このフォルダを削除しますか? (素材は残ります)'
   ))) return
   store.removeFolder(id)
   if (currentFolder.value === id) currentFolder.value = null
 }
 function renameFolderPrompt(id: string, cur: string) {
-  const name = window.prompt(t('あたらしい なまえ', '新しい名前'), cur)
+  const name = window.prompt(t('新しい名前', '新しい名前'), cur)
   if (name) store.renameFolder(id, name)
 }
 
@@ -85,10 +85,10 @@ async function uploadFiles(files: File[]) {
       const a = await store.addAssetFromFile(f)
       if (a) ok++
     }
-    if (ok > 0) toast.success(t(`${ok} こ ファイルを いれたよ`, `${ok} 件の素材を追加しました`))
+    if (ok > 0) toast.success(t(`${ok} 件のファイルを追加しました`, `${ok} 件の素材を追加しました`))
   } catch (e: any) {
     console.error(e)
-    toast.error(t('ファイルを いれられなかったよ: ', '素材の追加に失敗しました: ') + (e?.message ?? ''))
+    toast.error(t('ファイルを追加できませんでした: ', '素材の追加に失敗しました: ') + (e?.message ?? ''))
   } finally {
     uploading.value = false
   }
@@ -122,7 +122,7 @@ function onAssetDragStart(e: DragEvent, asset: Asset) {
 
 async function onDelete(asset: Asset) {
   if (!confirm(t(
-    `「${asset.name}」を けしてもいい? つかっている クリップも きえるよ。`,
+    `「」を削除しますか? 使っているクリップも消えます。`,
     `素材「${asset.name}」を削除します。この素材を使っているクリップも消えます。`
   ))) return
   await store.removeAsset(asset.id)
@@ -150,24 +150,24 @@ function kindColor(kind: string): string {
 }
 
 function kindLabelJa(kind: string): string {
-  if (kind === 'video') return t('どうが', '動画')
-  if (kind === 'audio') return t('おと', '音声')
-  if (kind === 'image') return t('え', '画像')
+  if (kind === 'video') return t('動画', '動画')
+  if (kind === 'audio') return t('音声', '音声')
+  if (kind === 'image') return t('画像', '画像')
   return kind
 }
 </script>
 
 <template>
   <div class="panel-title">
-    <span>{{ t('そざい', 'メディア') }}</span>
-    <button class="ghost" @click="onPickClick">＋ {{ t('いれる', '追加') }}</button>
+    <span>{{ t('素材', 'メディア') }}</span>
+    <button class="ghost" @click="onPickClick">＋ {{ t('追加', '追加') }}</button>
   </div>
 
   <div class="search-wrap">
     <input
       class="search"
       type="search"
-      :placeholder="t('さがす...', '検索...')"
+      :placeholder="t('検索...', '検索...')"
       v-model="searchQuery"
     />
   </div>
@@ -179,7 +179,7 @@ function kindLabelJa(kind: string): string {
       @click="currentFolder = null"
       @dragover="(e) => onAssetDragOverFolder(e, null)"
       @drop="(e) => onAssetDropOnFolder(e, null)"
-    >{{ t('ぜんぶ', '全て') }}</div>
+    >{{ t('全部', '全て') }}</div>
     <div
       v-for="f in folders"
       :key="f.id"
@@ -205,10 +205,10 @@ function kindLabelJa(kind: string): string {
     <div v-if="assetList.length === 0" class="empty">
       <div class="empty-icon">⬒</div>
       <div class="empty-text">
-        <template v-if="locale.isEasy.value">どうが・え・おとを<br />ここに ドラッグして いれてね</template>
+        <template v-if="locale.isEasy.value">動画・画像・音声を<br />ここにドラッグして追加</template>
         <template v-else>動画・画像・音声ファイルを<br />ドラッグ&ドロップ</template>
       </div>
-      <button class="ghost" @click="onPickClick">{{ t('ファイルを えらぶ', 'ファイルを選ぶ') }}</button>
+      <button class="ghost" @click="onPickClick">{{ t('ファイルを選ぶ', 'ファイルを選ぶ') }}</button>
     </div>
 
     <div v-else class="asset-list">
@@ -230,13 +230,13 @@ function kindLabelJa(kind: string): string {
             <span>· {{ formatSize(asset.size) }}</span>
           </div>
         </div>
-        <button class="ghost del" :title="t('けす', '削除')" @click.stop="onDelete(asset)">×</button>
+        <button class="ghost del" :title="t('削除', '削除')" @click.stop="onDelete(asset)">×</button>
       </div>
     </div>
 
-    <div v-if="uploading" class="uploading">{{ t('よみこみちゅう…', '読み込み中…') }}</div>
+    <div v-if="uploading" class="uploading">{{ t('読み込み中…', '読み込み中…') }}</div>
     <div v-if="isDragging" class="drop-overlay">
-      <span>{{ t('ここに はなしてね', 'ここにドロップ') }}</span>
+      <span>{{ t('ここにドロップ', 'ここにドロップ') }}</span>
     </div>
   </div>
 

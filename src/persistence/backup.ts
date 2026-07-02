@@ -122,15 +122,15 @@ export async function importBackup(file: File): Promise<ImportResult> {
   const files = await unzipAsync(bytes)
 
   if (!files['manifest.json'] || !files['project.json']) {
-    throw new Error('この ファイルは このアプリで つくったものでは ないみたい')
+    throw new Error('このファイルはこのアプリで作成したものではないようです')
   }
 
   const manifest = JSON.parse(strFromU8(files['manifest.json'])) as BackupManifest
   if (manifest.format !== 'local-video-editor-backup') {
-    throw new Error('この ファイルは このアプリで つくったものでは ないよ')
+    throw new Error('このファイルはこのアプリで作成したものではありません')
   }
   if (manifest.version !== 1) {
-    throw new Error(`この ファイルは あたらしすぎて ひらけないよ (v${manifest.version})`)
+    throw new Error(`このファイルは新しすぎて開けません (v${manifest.version})`)
   }
 
   const project = JSON.parse(strFromU8(files['project.json'])) as ProjectState

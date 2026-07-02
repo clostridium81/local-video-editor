@@ -743,7 +743,7 @@ export async function exportProject(
   state: ProjectState,
   opts: ExportOptions
 ): Promise<ExportResult> {
-  if (!hasWebCodecs) throw new Error('この ブラウザでは どうがの かきだしが できないよ')
+  if (!hasWebCodecs) throw new Error('このブラウザでは動画の書き出しができません')
 
   const { width, height, fps, videoBitrate, audioBitrate, format, includeAudio, signal } = opts
   state = {

@@ -45,7 +45,7 @@ function toggle() {
 
 /**
  * (やさしい, ふつう) のペアを渡すと、現在モードに応じた文字列を返す。
- * テンプレートで {{ t('もじ', 'テキスト') }} のように使う。
+ * テンプレートで {{ t('文字', 'テキスト') }} のように使う。
  */
 function t(easy: string, normal: string): string {
   return mode.value === 'easy' ? easy : normal
