@@ -117,12 +117,15 @@ function onAssetDblClick(asset: Asset) {
 function onAssetDragStart(e: DragEvent, asset: Asset) {
   if (!e.dataTransfer) return
   e.dataTransfer.setData('application/x-lve-asset-id', asset.id)
+  // dragover 中は getData が使えないため、種別を「タイプ名」として埋め込む。
+  // タイムライン側はこれを見て、置けないトラックで no-drop カーソルを出す
+  e.dataTransfer.setData(`application/x-lve-kind-${asset.kind}`, '1')
   e.dataTransfer.effectAllowed = 'copy'
 }
 
 async function onDelete(asset: Asset) {
   if (!confirm(t(
-    `「」を削除しますか? 使っているクリップも消えます。`,
+    `「${asset.name}」を削除しますか? 使っているクリップも消えます。`,
     `素材「${asset.name}」を削除します。この素材を使っているクリップも消えます。`
   ))) return
   await store.removeAsset(asset.id)

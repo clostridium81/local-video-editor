@@ -18,6 +18,16 @@ function isTypingTarget(el: EventTarget | null): boolean {
   return false
 }
 
+/**
+ * モーダル (エクスポート/プロジェクト管理/録画/ショートカット一覧) や
+ * チュートリアルが開いている間は編集ショートカットを止める。
+ * ダイアログの裏で Space 再生・S 分割・Delete 削除などが
+ * 気づかないうちに走るのを防ぐ。
+ */
+function isModalOpen(): boolean {
+  return !!document.querySelector('.modal-backdrop, .tour-bubble')
+}
+
 function isCmdOrCtrl(e: KeyboardEvent) {
   return e.metaKey || e.ctrlKey
 }
@@ -29,6 +39,7 @@ export function useKeyboard() {
 
   function onKey(e: KeyboardEvent) {
     if (isTypingTarget(e.target)) return
+    if (isModalOpen()) return
 
     // Undo / Redo
     if (isCmdOrCtrl(e) && e.key.toLowerCase() === 'z' && !e.shiftKey) {
@@ -106,12 +117,13 @@ export function useKeyboard() {
       return
     }
 
-    // Delete
+    // Delete (リップルモード中は後続クリップを詰める)
     if (e.key === 'Delete' || e.key === 'Backspace') {
       const ids = selection.selectedClipIds.value
       if (ids.length > 0) {
         e.preventDefault()
-        store.removeClips(ids)
+        if (store.state.timeline.rippleMode) store.rippleDelete(ids)
+        else store.removeClips(ids)
         selection.clearSelection()
       }
       return

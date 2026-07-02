@@ -634,6 +634,11 @@ async function renderAudioMix(
     const c = a.clip
     const track = state.tracks.find(t => t.id === c.trackId)
     if (track?.muted || c.muted) continue
+    // ソロ: プレビューと同じく、どれかのトラックがソロなら
+    // 非ソロのトラック上のクリップは鳴らさない。
+    // (video トラックのクリップは trackGains を通らず master 直結なので
+    //  gain だけでは落とせない → クリップ単位でスキップする)
+    if (anySolo && !track?.solo) continue
 
     let srcBuf: AudioBuffer = buf
     if (c.reversed) {

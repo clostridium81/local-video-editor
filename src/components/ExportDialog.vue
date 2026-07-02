@@ -64,6 +64,22 @@ const resolvedBitrate = computed(() => {
 
 const abortCtrl = ref<AbortController | null>(null)
 
+// fps 候補: 定番 + 作品の fps (重複は除外して1つにまとめる)
+const fpsOptions = computed(() => {
+  const base = [24, 30, 60]
+  const projectFps = store.state.meta.fps
+  return base.includes(projectFps)
+    ? base
+    : [...base, projectFps].sort((a, b) => a - b)
+})
+
+// In/Out 点が設定されているか (未設定なら「開始〜終了」radio を無効化)
+const hasInOut = computed(
+  () =>
+    store.state.timeline.inPoint != null ||
+    store.state.timeline.outPoint != null
+)
+
 // 実際に書き出される長さ (秒)。エンジン側のデフォルト範囲と同じ計算
 const exportLength = computed(() => {
   const dur = store.state.timeline.duration
@@ -129,10 +145,10 @@ const etaSec = computed(() => {
 
 function fmtEta(s: number | null) {
   if (s == null) return '—'
-  if (s < 60) return `残り 秒`
+  if (s < 60) return `残り ${s} 秒`
   const m = Math.floor(s / 60)
   const r = s % 60
-  return `残り 分 秒`
+  return `残り ${m} 分 ${r} 秒`
 }
 
 async function onStart() {
@@ -188,7 +204,7 @@ async function onStart() {
   try {
     const { blob, filename } = await exportProject(store.serialize(), opts)
     await downloadBlob(blob, filename)
-    toast.success(`完成しました: `)
+    toast.success(`完成しました: ${filename}`)
     emit('close')
   } catch (err: any) {
     if (err?.name === 'AbortError') {
@@ -235,7 +251,9 @@ function fmtPhaseMessage(m: string): string {
 </script>
 
 <template>
-  <div class="modal-backdrop" @click.self="onCancel">
+  <!-- 実行中は背景クリックで閉じない (誤クリックで書き出しが中断されるのを防ぐ)。
+       中断は明示的な「キャンセル」ボタンのみ -->
+  <div class="modal-backdrop" @click.self="() => { if (!running) emit('close') }">
     <div class="modal">
       <div class="modal-head">
         <div class="title">{{ t('動画を書き出す', 'エクスポート') }}</div>
@@ -255,11 +273,8 @@ function fmtPhaseMessage(m: string): string {
           <label class="field">
             <span>フレームレート (1秒のコマ数)</span>
             <select v-model.number="fps">
-              <option :value="24">24 fps</option>
-              <option :value="30">30 fps</option>
-              <option :value="60">60 fps</option>
-              <option :value="store.state.meta.fps">
-                作品と同じ ({{ store.state.meta.fps }} fps)
+              <option v-for="f in fpsOptions" :key="f" :value="f">
+                {{ f }} fps{{ f === store.state.meta.fps ? ' (作品と同じ)' : '' }}
               </option>
             </select>
           </label>
@@ -312,8 +327,8 @@ function fmtPhaseMessage(m: string): string {
               <input type="radio" value="full" v-model="useRange" />
               <span>全体</span>
             </label>
-            <label class="toggle">
-              <input type="radio" value="inout" v-model="useRange" />
+            <label class="toggle" :class="{ dim: !hasInOut }" :title="hasInOut ? '' : t('タイムラインで I / O キーを押して範囲を設定すると選べます', 'タイムラインで In/Out 点を設定すると選択できます')">
+              <input type="radio" value="inout" v-model="useRange" :disabled="!hasInOut" />
               <span>開始〜終了 (In〜Out)</span>
             </label>
             <label class="toggle">
@@ -437,6 +452,10 @@ function fmtPhaseMessage(m: string): string {
   gap: 6px;
   font-size: 12px;
   cursor: pointer;
+}
+.toggle.dim {
+  opacity: 0.4;
+  cursor: not-allowed;
 }
 .summary {
   font-size: 11px;

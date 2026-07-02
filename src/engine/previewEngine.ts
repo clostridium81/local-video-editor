@@ -275,7 +275,8 @@ export class PreviewEngine {
       const trans = sampleTransition(clip, t)
       const eff = this.computeEffective(clip, t, trans)
       const trackVol = tr?.volume ?? 1
-      const muteBySolo = anySolo && tr?.kind === 'audio' && !tr.solo
+      // ソロはトラック種別を問わず適用する (video トラックの S ボタンも効く)
+      const muteBySolo = anySolo && !tr?.solo
       const effVol = Math.max(0, Math.min(1, eff.volume * masterVol * trackVol))
 
       if (clip.kind === 'video') {

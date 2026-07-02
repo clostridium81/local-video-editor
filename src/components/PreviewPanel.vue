@@ -23,6 +23,8 @@ function onTogglePlayEvent() {
   togglePlay()
 }
 
+let fitObserver: ResizeObserver | null = null
+
 onMounted(() => {
   if (!canvasRef.value) return
   engine = new PreviewEngine(canvasRef.value, store.state)
@@ -35,6 +37,11 @@ onMounted(() => {
   engine.renderCurrent()
   updateFit()
   window.addEventListener('resize', updateFit)
+  // window resize 以外 (パネル幅変更など) のラッパーサイズ変化にも追従
+  if (wrapperRef.value && typeof ResizeObserver !== 'undefined') {
+    fitObserver = new ResizeObserver(() => updateFit())
+    fitObserver.observe(wrapperRef.value)
+  }
   window.addEventListener('lve:toggle-play', onTogglePlayEvent)
 })
 
@@ -42,6 +49,8 @@ onBeforeUnmount(() => {
   engine?.dispose()
   engine = null
   window.removeEventListener('resize', updateFit)
+  fitObserver?.disconnect()
+  fitObserver = null
   window.removeEventListener('lve:toggle-play', onTogglePlayEvent)
 })
 
@@ -149,13 +158,11 @@ function effectiveTransform(c: Clip) {
 }
 
 /**
- * 選択クリップの overlay 上での bounding box を算出。
+ * 任意クリップの canvas 座標系での bounding box を算出。
+ * (選択枠の表示と、クリック時のヒットテストで共用)
  */
-function currentBox(): BoxInfo | null {
-  const c = selectedClip.value
+function clipBoxOf(c: Clip): BoxInfo | null {
   if (!isManipulatable(c)) return null
-  const canvas = canvasRef.value
-  if (!canvas) return null
   const cw = store.meta.width
   const ch = store.meta.height
   const { x, y, scale, rotation } = effectiveTransform(c)
@@ -193,6 +200,46 @@ function currentBox(): BoxInfo | null {
   const cx = cw * x
   const cy = ch * y
   return { cx, cy, w: boxW, h: boxH, rotation }
+}
+
+/**
+ * 選択クリップの overlay 上での bounding box を算出。
+ */
+function currentBox(): BoxInfo | null {
+  const c = selectedClip.value
+  if (!isManipulatable(c)) return null
+  if (!canvasRef.value) return null
+  return clipBoxOf(c)
+}
+
+/**
+ * canvas 座標 (px) にあるクリップを手前から探す。
+ * playhead 上でアクティブな映像系クリップのみ対象。
+ */
+function pickClipAt(px: number, py: number): Clip | null {
+  const t = store.state.timeline.playhead
+  // order が大きいトラックほど後に描画される = 手前
+  const orderOf = new Map(store.state.tracks.map(tr => [tr.id, tr.order]))
+  const audioTrackIds = new Set(
+    store.state.tracks.filter(tr => tr.kind === 'audio').map(tr => tr.id)
+  )
+  const candidates = store.state.clips
+    .filter(c => t >= c.start && t < c.start + c.duration)
+    .filter(c => isManipulatable(c) && !audioTrackIds.has(c.trackId))
+    // 手前 (order 大) から判定
+    .sort((a, b) => (orderOf.get(b.trackId) ?? 0) - (orderOf.get(a.trackId) ?? 0))
+  for (const c of candidates) {
+    const box = clipBoxOf(c)
+    if (!box || box.w <= 0 || box.h <= 0) continue
+    // クリック点を box ローカル座標へ逆回転して矩形内判定
+    const dx = px - box.cx
+    const dy = py - box.cy
+    const rad = (-box.rotation * Math.PI) / 180
+    const lx = dx * Math.cos(rad) - dy * Math.sin(rad)
+    const ly = dx * Math.sin(rad) + dy * Math.cos(rad)
+    if (Math.abs(lx) <= box.w / 2 && Math.abs(ly) <= box.h / 2) return c
+  }
+  return null
 }
 
 /** overlay 座標 → canvas 座標 (fitScale 考慮) */
@@ -341,9 +388,15 @@ function clamp01Extended(v: number) {
   return Math.max(-1, Math.min(2, v))
 }
 
-/** オーバーレイ背景 (クリップ外) クリックで選択解除 */
-function onBackdropClick() {
-  selection.clearSelection()
+/**
+ * キャンバスのクリック: その位置にあるクリップを手前から探して選択する。
+ * 何もない場所なら選択解除。(タイムラインを経由せずに直接選べるように)
+ */
+function onBackdropClick(e: MouseEvent) {
+  const p = overlayToCanvas(e.clientX, e.clientY)
+  const hit = pickClipAt(p.x, p.y)
+  if (hit) selection.selectClip(hit.id)
+  else selection.clearSelection()
 }
 
 /** クリップのヒットボックス領域をクリックしても選択は切らない */

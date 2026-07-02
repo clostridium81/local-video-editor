@@ -2,7 +2,7 @@
 import { ref } from 'vue'
 import { useProjectStore } from '../stores/projectStore'
 import { exportBackup, importBackup } from '../persistence/backup'
-import { clearProject, deleteProjectState, saveProjectState } from '../persistence/assetStore'
+import { saveProjectState } from '../persistence/assetStore'
 import { toast } from '../composables/useToast'
 import { hasWebCodecs } from '../engine/capabilities'
 import ExportDialog from './ExportDialog.vue'
@@ -84,14 +84,19 @@ async function onFileChosen(e: Event) {
 }
 
 async function onNew() {
+  // ProjectsDialog の「新しい作品」と同じ挙動に統一する。
+  // (以前はここだけ現プロジェクトを素材ごと完全削除していて、
+  //  同じ名前の操作なのに挙動が真逆でデータ消失の危険があった)
   if (!confirm(t(
-    '新しい作品を始めます。今の作品は消えます。',
-    '新規プロジェクトを開きます。現在の内容は破棄されます。'
+    '新しい作品を始めます。今の作品は保存され、「作品の切り替え」(📂) からいつでも開けます。',
+    '新規プロジェクトを作成します。現在のプロジェクトは保存され、プロジェクト管理 (📂) から開けます。'
   ))) return
   store.suspendAutosave()
-  const oldId = store.meta.id
-  await clearProject(oldId)
-  await deleteProjectState(oldId).catch(() => void 0)
+  try {
+    await saveProjectState(store.serialize())
+  } catch (err) {
+    console.warn('save before new failed', err)
+  }
   store.resetToEmpty()
   store.resumeAutosave()
   toast.info(t('新しい作品を作成しました', '新規プロジェクトを作成しました'))
