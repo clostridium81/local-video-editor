@@ -267,11 +267,21 @@ function onRulerMouseUp() {
 
 // ---------- トラックへの素材ドロップ ----------
 
-function onTrackDragOver(e: DragEvent) {
-  if (e.dataTransfer?.types.includes('application/x-lve-asset-id')) {
-    e.preventDefault()
-    e.dataTransfer.dropEffect = 'copy'
-  }
+function onTrackDragOver(e: DragEvent, track: Track) {
+  const types = e.dataTransfer?.types
+  if (!types?.includes('application/x-lve-asset-id')) return
+  // MediaLibrary が埋め込んだ種別タイプを見て、置けないトラックでは
+  // preventDefault しない → ブラウザが no-drop カーソルを表示する
+  const kind = types.includes('application/x-lve-kind-audio')
+    ? 'audio'
+    : types.includes('application/x-lve-kind-video') ||
+        types.includes('application/x-lve-kind-image')
+      ? 'visual'
+      : null
+  if (kind === 'audio' && track.kind !== 'audio') return
+  if (kind === 'visual' && track.kind !== 'video') return
+  e.preventDefault()
+  e.dataTransfer!.dropEffect = 'copy'
 }
 
 function onTrackDrop(e: DragEvent, track: Track) {
@@ -502,7 +512,7 @@ function hasWaveform(c: Clip): boolean {
       <button
         class="ghost tiny"
         :class="{ active: store.state.timeline.rippleMode }"
-        :title="t('リップル (Shift+R)', 'リップル (Shift+R)')"
+        :title="t('リップル削除: 削除したとき後ろのクリップを詰める (Shift+R)', 'リップル削除: 削除時に後続クリップを前へ詰める (Shift+R)')"
         @click="store.toggleRipple()"
       >⇆</button>
       <button
@@ -620,7 +630,7 @@ function hasWaveform(c: Clip): boolean {
             v-for="track in orderedTracks"
             :key="track.id"
             class="track-row"
-            @dragover="onTrackDragOver"
+            @dragover="(e) => onTrackDragOver(e, track)"
             @drop="(e) => onTrackDrop(e, track)"
             @mousedown="onContentMouseDown"
           >

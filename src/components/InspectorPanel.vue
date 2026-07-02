@@ -75,6 +75,25 @@ const playheadInClip = computed(() => {
 function update(patch: Partial<Clip>) {
   const id = selection.selectedClipId.value
   if (!id) return
+  // 開始時間の変更はリンクされたクリップにも同じ移動量を適用する
+  // (タイムラインのドラッグ移動と同じ挙動に揃える)
+  if (typeof patch.start === 'number') {
+    const c = store.getClip(id)
+    if (c) {
+      const delta = patch.start - c.start
+      const linked = store.getLinkedClips(id)
+      if (delta !== 0 && linked.length > 1) {
+        for (const l of linked) {
+          store.updateClip(
+            l.id,
+            { start: Math.max(0, l.start + delta) } as any,
+            `insp-start:${id}`
+          )
+        }
+        return
+      }
+    }
+  }
   store.updateClip(id, patch as any)
 }
 
@@ -734,6 +753,12 @@ function kindNameJa(kind: string): string {
             @click="applyPreset(p.id)"
           >{{ t(p.labelEasy, p.labelNormal) }}</button>
         </div>
+        <div class="section-hint">
+          {{ t(
+            '※ 選ぶと、下のエフェクト・カラーグレード・特殊効果がまとめて置き換わります',
+            '※ 適用するとエフェクト / カラーグレード / ピクセルエフェクトが置き換わります'
+          ) }}
+        </div>
       </section>
 
       <!-- エフェクト (映像/画像) -->
@@ -893,6 +918,12 @@ function kindNameJa(kind: string): string {
             />
             <span>逆再生</span>
           </label>
+        </div>
+        <div class="section-hint">
+          {{ t(
+            '※ 速さを変えてもクリップの長さは変わらず、再生される素材の範囲が変わります',
+            '※ 速度変更でクリップ長は変わらず、消費される素材範囲が変わります'
+          ) }}
         </div>
       </section>
 
@@ -1430,6 +1461,13 @@ button.tiny {
 .row {
   display: flex;
   align-items: center;
+}
+
+.section-hint {
+  font-size: 10px;
+  color: var(--fg-3);
+  line-height: 1.5;
+  margin-top: 6px;
 }
 
 .preset-grid {
