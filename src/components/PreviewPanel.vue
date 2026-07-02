@@ -424,8 +424,8 @@ function onBodyPointerDown(e: PointerEvent) {
     </div>
 
     <div class="transport">
-      <button class="ghost" @click="toStart" :title="t('さいしょに もどる', '先頭へ')">⏮</button>
-      <button class="primary play-btn" :title="playing ? t('とめる', '一時停止') : t('さいせい', '再生')" @click="togglePlay">
+      <button class="ghost" @click="toStart" :title="t('先頭へ戻る', '先頭へ')">⏮</button>
+      <button class="primary play-btn" :title="playing ? t('一時停止', '一時停止') : t('再生', '再生')" @click="togglePlay">
         {{ playing ? '❙❙' : '▶' }}
       </button>
       <div class="time mono">

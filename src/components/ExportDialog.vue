@@ -129,10 +129,10 @@ const etaSec = computed(() => {
 
 function fmtEta(s: number | null) {
   if (s == null) return '—'
-  if (s < 60) return `あと ${s}びょう`
+  if (s < 60) return `残り 秒`
   const m = Math.floor(s / 60)
   const r = s % 60
-  return `あと ${m}ふん ${r}びょう`
+  return `残り 分 秒`
 }
 
 async function onStart() {
@@ -149,7 +149,7 @@ async function onStart() {
   }
   if (rangeStart != null && rangeEnd != null && rangeEnd <= rangeStart) {
     toast.warn(t(
-      '「おわり」は「はじめ」より あとに してね',
+      '終了は開始より後にしてください',
       '終了時刻は開始時刻より後にしてください'
     ))
     return
@@ -188,14 +188,14 @@ async function onStart() {
   try {
     const { blob, filename } = await exportProject(store.serialize(), opts)
     await downloadBlob(blob, filename)
-    toast.success(`できたよ: ${filename}`)
+    toast.success(`完成しました: `)
     emit('close')
   } catch (err: any) {
     if (err?.name === 'AbortError') {
-      toast.info('かきだしを やめたよ')
+      toast.info('書き出しを中止しました')
     } else {
       console.error(err)
-      toast.error('かきだしが できなかったよ: ' + (err?.message ?? err))
+      toast.error('書き出しに失敗しました: ' + (err?.message ?? err))
     }
   } finally {
     running.value = false
@@ -213,23 +213,23 @@ function onCancel() {
 }
 
 function phaseLabel(p: string) {
-  if (p === 'prepare') return 'じゅんびちゅう'
-  if (p === 'video') return 'えいぞうを つくっているよ'
-  if (p === 'audio') return 'おとを ちょうせいしているよ'
-  if (p === 'mux') return 'まとめているよ'
-  if (p === 'done') return 'できた'
+  if (p === 'prepare') return '準備中'
+  if (p === 'video') return '映像を作成中'
+  if (p === 'audio') return '音声を調整中'
+  if (p === 'mux') return 'まとめています'
+  if (p === 'done') return '完了'
   return p
 }
 
 function fmtPhaseMessage(m: string): string {
   if (!m) return ''
   // exportEngine から来る日本語メッセージはそのまま、英語は簡易訳
-  if (m === '準備中…') return 'じゅんびちゅう…'
-  if (m === '映像エンコード中…') return 'えいぞうを つくっているよ…'
-  if (m === '音声をミックス中…') return 'おとを ちょうせいちゅう…'
-  if (m === '出力中…') return 'まとめているよ…'
-  if (m === '完了') return 'できた'
-  if (m === 'GIF を合成中…') return 'GIF を つくっているよ…'
+  if (m === '準備中…') return '準備中…'
+  if (m === '映像エンコード中…') return '映像を作成中…'
+  if (m === '音声をミックス中…') return '音声を調整中…'
+  if (m === '出力中…') return 'まとめています…'
+  if (m === '完了') return '完了'
+  if (m === 'GIF を合成中…') return 'GIF を作成中…'
   return m
 }
 </script>
@@ -238,28 +238,28 @@ function fmtPhaseMessage(m: string): string {
   <div class="modal-backdrop" @click.self="onCancel">
     <div class="modal">
       <div class="modal-head">
-        <div class="title">{{ t('どうがで かきだす', 'エクスポート') }}</div>
+        <div class="title">{{ t('動画を書き出す', 'エクスポート') }}</div>
         <button class="ghost close" :disabled="running" @click="emit('close')">×</button>
       </div>
 
       <div v-if="!running" class="modal-body">
         <div class="row-2">
           <label class="field">
-            <span>かたち</span>
+            <span>形式</span>
             <select v-model="format">
-              <option value="mp4" :disabled="!mp4Supported">MP4 (どうが)</option>
-              <option value="webm" :disabled="!webmSupported">WebM (どうが)</option>
-              <option value="gif">GIF (うごく え)</option>
+              <option value="mp4" :disabled="!mp4Supported">MP4 (動画)</option>
+              <option value="webm" :disabled="!webmSupported">WebM (動画)</option>
+              <option value="gif">GIF (動く画像)</option>
             </select>
           </label>
           <label class="field">
-            <span>1びょうあたりの コマすう</span>
+            <span>フレームレート (1秒のコマ数)</span>
             <select v-model.number="fps">
-              <option :value="24">24 コマ</option>
-              <option :value="30">30 コマ</option>
-              <option :value="60">60 コマ</option>
+              <option :value="24">24 fps</option>
+              <option :value="30">30 fps</option>
+              <option :value="60">60 fps</option>
               <option :value="store.state.meta.fps">
-                さくひんと おなじ ({{ store.state.meta.fps }} コマ)
+                作品と同じ ({{ store.state.meta.fps }} fps)
               </option>
             </select>
           </label>
@@ -267,32 +267,32 @@ function fmtPhaseMessage(m: string): string {
 
         <div class="row-2">
           <label class="field">
-            <span>がめんの おおきさ</span>
+            <span>画面サイズ (解像度)</span>
             <select v-model="resolutionPreset">
               <option value="project">
-                さくひんと おなじ ({{ store.state.meta.width }}×{{ store.state.meta.height }})
+                作品と同じ ({{ store.state.meta.width }}×{{ store.state.meta.height }})
               </option>
-              <option value="1080p">1920 × 1080 (おおきい)</option>
-              <option value="720p">1280 × 720 (ふつう)</option>
-              <option value="480p">854 × 480 (ちいさい)</option>
+              <option value="1080p">1920 × 1080 (大)</option>
+              <option value="720p">1280 × 720 (中)</option>
+              <option value="480p">854 × 480 (小)</option>
             </select>
           </label>
           <label class="field">
-            <span>きれいさ</span>
+            <span>画質</span>
             <select v-model="bitratePreset">
-              <option value="low">ふつう</option>
-              <option value="medium">きれい</option>
-              <option value="high">とても きれい</option>
+              <option value="low">標準</option>
+              <option value="medium">高画質</option>
+              <option value="high">最高画質</option>
             </select>
           </label>
         </div>
 
         <label class="field">
-          <span>もっと こまかく きめる (kbps)</span>
+          <span>ビットレートを指定 (kbps)</span>
           <input
             type="number"
             :value="customBitrate ?? ''"
-            placeholder="からっぽで OK"
+            placeholder="空欄で自動"
             @change="(e) => {
               const v = (e.target as HTMLInputElement).value
               customBitrate = v ? Number(v) : null
@@ -302,35 +302,35 @@ function fmtPhaseMessage(m: string): string {
 
         <label class="toggle" v-if="format !== 'gif'">
           <input type="checkbox" v-model="includeAudio" />
-          <span>おとを いれる</span>
+          <span>音声を含める</span>
         </label>
 
         <div class="field">
-          <span>はんい</span>
+          <span>範囲</span>
           <div class="row-3">
             <label class="toggle">
               <input type="radio" value="full" v-model="useRange" />
-              <span>ぜんぶ</span>
+              <span>全体</span>
             </label>
             <label class="toggle">
               <input type="radio" value="inout" v-model="useRange" />
-              <span>はじめ〜おわり</span>
+              <span>開始〜終了 (In〜Out)</span>
             </label>
             <label class="toggle">
               <input type="radio" value="custom" v-model="useRange" />
-              <span>じぶんで きめる</span>
+              <span>範囲を指定</span>
             </label>
           </div>
         </div>
         <div v-if="useRange === 'custom'" class="row-2">
           <label class="field">
-            <span>はじめ (びょう)</span>
+            <span>開始 (秒)</span>
             <input type="number" step="0.1" min="0"
               :max="store.state.timeline.duration"
               v-model.number="customStart" />
           </label>
           <label class="field">
-            <span>おわり (びょう)</span>
+            <span>終了 (秒)</span>
             <input type="number" step="0.1" min="0"
               :max="store.state.timeline.duration"
               v-model.number="customEnd" />
@@ -338,14 +338,14 @@ function fmtPhaseMessage(m: string): string {
         </div>
 
         <div class="summary muted">
-          <div>できあがり: {{ resolution.width }} × {{ resolution.height }} / {{ fps }} コマ</div>
-          <div>きれいさ: {{ Math.round(resolvedBitrate / 1000) }} kbps</div>
-          <div>ながさ: {{ exportLength.toFixed(1) }} びょう</div>
+          <div>出力: {{ resolution.width }} × {{ resolution.height }} / {{ fps }} fps</div>
+          <div>画質: {{ Math.round(resolvedBitrate / 1000) }} kbps</div>
+          <div>長さ: {{ exportLength.toFixed(1) }} 秒</div>
         </div>
 
         <div class="actions">
-          <button class="ghost" @click="emit('close')">{{ t('やめる', 'キャンセル') }}</button>
-          <button class="primary" @click="onStart">{{ t('かきだしを はじめる', 'エクスポート開始') }}</button>
+          <button class="ghost" @click="emit('close')">{{ t('キャンセル', 'キャンセル') }}</button>
+          <button class="primary" @click="onStart">{{ t('書き出しを開始', 'エクスポート開始') }}</button>
         </div>
       </div>
 
@@ -362,7 +362,7 @@ function fmtPhaseMessage(m: string): string {
           <span>{{ fmtEta(etaSec) }}</span>
         </div>
         <div class="actions">
-          <button class="ghost danger" @click="onCancel">{{ t('やめる', 'キャンセル') }}</button>
+          <button class="ghost danger" @click="onCancel">{{ t('キャンセル', 'キャンセル') }}</button>
         </div>
       </div>
     </div>

@@ -23,7 +23,7 @@ function onToggleLocale() {
   locale.toggle()
   toast.info(
     locale.isEasy.value
-      ? 'やさしい にほんごに きりかえたよ'
+      ? 'やさしい日本語に切り替えました'
       : 'ふつうの日本語に切替えました'
   )
 }
@@ -41,10 +41,10 @@ async function onSave() {
   saving.value = true
   try {
     await exportBackup(store.serialize())
-    toast.success(t('まるごとほぞんできたよ', 'バックアップを保存しました'))
+    toast.success(t('バックアップを保存しました', 'バックアップを保存しました'))
   } catch (e: any) {
     console.error(e)
-    toast.error(t('まるごとほぞんに しっぱいしたよ: ', 'バックアップの保存に失敗しました: ') + (e?.message ?? ''))
+    toast.error(t('バックアップの保存に失敗しました: ', 'バックアップの保存に失敗しました: ') + (e?.message ?? ''))
   } finally {
     saving.value = false
   }
@@ -61,7 +61,7 @@ async function onFileChosen(e: Event) {
   input.value = ''
   try {
     if (!confirm(t(
-      'いまの さくひんを すてて、ほぞんしたものを ひらきます。いいですか？',
+      '今の作品を閉じて、保存したデータから復元します。よろしいですか?',
       '現在のプロジェクトを破棄してバックアップから復元します。よろしいですか？'
     ))) return
     store.suspendAutosave()
@@ -74,10 +74,10 @@ async function onFileChosen(e: Event) {
     store.replaceState(project)
     // 再読込時に「最新プロジェクト」として復元されるよう即保存
     await saveProjectState(store.serialize())
-    toast.success(t(`もどしたよ (ファイル ${assetCount} こ)`, `復元しました (素材 ${assetCount} 件)`))
+    toast.success(t(`復元しました (素材 ${assetCount} 件)`, `復元しました (素材 ${assetCount} 件)`))
   } catch (err: any) {
     console.error(err)
-    toast.error(t('もどすのに しっぱいしたよ: ', '復元に失敗しました: ') + (err?.message ?? ''))
+    toast.error(t('復元に失敗しました: ', '復元に失敗しました: ') + (err?.message ?? ''))
   } finally {
     store.resumeAutosave()
   }
@@ -85,7 +85,7 @@ async function onFileChosen(e: Event) {
 
 async function onNew() {
   if (!confirm(t(
-    'あたらしい さくひんを はじめます。いまの さくひんは きえます。',
+    '新しい作品を始めます。今の作品は消えます。',
     '新規プロジェクトを開きます。現在の内容は破棄されます。'
   ))) return
   store.suspendAutosave()
@@ -94,13 +94,13 @@ async function onNew() {
   await deleteProjectState(oldId).catch(() => void 0)
   store.resetToEmpty()
   store.resumeAutosave()
-  toast.info(t('あたらしい さくひんを はじめたよ', '新規プロジェクトを作成しました'))
+  toast.info(t('新しい作品を作成しました', '新規プロジェクトを作成しました'))
 }
 
 function onExport() {
   if (!hasWebCodecs) {
     toast.warn(t(
-      'このブラウザでは どうがファイルが つくれません',
+      'このブラウザでは動画ファイルを作成できません',
       'このブラウザはエクスポート (WebCodecs) に対応していません'
     ))
     return
@@ -113,7 +113,7 @@ function onExport() {
   <div class="topbar">
     <div class="brand">
       <span class="logo-mark">◐</span>
-      <span class="logo-text serif">{{ t('どうがメーカー', 'Local Video Editor') }}</span>
+      <span class="logo-text serif">{{ t('動画メーカー', 'Local Video Editor') }}</span>
       <span class="version mono" :title="t('バージョン', 'Version')">v{{ appVersion }}</span>
     </div>
 
@@ -129,51 +129,51 @@ function onExport() {
       <button
         class="ghost icon-btn"
         :disabled="!store.canUndo"
-        :title="t('もとに もどす', '元に戻す (Cmd/Ctrl+Z)')"
+        :title="t('元に戻す', '元に戻す (Cmd/Ctrl+Z)')"
         @click="store.undo()"
       >↶</button>
       <button
         class="ghost icon-btn"
         :disabled="!store.canRedo"
-        :title="t('やりなおす', 'やり直し (Cmd/Ctrl+Shift+Z)')"
+        :title="t('やり直し', 'やり直し (Cmd/Ctrl+Shift+Z)')"
         @click="store.redo()"
       >↷</button>
       <div class="sep" />
-      <button class="ghost" @click="onNew">{{ t('あたらしく', '新規') }}</button>
-      <button class="ghost" @click="onRestoreClick">{{ t('よみこむ', '復元') }}</button>
+      <button class="ghost" @click="onNew">{{ t('新規', '新規') }}</button>
+      <button class="ghost" @click="onRestoreClick">{{ t('復元', '復元') }}</button>
       <button class="ghost" :disabled="saving" @click="onSave">
-        {{ saving ? t('ほぞん ちゅう…', '保存中…') : t('まるごと ほぞん', 'バックアップ') }}
+        {{ saving ? t('保存中…', '保存中…') : t('バックアップ', 'バックアップ') }}
       </button>
-      <button class="ghost icon-btn" :title="t('さくひんの きりかえ', 'プロジェクト管理')" @click="showProjects = true">📂</button>
-      <button class="ghost icon-btn" :title="t('ろくおん・ろくが', '録音・録画')" @click="showRecorder = true">🎙</button>
-      <button class="ghost icon-btn" :title="t('おとの ちょうせい', 'オーディオミキサー')" @click="showMixer = !showMixer" :class="{ active: showMixer }">🎚</button>
+      <button class="ghost icon-btn" :title="t('作品の切り替え', 'プロジェクト管理')" @click="showProjects = true">📂</button>
+      <button class="ghost icon-btn" :title="t('録音・録画', '録音・録画')" @click="showRecorder = true">🎙</button>
+      <button class="ghost icon-btn" :title="t('音声ミキサー', 'オーディオミキサー')" @click="showMixer = !showMixer" :class="{ active: showMixer }">🎚</button>
       <button
         class="ghost icon-btn"
-        :title="t('つかいかたを みる', '使い方ツアー')"
+        :title="t('使い方を見る', '使い方ツアー')"
         @click="tutorial.open()"
       >🎓</button>
       <button
         class="ghost icon-btn"
         data-tour="help-btn"
-        :title="t('キーボードの ショートカット', 'キーボードショートカット')"
+        :title="t('キーボードショートカット', 'キーボードショートカット')"
         @click="showHelp = true"
       >?</button>
       <button
         class="ghost icon-btn"
         :class="{ active: locale.isEasy.value }"
         :title="locale.isEasy.value
-          ? 'やさしい にほんご (おしてふつうの日本語にきりかえ)'
-          : 'ふつうの日本語 (押すとやさしい にほんごに切替)'"
+          ? 'やさしい日本語 (押すと通常の日本語に切り替え)'
+          : 'ふつうの日本語 (押すとやさしい日本語に切り替え)'"
         @click="onToggleLocale"
       >{{ locale.isEasy.value ? 'あ' : '漢' }}</button>
       <button
         class="primary"
         :disabled="!hasWebCodecs"
         :title="hasWebCodecs
-          ? t('どうがファイルに する', 'エクスポート')
-          : t('このブラウザでは つかえません', 'このブラウザは WebCodecs 未対応')"
+          ? t('動画ファイルにする', 'エクスポート')
+          : t('このブラウザでは使えません', 'このブラウザは WebCodecs 未対応')"
         @click="onExport"
-      >▼ {{ t('どうがで かきだす', 'エクスポート') }}</button>
+      >▼ {{ t('動画を書き出す', 'エクスポート') }}</button>
       <input
         ref="fileInputRef"
         type="file"

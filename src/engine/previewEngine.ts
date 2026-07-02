@@ -376,7 +376,7 @@ export class PreviewEngine {
     el.playsInline = true
     el.preload = 'auto'
     el.addEventListener('error', () => {
-      this.onError?.(`どうがを よみこめなかったよ`)
+      this.onError?.(`動画を読み込めませんでした`)
     })
     node = { el, loaded: false }
     this.videoNodes.set(clip.id, node)
@@ -394,7 +394,7 @@ export class PreviewEngine {
     el.src = url
     el.preload = 'auto'
     el.addEventListener('error', () => {
-      this.onError?.(`おとを よみこめなかったよ`)
+      this.onError?.(`音声を読み込めませんでした`)
     })
     node = { el, loaded: false }
     this.audioNodes.set(clip.id, node)

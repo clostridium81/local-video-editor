@@ -39,7 +39,7 @@ async function openProject(id: string) {
     await saveProjectState(store.serialize())
     const next = await loadProjectState(id)
     if (!next) {
-      toast.error('さくひんを ひらけなかったよ')
+      toast.error('作品を開けませんでした')
       return
     }
     // 再読込時に loadLatestProjectState がこのプロジェクトを選ぶよう
@@ -49,7 +49,7 @@ async function openProject(id: string) {
     store.replaceState(next)
     store.resumeAutosave()
     await saveProjectState(store.serialize())
-    toast.success(`さくひんを きりかえたよ: ${next.meta.name}`)
+    toast.success(`作品を切り替えました: ${next.meta.name}`)
     emit('close')
   } finally {
     busy.value = false
@@ -62,7 +62,7 @@ async function duplicateProject(id: string) {
   try {
     const src = await loadProjectState(id)
     if (!src) {
-      toast.error('もとの さくひんを ひらけなかったよ')
+      toast.error('もとの 作品を開けませんでした')
       return
     }
     const newId = nanoid()
@@ -77,10 +77,10 @@ async function duplicateProject(id: string) {
       if (blob) await saveAssetBlob(newId, aid, blob)
     }
     await saveProjectState(copy)
-    toast.success(`コピーを つくったよ: ${copy.meta.name}`)
+    toast.success(`複製を作成しました: ${copy.meta.name}`)
     refresh()
   } catch (err: any) {
-    toast.error('コピーに しっぱいしたよ: ' + (err?.message ?? ''))
+    toast.error('複製に失敗しました: ' + (err?.message ?? ''))
   } finally {
     busy.value = false
   }
@@ -88,15 +88,15 @@ async function duplicateProject(id: string) {
 
 async function deleteProject(id: string) {
   if (id === store.meta.id) {
-    toast.warn('いま つかっている さくひんは けせないよ')
+    toast.warn('使用中の作品は削除できません')
     return
   }
-  if (!confirm('この さくひんを ぜんぶ けしてもいい? (なかみも きえるよ)')) return
+  if (!confirm('この作品をすべて削除しますか? (中の素材も消えます)')) return
   busy.value = true
   try {
     await clearProject(id)
     await deleteProjectState(id)
-    toast.success('けしたよ')
+    toast.success('削除しました')
     refresh()
   } finally {
     busy.value = false
@@ -104,14 +104,14 @@ async function deleteProject(id: string) {
 }
 
 async function newProject() {
-  if (!confirm('あたらしい さくひんを はじめる? (いまの さくひんは ほぞんされるよ)')) return
+  if (!confirm('新しい作品を始めますか? (今の作品は保存されます)')) return
   busy.value = true
   try {
     await saveProjectState(store.serialize())
     store.suspendAutosave()
     store.resetToEmpty()
     store.resumeAutosave()
-    toast.info('あたらしい さくひんを はじめたよ')
+    toast.info('新しい作品を始めました')
     emit('close')
   } finally {
     busy.value = false
@@ -127,16 +127,16 @@ function fmtDate(ts: number): string {
   <div class="modal-backdrop" @click.self="emit('close')">
     <div class="modal">
       <div class="modal-head">
-        <div class="title">{{ t('さくひんの きりかえ', 'プロジェクト管理') }}</div>
+        <div class="title">{{ t('作品の切り替え', 'プロジェクト管理') }}</div>
         <button class="ghost close" @click="emit('close')">×</button>
       </div>
       <div class="modal-body">
         <div class="toolbar">
-          <button class="primary" @click="newProject">＋ {{ t('あたらしい さくひん', '新規プロジェクト') }}</button>
+          <button class="primary" @click="newProject">＋ {{ t('新しい作品', '新規プロジェクト') }}</button>
           <div class="spacer" />
         </div>
         <div class="list">
-          <div v-if="projects.length === 0" class="empty muted">{{ t('さくひんが まだ ないよ', 'プロジェクトが見つかりません') }}</div>
+          <div v-if="projects.length === 0" class="empty muted">{{ t('作品がまだありません', 'プロジェクトが見つかりません') }}</div>
           <div
             v-for="p in projects"
             :key="p.id"
@@ -153,10 +153,10 @@ function fmtDate(ts: number): string {
                 class="ghost tiny"
                 :disabled="busy"
                 @click="openProject(p.id)"
-              >{{ t('ひらく', '開く') }}</button>
-              <span v-else class="badge">{{ t('いま つかってる', '使用中') }}</span>
+              >{{ t('開く', '開く') }}</button>
+              <span v-else class="badge">{{ t('使用中', '使用中') }}</span>
               <button class="ghost tiny" :disabled="busy" @click="duplicateProject(p.id)">{{ t('コピー', '複製') }}</button>
-              <button class="ghost tiny danger" :disabled="busy || p.id === store.meta.id" @click="deleteProject(p.id)">{{ t('けす', '削除') }}</button>
+              <button class="ghost tiny danger" :disabled="busy || p.id === store.meta.id" @click="deleteProject(p.id)">{{ t('削除', '削除') }}</button>
             </div>
           </div>
         </div>

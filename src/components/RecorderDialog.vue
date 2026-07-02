@@ -47,7 +47,7 @@ async function startRecording() {
     } else if (mode.value === 'mic') {
       stream = await navigator.mediaDevices.getUserMedia({ audio: true })
     } else {
-      toast.warn('よみあげは「つくる」ボタンを つかってね')
+      toast.warn('「読み上げを作る」ボタンを使ってください')
       return
     }
     if (previewRef.value && stream && mode.value !== 'mic') {
@@ -58,7 +58,7 @@ async function startRecording() {
       mode.value === 'mic'
         ? (MediaRecorder.isTypeSupported('audio/webm;codecs=opus') ? 'audio/webm;codecs=opus' : 'audio/webm')
         : (MediaRecorder.isTypeSupported('video/webm;codecs=vp9,opus') ? 'video/webm;codecs=vp9,opus' : 'video/webm')
-    if (!stream) throw new Error('カメラ・マイクの えいぞうを とれなかったよ')
+    if (!stream) throw new Error('カメラ・マイクの映像を取得できませんでした')
     mediaRecorder = new MediaRecorder(stream, { mimeType })
     mediaRecorder.addEventListener('dataavailable', (e) => {
       if (e.data && e.data.size > 0) chunks.push(e.data)
@@ -73,7 +73,7 @@ async function startRecording() {
     }, 100)
   } catch (err: any) {
     console.error(err)
-    toast.error('ろくが・ろくおんが できなかったよ: ' + (err?.message ?? ''))
+    toast.error('録画・録音ができませんでした: ' + (err?.message ?? ''))
     stopStream()
   }
 }
@@ -94,10 +94,10 @@ async function handleRecorderStop() {
   try {
     const file = new File([blob], name, { type: blob.type })
     await store.addAssetFromFile(file)
-    toast.success(`ろくがを ファイルに したよ: ${name}`)
+    toast.success(`録画を素材に追加しました: ${name}`)
   } catch (err) {
     console.error(err)
-    toast.error('ファイルに できなかったよ')
+    toast.error('素材に追加できませんでした')
   }
   emit('close')
 }
@@ -116,11 +116,11 @@ function stopStream() {
 async function generateTTS() {
   const text = ttsText.value.trim()
   if (!text) {
-    toast.warn('よむ ことばを かいてね')
+    toast.warn('読み上げる文章を入力してください')
     return
   }
   if (!window.speechSynthesis) {
-    toast.error('この きかいでは よみあげが つかえないよ')
+    toast.error('この端末では読み上げが使えません')
     return
   }
 
@@ -139,7 +139,7 @@ async function generateTTS() {
     const audioTracks = stream.getAudioTracks()
     if (audioTracks.length === 0) {
       stream.getTracks().forEach((t: MediaStreamTrack) => t.stop())
-      toast.warn('「おとも きょうゆうする」に チェックを いれてね')
+      toast.warn('「音声も共有する」にチェックを入れてください')
       return
     }
     const audioStream = new MediaStream(audioTracks)
@@ -177,11 +177,11 @@ async function generateTTS() {
     const blob = new Blob(ttsChunks, { type: 'audio/webm' })
     const file = new File([blob], `tts__${Date.now()}.webm`, { type: 'audio/webm' })
     await store.addAssetFromFile(file)
-    toast.success('よみあげの おとを ファイルに したよ')
+    toast.success('読み上げの音声を素材に追加しました')
     emit('close')
   } catch (err: any) {
     console.error(err)
-    toast.error('よみあげが できなかったよ: ' + (err?.message ?? ''))
+    toast.error('読み上げができませんでした: ' + (err?.message ?? ''))
   }
 }
 
@@ -198,64 +198,64 @@ function fmt(s: number) {
   <div class="modal-backdrop" @click.self="emit('close')">
     <div class="modal">
       <div class="modal-head">
-        <div class="title">{{ t('ろくが・ろくおん / よみあげ', '録音・録画 / ナレーション') }}</div>
+        <div class="title">{{ t('録画・録音 / ナレーション', '録音・録画 / ナレーション') }}</div>
         <button class="ghost close" :disabled="recording" @click="emit('close')">×</button>
       </div>
       <div class="modal-body">
         <div class="tabs">
           <button class="ghost" :class="{ active: mode === 'camera' }" @click="mode = 'camera'">{{ t('カメラ', 'カメラ') }}</button>
-          <button class="ghost" :class="{ active: mode === 'screen' }" @click="mode = 'screen'">{{ t('がめん', '画面') }}</button>
+          <button class="ghost" :class="{ active: mode === 'screen' }" @click="mode = 'screen'">{{ t('画面', '画面') }}</button>
           <button class="ghost" :class="{ active: mode === 'mic' }" @click="mode = 'mic'">{{ t('マイク', 'マイク') }}</button>
-          <button class="ghost" :class="{ active: mode === 'tts' }" @click="mode = 'tts'">{{ t('よみあげ', 'TTS') }}</button>
+          <button class="ghost" :class="{ active: mode === 'tts' }" @click="mode = 'tts'">{{ t('読み上げ', 'TTS') }}</button>
         </div>
 
         <div v-if="mode !== 'tts'">
           <video ref="previewRef" class="preview" muted autoplay playsinline />
-          <div class="state mono">{{ recording ? (t('ろくが ちゅう', 'REC') + ' ' + fmt(elapsed)) : t('まちじょうたい', '待機中') }}</div>
+          <div class="state mono">{{ recording ? (t('録画中', 'REC') + ' ' + fmt(elapsed)) : t('待機中', '待機中') }}</div>
           <div class="actions">
-            <button class="ghost" @click="emit('close')" :disabled="recording">{{ t('とじる', '閉じる') }}</button>
+            <button class="ghost" @click="emit('close')" :disabled="recording">{{ t('閉じる', '閉じる') }}</button>
             <button
               v-if="!recording"
               class="primary"
               @click="startRecording"
-            >{{ mode === 'mic' ? t('ろくおん スタート', '録音開始') : t('ろくが スタート', '録画開始') }}</button>
-            <button v-else class="danger" @click="stopRecording">{{ t('とめて ファイルに する', '停止して素材に追加') }}</button>
+            >{{ mode === 'mic' ? t('録音開始', '録音開始') : t('録画開始', '録画開始') }}</button>
+            <button v-else class="danger" @click="stopRecording">{{ t('停止して素材に追加', '停止して素材に追加') }}</button>
           </div>
         </div>
 
         <div v-else class="tts">
           <label class="field">
-            <span>{{ t('よむ ことば', '読み上げテキスト') }}</span>
+            <span>{{ t('読み上げる文章', '読み上げテキスト') }}</span>
             <textarea rows="3" v-model="ttsText" placeholder="こんにちは。" />
           </label>
           <div class="row-2">
             <label class="field">
-              <span>{{ t('こえ', '音声') }}</span>
+              <span>{{ t('声', '音声') }}</span>
               <select v-model="ttsVoice">
                 <option v-for="v in voices" :key="v.name" :value="v.name">{{ v.name }} ({{ v.lang }})</option>
               </select>
             </label>
             <label class="field">
-              <span>{{ t('はやさ', '速度') }} <span class="mono">{{ ttsRate.toFixed(2) }}</span></span>
+              <span>{{ t('速さ', '速度') }} <span class="mono">{{ ttsRate.toFixed(2) }}</span></span>
               <input type="range" min="0.5" max="2" step="0.1" v-model.number="ttsRate" />
             </label>
             <label class="field">
-              <span>{{ t('こえの たかさ', 'ピッチ') }} <span class="mono">{{ ttsPitch.toFixed(2) }}</span></span>
+              <span>{{ t('声の高さ', 'ピッチ') }} <span class="mono">{{ ttsPitch.toFixed(2) }}</span></span>
               <input type="range" min="0.5" max="2" step="0.1" v-model.number="ttsPitch" />
             </label>
           </div>
           <div class="hint muted">
             <template v-if="locale.isEasy.value">
-              ※「つくる」を おすと、がめんを えらぶ まどが でます。<br />
-              「おとも きょうゆうする」に チェックを いれて、すきな がめんを えらんでね。
+              ※「読み上げを作る」を押すと、画面を選ぶウィンドウが出ます。<br />
+              「音声も共有する」にチェックを入れて、好きな画面を選んでください。
             </template>
             <template v-else>
               ※ 生成時に「タブの音声を共有」を選んでください (ブラウザが音声キャプチャを要求します)。
             </template>
           </div>
           <div class="actions">
-            <button class="ghost" @click="emit('close')">{{ t('とじる', '閉じる') }}</button>
-            <button class="primary" @click="generateTTS">{{ t('よみあげを つくる', 'TTS 生成') }}</button>
+            <button class="ghost" @click="emit('close')">{{ t('閉じる', '閉じる') }}</button>
+            <button class="primary" @click="generateTTS">{{ t('読み上げを作る', 'TTS 生成') }}</button>
           </div>
         </div>
       </div>
