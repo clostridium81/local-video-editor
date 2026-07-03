@@ -104,8 +104,20 @@ function updateEffects(patch: Partial<ClipEffects>) {
   store.setEffects(c.id, { ...prev, ...patch })
 }
 
-function hasTransform(c: Clip): c is VideoClip | ImageClip | TextClip {
-  return c.kind === 'video' || c.kind === 'image' || c.kind === 'text'
+// 画面に映るクリップ (不透明度・位置 x/y を持つ)。図形も含む
+function hasVisual(c: Clip): c is VideoClip | ImageClip | TextClip | ShapeClip {
+  return (
+    c.kind === 'video' ||
+    c.kind === 'image' ||
+    c.kind === 'text' ||
+    c.kind === 'shape'
+  )
+}
+
+// スケール・回転を持つクリップ (テキストは fontSize / 図形は width/height で
+// サイズ管理するためスケールは対象外だが、回転は持つ)
+function hasRotation(c: Clip): c is VideoClip | ImageClip | ShapeClip {
+  return c.kind === 'video' || c.kind === 'image' || c.kind === 'shape'
 }
 
 function hasVolume(c: Clip): c is VideoClip | AudioClip {
@@ -491,7 +503,7 @@ function kindNameJa(kind: string): string {
       </section>
 
       <!-- 不透明度 -->
-      <section v-if="hasTransform(selectedClip)" class="section">
+      <section v-if="hasVisual(selectedClip)" class="section">
         <div class="section-head">
           <span>{{ t('表示', '表示') }}</span>
           <button
@@ -532,7 +544,7 @@ function kindNameJa(kind: string): string {
       </section>
 
       <!-- 配置 -->
-      <section v-if="hasTransform(selectedClip)" class="section">
+      <section v-if="hasVisual(selectedClip)" class="section">
         <div class="section-head">{{ t('配置', '配置') }}</div>
         <div class="grid-2">
           <label class="field">
@@ -571,10 +583,11 @@ function kindNameJa(kind: string): string {
           </label>
         </div>
         <div
-          v-if="selectedClip.kind === 'video' || selectedClip.kind === 'image' || selectedClip.kind === 'text'"
+          v-if="hasRotation(selectedClip)"
           class="grid-2"
         >
-          <label v-if="selectedClip.kind !== 'text'" class="field">
+          <!-- スケール: 図形は width/height でサイズ管理するため出さない -->
+          <label v-if="selectedClip.kind === 'video' || selectedClip.kind === 'image'" class="field">
             <span>
               {{ t('大きさ', 'スケール') }}
               <button
@@ -591,7 +604,7 @@ function kindNameJa(kind: string): string {
               @change="(e) => update({ scale: Number((e.target as HTMLInputElement).value) })"
             />
           </label>
-          <label v-if="selectedClip.kind !== 'text'" class="field">
+          <label class="field">
             <span>
               {{ t('回転 (度)', '回転 (度)') }}
               <button
@@ -604,7 +617,7 @@ function kindNameJa(kind: string): string {
             <input
               type="number"
               step="1"
-              :value="(selectedClip as VideoClip | ImageClip).rotation"
+              :value="(selectedClip as VideoClip | ImageClip | ShapeClip).rotation"
               @change="(e) => update({ rotation: Number((e.target as HTMLInputElement).value) })"
             />
           </label>
@@ -901,8 +914,8 @@ function kindNameJa(kind: string): string {
         </div>
       </section>
 
-      <!-- 速度 -->
-      <section v-if="selectedClip.kind !== 'text' && selectedClip.kind !== 'shape'" class="section">
+      <!-- 速度 (実素材を持つ動画・音声のみ。静止画/図形/テキストには無意味) -->
+      <section v-if="hasVolume(selectedClip)" class="section">
         <div class="section-head">{{ t('再生', '再生') }}</div>
         <label class="field">
           <span>速さ (倍) <span class="mono muted">{{ (selectedClip.speed ?? 1).toFixed(2) }}</span></span>

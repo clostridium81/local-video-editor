@@ -211,8 +211,13 @@ export class PreviewEngine {
     if (this.playing) return
     this.playing = true
     this.lastWallClock = performance.now()
-    // ユーザー操作起点の再生で AudioContext を起こす (自動再生制限対策)
-    this.audioCtx?.resume().catch(() => {})
+    // ユーザー操作起点のうちに AudioContext を生成 & resume しておく。
+    // ここで getAudioCtx() を呼ぶのが肝心: 音声ノードはこの後の loop→syncMedia で
+    // 初めて作られるため、play() 時点では this.audioCtx がまだ null のことが多い。
+    // それを待って loop 内 (=ユーザー操作の外) で初生成すると、ブラウザの自動再生
+    // ポリシーにより AudioContext が suspended で固定され、EQ / 音量ブーストの
+    // WebAudio グラフが一切処理されなくなる。
+    this.getAudioCtx()?.resume().catch(() => {})
     this.loop()
   }
 
@@ -481,8 +486,10 @@ export class PreviewEngine {
     const url = await getAssetObjectURL(this.state.meta.id, clip.assetId)
     if (!url) return null
     const el = document.createElement('video')
+    // crossOrigin は付けない: 素材は blob: (same-origin) なので canvas は
+    // tainted にならず、逆に crossOrigin='anonymous' を付けると一部ブラウザで
+    // createMediaElementSource が無音を出す (CORS 保護) ため EQ が効かなくなる。
     el.src = url
-    el.crossOrigin = 'anonymous'
     el.playsInline = true
     el.preload = 'auto'
     el.addEventListener('error', () => {
