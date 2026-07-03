@@ -320,7 +320,7 @@ function fmtPhaseMessage(m: string): string {
   <div class="modal-backdrop" @click.self="() => { if (!running) emit('close') }">
     <div class="modal">
       <div class="modal-head">
-        <div class="title">{{ t('動画を書き出す', 'エクスポート') }}</div>
+        <div class="title">{{ t('動画を書き出す', '動画書き出し') }}</div>
         <button class="ghost close" :disabled="running" @click="emit('close')">×</button>
       </div>
 
@@ -438,7 +438,7 @@ function fmtPhaseMessage(m: string): string {
 
         <div class="actions">
           <button class="ghost" @click="emit('close')">{{ t('キャンセル', 'キャンセル') }}</button>
-          <button class="primary" @click="onStart">{{ t('書き出しを開始', 'エクスポート開始') }}</button>
+          <button class="primary" @click="onStart">{{ t('書き出しを開始', '動画書き出しを開始') }}</button>
         </div>
       </div>
 

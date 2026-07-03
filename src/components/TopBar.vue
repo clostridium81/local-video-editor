@@ -54,13 +54,24 @@ function onRestoreClick() {
   fileInputRef.value?.click()
 }
 
+/** 現プロジェクトが実質空か (未編集で捨てても失うものがない状態) */
+function isCurrentProjectEmpty(): boolean {
+  const s = store.state
+  return (
+    s.clips.length === 0 &&
+    Object.keys(s.assets).length === 0 &&
+    (s.markers?.length ?? 0) === 0
+  )
+}
+
 async function onFileChosen(e: Event) {
   const input = e.target as HTMLInputElement
   const file = input.files?.[0]
   if (!file) return
   input.value = ''
   try {
-    if (!confirm(t(
+    // 現プロジェクトが空なら破棄しても失うものがないので確認を省く
+    if (!isCurrentProjectEmpty() && !confirm(t(
       '今の作品を閉じて、保存したデータから復元します。よろしいですか?',
       '現在のプロジェクトを破棄してバックアップから復元します。よろしいですか？'
     ))) return
@@ -175,10 +186,10 @@ function onExport() {
         class="primary"
         :disabled="!hasWebCodecs"
         :title="hasWebCodecs
-          ? t('動画ファイルにする', 'エクスポート')
+          ? t('動画ファイルにする', '動画書き出し')
           : t('このブラウザでは使えません', 'このブラウザは WebCodecs 未対応')"
         @click="onExport"
-      >▼ {{ t('動画を書き出す', 'エクスポート') }}</button>
+      >▼ {{ t('動画を書き出す', '動画書き出し') }}</button>
       <input
         ref="fileInputRef"
         type="file"
