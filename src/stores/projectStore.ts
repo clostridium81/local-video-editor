@@ -44,6 +44,7 @@ import {
   sampleKeyframes
 } from '../engine/keyframes'
 import { toast } from '../composables/useToast'
+import { contentSignature, isEmptyProject } from './backupSignature'
 
 // ============================================================
 // プロジェクトストア
@@ -587,6 +588,8 @@ export const useProjectStore = defineStore('project', () => {
     state.value = newState
     historyManager.clear()
     bumpHistoryVersion()
+    // 切替先プロジェクトの最終バックアップ署名を読み直す
+    loadBackupSig(newState.meta.id)
   }
 
   function resetToEmpty() {
@@ -594,6 +597,7 @@ export const useProjectStore = defineStore('project', () => {
     state.value = makeEmptyProject()
     historyManager.clear()
     bumpHistoryVersion()
+    loadBackupSig(state.value.meta.id)
   }
 
   function serialize(): ProjectState {
@@ -656,6 +660,8 @@ export const useProjectStore = defineStore('project', () => {
         state.value = latest
         historyManager.clear()
         bumpHistoryVersion()
+        // 復元したプロジェクトの最終バックアップ署名を読み直す (跨セッション)
+        loadBackupSig(latest.meta.id)
         return true
       }
     } catch (err) {
@@ -978,6 +984,74 @@ export const useProjectStore = defineStore('project', () => {
     touch()
   }
 
+  // ---------- バックアップ状態の追跡 ----------
+  // 「最後に ZIP バックアップ (エクスポート/インポート) した内容」のハッシュを
+  // localStorage に記録し、タブを閉じる際に未バックアップの編集があるかを判定する。
+  //
+  // フラグ方式ではなく「内容ハッシュの比較」にしているのは、変更検知の漏れを防ぐため。
+  // どの操作経路で state が変わっても、閉じる瞬間に内容そのものを比べれば確実に
+  // 差分を捕捉できる (個々の操作に dirty=true を立て忘れる余地がない)。
+  // 署名の算出ロジックは backupSignature.ts (純粋関数, テスト対象) に切り出している。
+  const BACKUP_HASH_PREFIX = 'lve.backupHash.v1:'
+
+  // UI のインジケーター用に「最後のバックアップ署名」を reactive に保持する。
+  // (beforeunload の最終判定は下の hasUnbackedUpChanges が localStorage を直読み
+  //  するので、この ref がずれても閉じる際の警告は正確に出る)
+  const lastBackupSig = ref<string | null>(null)
+
+  function loadBackupSig(projectId: string) {
+    try {
+      lastBackupSig.value = localStorage.getItem(BACKUP_HASH_PREFIX + projectId)
+    } catch {
+      lastBackupSig.value = null
+    }
+  }
+  loadBackupSig(state.value.meta.id)
+
+  /**
+   * 現在の (または渡された) 状態をバックアップ済みとして記録する。
+   * exportBackup / importBackup の成功直後に呼ぶ。
+   */
+  function markBackedUp(snapshot?: ProjectState) {
+    const s = snapshot ?? state.value
+    const sig = contentSignature(s)
+    try {
+      localStorage.setItem(BACKUP_HASH_PREFIX + s.meta.id, sig)
+    } catch {
+      // localStorage が使えなくても動作は継続 (警告判定ができないだけ)
+    }
+    // 記録対象が現在開いているプロジェクトなら reactive 状態も更新
+    if (s.meta.id === state.value.meta.id) lastBackupSig.value = sig
+  }
+
+  /**
+   * 最後のバックアップ以降に編集があるか。タブを閉じる際の警告判定に使う。
+   * 空プロジェクト (何も作っていない) の場合は失うものがないので false。
+   */
+  function hasUnbackedUpChanges(): boolean {
+    const s = state.value
+    if (isEmptyProject(s)) return false
+    let saved: string | null = null
+    try {
+      saved = localStorage.getItem(BACKUP_HASH_PREFIX + s.meta.id)
+    } catch {
+      // localStorage 不可時は「未バックアップ」とみなして警告する (安全側)
+      return true
+    }
+    return saved !== contentSignature(s)
+  }
+
+  /**
+   * UI バッジ用の reactive な未バックアップ判定。
+   * contentSignature は playhead/zoom を読まないため、再生・ズームでは
+   * 再評価されず、実質的な編集があったときだけ true になる。
+   */
+  const isDirtySinceBackup = computed(() => {
+    const s = state.value
+    if (isEmptyProject(s)) return false
+    return contentSignature(s) !== lastBackupSig.value
+  })
+
   return {
     state,
     meta,
@@ -1027,6 +1101,10 @@ export const useProjectStore = defineStore('project', () => {
     suspendAutosave,
     resumeAutosave,
     lastSavedAt: () => lastSavedAt,
+    // backup tracking
+    markBackedUp,
+    hasUnbackedUpChanges,
+    isDirtySinceBackup,
     // markers
     addMarker,
     removeMarker,
