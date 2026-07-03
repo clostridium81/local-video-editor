@@ -640,18 +640,8 @@ async function renderAudioMix(
     //  gain だけでは落とせない → クリップ単位でスキップする)
     if (anySolo && !track?.solo) continue
 
-    let srcBuf: AudioBuffer = buf
-    if (c.reversed) {
-      srcBuf = oc.createBuffer(buf.numberOfChannels, buf.length, buf.sampleRate)
-      for (let ch = 0; ch < buf.numberOfChannels; ch++) {
-        const s = buf.getChannelData(ch)
-        const d = srcBuf.getChannelData(ch)
-        for (let i = 0; i < s.length; i++) d[i] = s[s.length - 1 - i]
-      }
-    }
-
     const src = oc.createBufferSource()
-    src.buffer = srcBuf
+    src.buffer = buf
     const speed = Math.max(0.0625, Math.min(16, c.speed ?? 1))
     src.playbackRate.value = speed
 
@@ -722,19 +712,13 @@ async function renderAudioMix(
 
     const offsetInAsset = c.sourceIn ?? 0
     const clipDurAtSourceRate = c.duration * speed
-    // 逆再生時はバッファ全体を反転済みなので、元素材の区間
-    // [sourceIn, sourceIn + 区間長] は反転バッファ内では
-    // [bufDur - sourceIn - 区間長, bufDur - sourceIn] に対応する
-    const baseOffset = c.reversed
-      ? Math.max(0, srcBuf.duration - offsetInAsset - clipDurAtSourceRate)
-      : offsetInAsset
     const startInOutput = c.start - rangeOffset
     if (startInOutput + c.duration <= 0) continue
     const actualStart = Math.max(0, startInOutput)
     const skip = actualStart - startInOutput // 範囲開始で途中再生の場合
     src.start(
       actualStart,
-      baseOffset + skip * speed,
+      offsetInAsset + skip * speed,
       Math.max(0, clipDurAtSourceRate - skip * speed)
     )
   }
@@ -882,15 +866,7 @@ export async function exportProject(
         if (!el) continue
         const speed = vc.speed ?? 1
         const local = (t - vc.start) * speed
-        let inT: number
-        if (vc.reversed) {
-          // クリップが指す素材区間の終端基準で逆再生
-          // (素材ファイル全長 el.duration ではない)
-          const segmentEnd = (vc.sourceIn ?? 0) + vc.duration * speed
-          inT = Math.max(0, segmentEnd - local)
-        } else {
-          inT = local + (vc.sourceIn ?? 0)
-        }
+        const inT = local + (vc.sourceIn ?? 0)
         needed.push(el)
         seeks.push(seekVideo(el, inT))
       }
@@ -1075,9 +1051,7 @@ async function exportGIF(state: ProjectState, opts: ExportOptions): Promise<Expo
         if (!el) continue
         const speed = vc.speed ?? 1
         const local = (t - vc.start) * speed
-        const inT = vc.reversed
-          ? Math.max(0, (vc.sourceIn ?? 0) + vc.duration * speed - local)
-          : local + (vc.sourceIn ?? 0)
+        const inT = local + (vc.sourceIn ?? 0)
         seeks.push(seekVideo(el, inT))
       }
     }

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, onMounted, onBeforeUnmount, watch } from 'vue'
+import { ref, computed, onMounted, onBeforeUnmount, watch, nextTick } from 'vue'
 import { useProjectStore } from '../stores/projectStore'
 import type { Clip, Track, KeyframeableProperty } from '../types/project'
 import { useSelection } from '../composables/useSelection'
@@ -19,6 +19,10 @@ const duration = computed(() => store.state.timeline.duration)
 const playhead = computed(() => store.state.timeline.playhead)
 
 const contentWidth = computed(() => duration.value * zoom.value + 200)
+
+// タイムラインの行ジオメトリ (tl-content 内: ルーラーの下にトラック行が並ぶ)
+const RULER_H = 24
+const ROW_H = 48
 
 const orderedTracks = computed(() => {
   const videos = store.tracks
@@ -113,30 +117,54 @@ interface DragState {
   origStart: number
   origDuration: number
   origSourceIn: number
-  // リンクされた全クリップの開始位置スナップショット (move 用)
+  // 移動対象クリップ (選択中 + リンク相手) 全ての開始位置スナップショット (move 用)
   origStarts?: Map<string, number>
-  // sourceIn 計算で speed/reversed 補正に使う
+  // 移動対象クリップの元トラック行 index (orderedTracks 基準, move 用)
+  origRows?: Map<string, number>
+  // sourceIn 計算で speed 補正に使う
   origSpeed: number
-  origReversed: boolean
 }
 
 const dragRef = ref<DragState | null>(null)
 
+// スナップ成立中のガイドライン位置 (秒)。null なら非表示
+const snapGuideTime = ref<number | null>(null)
+// move ドラッグ中にホバーしている移動先トラック (行ハイライト用)
+const dragHoverTrackId = ref<string | null>(null)
+
+// クリップが載せられるトラック種別か
+// (video/image/text/shape 系 → video トラック, audio → audio トラック)
+function clipFitsTrack(clip: Clip, track: Track): boolean {
+  return clip.kind === 'audio' ? track.kind === 'audio' : track.kind === 'video'
+}
+
 function onClipMouseDown(c: Clip, e: MouseEvent, mode: DragState['mode']) {
+  if (e.button !== 0) return // 右クリックはコンテキストメニューに回す
   e.stopPropagation()
   e.preventDefault()
   if (!selection.isSelected(c.id)) {
     const additive = e.shiftKey || e.metaKey || e.ctrlKey
     selection.selectClip(c.id, additive)
   }
-  // リンクされている場合は、開始時の start を全クリップぶん控えておく
+  // move では「選択中のクリップ + それぞれのリンク相手」を一括で動かす。
+  // 開始時の start / トラック行をスナップショットしておく
   // (drag 中に store.state.clips が更新されると現在値が動くため、
   //  最新値ベースで delta を足し続けると指数的に飛ぶ)
   let origStarts: Map<string, number> | undefined
+  let origRows: Map<string, number> | undefined
   if (mode === 'move') {
-    const linked = store.getLinkedClips(c.id)
-    if (linked.length > 1) {
-      origStarts = new Map(linked.map(l => [l.id, l.start]))
+    const draggedIds = new Set<string>([c.id])
+    for (const id of selection.selectedClipIds.value) draggedIds.add(id)
+    for (const id of [...draggedIds]) {
+      for (const l of store.getLinkedClips(id)) draggedIds.add(l.id)
+    }
+    origStarts = new Map()
+    origRows = new Map()
+    for (const id of draggedIds) {
+      const clip = store.getClip(id)
+      if (!clip) continue
+      origStarts.set(id, clip.start)
+      origRows.set(id, orderedTracks.value.findIndex(t => t.id === clip.trackId))
     }
   }
   dragRef.value = {
@@ -147,8 +175,8 @@ function onClipMouseDown(c: Clip, e: MouseEvent, mode: DragState['mode']) {
     origDuration: c.duration,
     origSourceIn: c.sourceIn ?? 0,
     origStarts,
-    origSpeed: (c as any).speed ?? 1,
-    origReversed: !!(c as any).reversed
+    origRows,
+    origSpeed: (c as any).speed ?? 1
   }
   window.addEventListener('mousemove', onDragMove)
   window.addEventListener('mouseup', onDragEnd)
@@ -162,29 +190,59 @@ function onDragMove(e: MouseEvent) {
   const threshold = 8 / zoom.value // 8px 以内でスナップ
 
   const mergeKey = `tl-${drag.mode}:${drag.clipId}`
-  const isLinked = !!drag.origStarts && drag.origStarts.size > 1
-  const linkedIds = drag.origStarts ? [...drag.origStarts.keys()] : [drag.clipId]
 
   if (drag.mode === 'move') {
-    let newStart = Math.max(0, drag.origStart + dt)
-    newStart = store.snapTime(newStart, threshold, isLinked ? linkedIds : [drag.clipId])
-    const delta = newStart - drag.origStart
-    if (isLinked && drag.origStarts) {
-      // origStarts (= drag 開始時のスナップショット) + 共通 delta で全クリップを動かす。
-      // 現在 start を読むと毎フレーム delta が積み重なってしまう。
-      // 最も左のクリップが 0 を切らないよう、delta をクランプして全体で揃える。
-      let minOrig = Infinity
-      for (const v of drag.origStarts.values()) if (v < minOrig) minOrig = v
-      const clampedDelta = Math.max(-minOrig, delta)
-      for (const [id, origStart] of drag.origStarts) {
-        store.updateClip(
-          id,
-          { start: origStart + clampedDelta } as any,
-          mergeKey
-        )
+    // origStarts (= drag 開始時のスナップショット) + 共通 delta で全クリップを動かす。
+    // 現在 start を読むと毎フレーム delta が積み重なってしまう。
+    const starts = drag.origStarts ?? new Map([[drag.clipId, drag.origStart]])
+    const draggedIds = [...starts.keys()]
+    const rawStart = Math.max(0, drag.origStart + dt)
+    const newStart = store.snapTime(rawStart, threshold, draggedIds)
+    // 最も左のクリップが 0 を切らないよう、delta をクランプして全体で揃える
+    let minOrig = Infinity
+    for (const v of starts.values()) if (v < minOrig) minOrig = v
+    const delta = Math.max(-minOrig, newStart - drag.origStart)
+    // スナップが成立している間だけガイドラインを表示 (クランプで外れたら消す)
+    snapGuideTime.value =
+      newStart !== rawStart && Math.abs(drag.origStart + delta - newStart) < 1e-9
+        ? newStart
+        : null
+
+    // 縦方向: マウス位置の行から行デルタを求め、
+    // 対象クリップ全てが互換トラックに収まる場合のみトラックを移動する
+    let rowDelta = 0
+    dragHoverTrackId.value = null
+    const rows = orderedTracks.value
+    const rect = trackAreaRef.value?.getBoundingClientRect()
+    const grabRow = drag.origRows?.get(drag.clipId) ?? -1
+    if (rect && grabRow >= 0) {
+      const hoverRow = Math.max(
+        0,
+        Math.min(rows.length - 1, Math.floor((e.clientY - rect.top - RULER_H) / ROW_H))
+      )
+      const cand = hoverRow - grabRow
+      let ok = true
+      for (const [id, r] of drag.origRows!) {
+        const target = r >= 0 ? rows[r + cand] : undefined
+        const clip = store.getClip(id)
+        if (!target || !clip || !clipFitsTrack(clip, target)) {
+          ok = false
+          break
+        }
       }
-    } else {
-      store.updateClip(drag.clipId, { start: newStart } as any, mergeKey)
+      if (ok) {
+        rowDelta = cand
+        dragHoverTrackId.value = rows[hoverRow].id
+      }
+    }
+
+    for (const [id, origStart] of starts) {
+      const r = drag.origRows?.get(id) ?? -1
+      const target = r >= 0 ? rows[r + rowDelta] : undefined
+      const patch: any = { start: origStart + delta }
+      // 移動不可の行にいる間は rowDelta=0 → 元トラックへ戻す
+      if (target) patch.trackId = target.id
+      store.updateClip(id, patch, mergeKey)
     }
   } else if (drag.mode === 'trim-left') {
     const speed = drag.origSpeed
@@ -192,29 +250,28 @@ function onDragMove(e: MouseEvent) {
     const minDelta = -drag.origSourceIn / Math.max(0.0001, speed)
     const maxDelta = drag.origDuration - 0.05
     let delta = Math.max(minDelta, Math.min(maxDelta, dt))
-    const newStart = store.snapTime(drag.origStart + delta, threshold, [drag.clipId])
+    const rawStart = drag.origStart + delta
+    const newStart = store.snapTime(rawStart, threshold, [drag.clipId])
     delta = newStart - drag.origStart
     delta = Math.max(minDelta, Math.min(maxDelta, delta))
-    // sourceIn は素材時間軸で増減 (delta * speed)。逆再生時は素材側オフセットを動かさない
-    const sourceInPatch = drag.origReversed
-      ? drag.origSourceIn
-      : drag.origSourceIn + delta * speed
+    snapGuideTime.value =
+      newStart !== rawStart && Math.abs(drag.origStart + delta - newStart) < 1e-9
+        ? newStart
+        : null
+    // sourceIn は素材時間軸で増減 (delta * speed)
     store.updateClip(
       drag.clipId,
       {
         start: drag.origStart + delta,
         duration: drag.origDuration - delta,
-        sourceIn: sourceInPatch
+        sourceIn: drag.origSourceIn + delta * speed
       } as any,
       mergeKey
     )
   } else if (drag.mode === 'trim-right') {
     let newDur = Math.max(0.1, drag.origDuration + dt)
-    const rightEdge = store.snapTime(
-      drag.origStart + newDur,
-      threshold,
-      [drag.clipId]
-    )
+    const rawEdge = drag.origStart + newDur
+    const rightEdge = store.snapTime(rawEdge, threshold, [drag.clipId])
     newDur = Math.max(0.1, rightEdge - drag.origStart)
     // video/audio は素材の残り時間を超えて伸ばせない
     // (タイムライン秒 = 素材秒 / speed)
@@ -227,12 +284,18 @@ function onDragMove(e: MouseEvent) {
         newDur = Math.min(newDur, Math.max(0.1, maxDur))
       }
     }
+    snapGuideTime.value =
+      rightEdge !== rawEdge && Math.abs(drag.origStart + newDur - rightEdge) < 1e-9
+        ? rightEdge
+        : null
     store.updateClip(drag.clipId, { duration: newDur } as any, mergeKey)
   }
 }
 
 function onDragEnd() {
   dragRef.value = null
+  snapGuideTime.value = null
+  dragHoverTrackId.value = null
   window.removeEventListener('mousemove', onDragMove)
   window.removeEventListener('mouseup', onDragEnd)
 }
@@ -264,6 +327,48 @@ function onRulerMouseUp() {
   window.removeEventListener('mousemove', onRulerDrag)
   window.removeEventListener('mouseup', onRulerMouseUp)
 }
+
+// ---------- ホイール操作 (ズーム / 横スクロール) ----------
+
+function onWheel(e: WheelEvent) {
+  const el = scrollAreaRef.value
+  if (!el) return
+  if (e.ctrlKey || e.metaKey) {
+    // Cmd/Ctrl+ホイール: カーソル位置の時刻を基準にズーム
+    // (mac のピンチジェスチャも ctrlKey 付き wheel として届く)
+    e.preventDefault()
+    const rect = el.getBoundingClientRect()
+    const cursorX = e.clientX - rect.left // 可視領域内のカーソル x
+    const oldZoom = zoom.value
+    const tAtCursor = (el.scrollLeft + cursorX) / oldZoom
+    store.setZoom(oldZoom * Math.exp(-e.deltaY * 0.0015))
+    const newZoom = store.state.timeline.zoom // setZoom はクランプするので実値を読む
+    // カーソル下の時刻が動かないよう、コンテンツ幅の更新後に scrollLeft を補正
+    nextTick(() => {
+      el.scrollLeft = Math.max(0, tAtCursor * newZoom - cursorX)
+    })
+  } else if (e.shiftKey) {
+    // Shift+ホイール: 横スクロール
+    e.preventDefault()
+    el.scrollLeft += e.deltaY !== 0 ? e.deltaY : e.deltaX
+  }
+}
+
+// ---------- playhead のオートスクロール ----------
+
+// playhead が可視範囲を外れたら追従スクロール (再生中もシークでも同様)。
+// クリップドラッグ/ルーラースクラブ/ラバーバンド中はユーザー操作を優先する
+watch(playhead, (t) => {
+  if (dragRef.value || rulerDragging || rubber.value.active) return
+  const el = scrollAreaRef.value
+  if (!el || el.clientWidth === 0) return
+  const x = t * zoom.value
+  const margin = 24
+  if (x > el.scrollLeft + el.clientWidth - margin || x < el.scrollLeft) {
+    // ページ送り式: playhead を可視範囲の左端付近に持ってくる
+    el.scrollLeft = Math.max(0, x - margin)
+  }
+})
 
 // ---------- トラックへの素材ドロップ ----------
 
@@ -310,6 +415,7 @@ interface RubberBand {
 const rubber = ref<RubberBand>({ active: false, startX: 0, startY: 0, x: 0, y: 0 })
 
 function onContentMouseDown(e: MouseEvent) {
+  if (e.button !== 0) return
   // 空白領域クリックで選択解除 + ラバーバンド開始
   if (!(e.target as HTMLElement).classList.contains('track-row')) return
   const rect = trackAreaRef.value!.getBoundingClientRect()
@@ -341,8 +447,6 @@ function onRubberEnd() {
   const y2 = Math.max(rb.startY, rb.y)
   const t1 = x1 / zoom.value
   const t2 = x2 / zoom.value
-  const RULER_H = 24
-  const ROW_H = 48
   const i1 = Math.max(0, Math.floor((y1 - RULER_H) / ROW_H))
   const i2 = Math.max(0, Math.floor((y2 - RULER_H) / ROW_H))
   const trackIds = orderedTracks.value.slice(i1, i2 + 1).map(t => t.id)
@@ -370,6 +474,107 @@ const rubberStyle = computed(() => {
     height: height + 'px'
   }
 })
+
+// ---------- クリップの右クリックメニュー ----------
+
+interface CtxMenuState {
+  visible: boolean
+  x: number
+  y: number
+  clipId: string | null
+}
+const ctxMenu = ref<CtxMenuState>({ visible: false, x: 0, y: 0, clipId: null })
+const ctxMenuRef = ref<HTMLDivElement>()
+
+function onClipContextMenu(c: Clip, e: MouseEvent) {
+  e.preventDefault()
+  e.stopPropagation()
+  // 選択外のクリップを右クリックしたらそのクリップだけを選択
+  // (選択中のクリップなら複数選択を保ち、メニューは選択全体に作用)
+  if (!selection.isSelected(c.id)) selection.selectClip(c.id)
+  // 画面外にはみ出さないよう位置をクランプ
+  const MENU_W = 220
+  const MENU_H = 210
+  ctxMenu.value = {
+    visible: true,
+    x: Math.max(0, Math.min(e.clientX, window.innerWidth - MENU_W)),
+    y: Math.max(0, Math.min(e.clientY, window.innerHeight - MENU_H)),
+    clipId: c.id
+  }
+  // メニュー外クリックで閉じる (メニュー内 mousedown は無視して click を待つ)
+  window.addEventListener('mousedown', closeCtxMenu, true)
+}
+
+function closeCtxMenu(e?: MouseEvent) {
+  if (
+    e &&
+    ctxMenuRef.value &&
+    e.target instanceof Node &&
+    ctxMenuRef.value.contains(e.target)
+  ) {
+    return
+  }
+  ctxMenu.value.visible = false
+  window.removeEventListener('mousedown', closeCtxMenu, true)
+}
+
+// メニューの作用対象 = 選択中クリップ全体 (開いた時点で右クリック先は選択済み)
+const ctxClips = computed<Clip[]>(() => {
+  if (!ctxMenu.value.visible) return []
+  const ids = new Set(selection.selectedClipIds.value)
+  if (ctxMenu.value.clipId) ids.add(ctxMenu.value.clipId)
+  return store.state.clips.filter(c => ids.has(c.id))
+})
+const ctxCanSplit = computed(() => {
+  const t = playhead.value
+  return ctxClips.value.some(
+    c => t > c.start + 0.01 && t < c.start + c.duration - 0.01
+  )
+})
+const ctxCanLink = computed(() => ctxClips.value.length >= 2)
+const ctxCanUnlink = computed(() => ctxClips.value.some(c => !!c.linkGroup))
+
+function ctxTargetIds(): string[] {
+  return ctxClips.value.map(c => c.id)
+}
+
+function ctxSplit() {
+  const newIds = store.splitSelectedAtPlayhead(ctxTargetIds())
+  if (newIds.length > 0) selection.selectClips(newIds)
+  closeCtxMenu()
+}
+function ctxDuplicate() {
+  const clips = ctxClips.value
+  if (clips.length > 0) {
+    // 元クリップの直後に置く (キーボードの Cmd+D と同じオフセット)
+    const dups = store.duplicateClips(
+      clips,
+      Math.max(...clips.map(c => c.duration)) || 0
+    )
+    store.addClips(dups)
+    selection.selectClips(dups.map(d => d.id))
+  }
+  closeCtxMenu()
+}
+function ctxLink() {
+  const ids = ctxTargetIds()
+  if (ids.length >= 2) store.linkClips(ids)
+  closeCtxMenu()
+}
+function ctxUnlink() {
+  store.unlinkClips(ctxTargetIds())
+  closeCtxMenu()
+}
+function ctxRemove() {
+  store.removeClips(ctxTargetIds())
+  selection.clearSelection()
+  closeCtxMenu()
+}
+function ctxRippleDelete() {
+  store.rippleDelete(ctxTargetIds())
+  selection.clearSelection()
+  closeCtxMenu()
+}
 
 function addTextClip() {
   const clip = store.addTextClip()
@@ -478,6 +683,7 @@ onBeforeUnmount(() => {
   window.removeEventListener('mouseup', onRulerMouseUp)
   window.removeEventListener('mousemove', onRubberMove)
   window.removeEventListener('mouseup', onRubberEnd)
+  window.removeEventListener('mousedown', closeCtxMenu, true)
 })
 
 function hasWaveform(c: Clip): boolean {
@@ -573,7 +779,7 @@ function hasWaveform(c: Clip): boolean {
         </div>
       </div>
 
-      <div ref="scrollAreaRef" class="tl-scroll">
+      <div ref="scrollAreaRef" class="tl-scroll" @wheel="onWheel">
         <div
           ref="trackAreaRef"
           class="tl-content"
@@ -630,6 +836,7 @@ function hasWaveform(c: Clip): boolean {
             v-for="track in orderedTracks"
             :key="track.id"
             class="track-row"
+            :class="{ 'drop-hover': dragHoverTrackId === track.id }"
             @dragover="(e) => onTrackDragOver(e, track)"
             @drop="(e) => onTrackDrop(e, track)"
             @mousedown="onContentMouseDown"
@@ -645,6 +852,7 @@ function hasWaveform(c: Clip): boolean {
               }"
               @mousedown="(e) => onClipMouseDown(c, e, 'move')"
               @click="(e) => onClipClick(c, e)"
+              @contextmenu="(e) => onClipContextMenu(c, e)"
             >
               <div
                 class="trim-handle left"
@@ -682,6 +890,13 @@ function hasWaveform(c: Clip): boolean {
             </div>
           </div>
 
+          <!-- スナップ成立時のガイドライン -->
+          <div
+            v-if="snapGuideTime != null"
+            class="snap-guide"
+            :style="{ left: snapGuideTime * zoom + 'px' }"
+          />
+
           <div
             class="playhead"
             :style="{ left: playhead * zoom + 'px' }"
@@ -691,12 +906,43 @@ function hasWaveform(c: Clip): boolean {
         </div>
       </div>
     </div>
+
+    <!-- クリップの右クリックメニュー -->
+    <div
+      v-if="ctxMenu.visible"
+      ref="ctxMenuRef"
+      class="ctx-menu"
+      :style="{ left: ctxMenu.x + 'px', top: ctxMenu.y + 'px' }"
+      @contextmenu.prevent
+    >
+      <button class="ghost ctx-item" :disabled="!ctxCanSplit" @click="ctxSplit">
+        {{ t('再生位置で分割', '再生ヘッドで分割') }}
+      </button>
+      <button class="ghost ctx-item" @click="ctxDuplicate">
+        {{ t('複製', '複製') }}
+      </button>
+      <div class="ctx-sep" />
+      <button class="ghost ctx-item" :disabled="!ctxCanLink" @click="ctxLink">
+        {{ t('リンク (一緒に動かす)', 'リンク') }}
+      </button>
+      <button class="ghost ctx-item" :disabled="!ctxCanUnlink" @click="ctxUnlink">
+        {{ t('リンク解除', 'リンク解除') }}
+      </button>
+      <div class="ctx-sep" />
+      <button class="ghost ctx-item danger" @click="ctxRemove">
+        {{ t('削除', '削除') }}
+      </button>
+      <button class="ghost ctx-item danger" @click="ctxRippleDelete">
+        {{ t('リップル削除 (後ろを詰める)', 'リップル削除 (後続を詰める)') }}
+      </button>
+    </div>
   </div>
 </template>
 
 <style scoped>
 .timeline-panel {
-  height: 340px;
+  /* 実際の高さは App.vue からインラインで指定 (ドラッグで可変)。これはフォールバック */
+  height: 280px;
   border-top: 1px solid var(--line-region);
   background: var(--bg-1);
   display: flex;
@@ -813,6 +1059,12 @@ button.tiny.active {
       var(--bg-2) calc(var(--zoom, 50px) - 1px),
       var(--bg-2) var(--zoom, 50px)
     );
+}
+
+/* move ドラッグ中のホバー先トラック行 (移動可能なときだけ点灯) */
+.track-row.drop-hover {
+  background-color: rgba(232, 168, 56, 0.08);
+  box-shadow: inset 0 0 0 1px var(--accent-dim);
 }
 
 .clip {
@@ -933,6 +1185,45 @@ button.tiny.active {
   background: rgba(232, 168, 56, 0.1);
   pointer-events: none;
   z-index: 4;
+}
+
+/* スナップ成立時の縦ガイドライン (全トラック高) */
+.snap-guide {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  background: var(--accent);
+  pointer-events: none;
+  z-index: 9;
+}
+
+/* クリップの右クリックメニュー */
+.ctx-menu {
+  position: fixed;
+  z-index: 100;
+  display: flex;
+  flex-direction: column;
+  min-width: 180px;
+  padding: 4px;
+  background: var(--bg-2);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
+}
+.ctx-item {
+  justify-content: flex-start;
+  text-align: left;
+  padding: 6px 10px;
+  white-space: nowrap;
+}
+.ctx-item.danger {
+  color: var(--danger);
+}
+.ctx-sep {
+  height: 1px;
+  background: var(--line-weak);
+  margin: 4px 2px;
 }
 
 .marker {

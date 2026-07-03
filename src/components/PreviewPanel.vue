@@ -19,6 +19,58 @@ let engine: PreviewEngine | null = null
 const playing = ref(false)
 const fitScale = ref(1)
 
+// ---------- 表示ガイド (グリッド / セーフエリア) ----------
+// ON/OFF は localStorage に永続化する
+
+const GUIDES_KEY = 'lve.preview.guides.v1'
+
+function loadGuides(): { grid: boolean; safe: boolean } {
+  try {
+    const raw = localStorage.getItem(GUIDES_KEY)
+    if (raw) {
+      const v = JSON.parse(raw)
+      return { grid: !!v.grid, safe: !!v.safe }
+    }
+  } catch {
+    // localStorage 不可や破損 JSON はデフォルトへフォールバック
+  }
+  return { grid: false, safe: false }
+}
+
+const storedGuides = loadGuides()
+const showGrid = ref(storedGuides.grid)
+const showSafe = ref(storedGuides.safe)
+
+watch([showGrid, showSafe], () => {
+  try {
+    localStorage.setItem(
+      GUIDES_KEY,
+      JSON.stringify({ grid: showGrid.value, safe: showSafe.value })
+    )
+  } catch {
+    // 書き込み失敗は黙殺 (永続化できないだけで動作はする)
+  }
+})
+
+// ---------- プレビューズーム ----------
+// 'fit' = ラッパーに収まるスケール / それ以外は固定倍率
+
+type ZoomMode = 'fit' | '0.5' | '1'
+const zoomMode = ref<ZoomMode>('fit')
+
+const effectiveScale = computed(() =>
+  zoomMode.value === 'fit' ? fitScale.value : Number(zoomMode.value)
+)
+
+// ガイド線の太さ (canvas 座標系 px)。stage が scale されるため、
+// 画面上で常に約 1px になるようスケールの逆数で補正する
+const guideStroke = computed(
+  () => Math.max(1, 1 / Math.max(0.05, effectiveScale.value))
+)
+
+// ---------- ドラッグ中の中央吸着ガイド ----------
+const alignSnap = ref({ x: false, y: false })
+
 function onTogglePlayEvent() {
   togglePlay()
 }
@@ -103,6 +155,8 @@ function togglePlay() {
     if (tl.playhead >= rangeEnd - 0.01) {
       store.setPlayhead(tl.inPoint ?? 0)
     }
+    // Space からの再生は常に等速順方向 (J/K/L のシャトルレートを引き継がない)
+    engine.setPlaybackRate(1)
     engine.play()
     playing.value = true
   }
@@ -117,11 +171,29 @@ function toStart() {
 const playhead = computed(() => store.state.timeline.playhead)
 const duration = computed(() => store.state.timeline.duration)
 
-function fmt(t: number) {
-  const ms = Math.floor((t % 1) * 100)
-  const s = Math.floor(t) % 60
-  const m = Math.floor(t / 60)
-  return `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}.${String(ms).padStart(2, '0')}`
+/** プロジェクト fps (フレーム計算用に 1 以上の整数へ丸める) */
+function projectFps() {
+  return Math.max(1, Math.round(store.meta.fps))
+}
+
+/** 秒 → MM:SS.FF (FF = フレーム番号、プロジェクト fps 基準) */
+function fmt(time: number) {
+  const fps = projectFps()
+  const totalFrames = Math.round(time * fps)
+  const frames = totalFrames % fps
+  const totalSec = Math.floor(totalFrames / fps)
+  const s = totalSec % 60
+  const m = Math.floor(totalSec / 60)
+  return `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}.${String(frames).padStart(2, '0')}`
+}
+
+/** 1フレーム単位で playhead を前後させる (フレーム境界にスナップ) */
+function stepFrame(delta: number) {
+  engine?.pause()
+  playing.value = false
+  const fps = projectFps()
+  const currentFrame = Math.round(store.state.timeline.playhead * fps)
+  store.setPlayhead((currentFrame + delta) / fps)
 }
 
 // ---------- 選択クリップのオーバーレイ (キャンバスドラッグ) ----------
@@ -349,11 +421,18 @@ function onOverlayPointerMove(e: PointerEvent) {
   if (d.mode === 'move') {
     const dx = p.x - d.startCanvas.x
     const dy = p.y - d.startCanvas.y
-    const nx = d.origX + dx / store.meta.width
-    const ny = d.origY + dy / store.meta.height
+    let nx = clamp01Extended(d.origX + dx / store.meta.width)
+    let ny = clamp01Extended(d.origY + dy / store.meta.height)
+    // 中央 (x=0.5 / y=0.5) への吸着。吸着中はガイド線を表示する
+    const SNAP_THRESHOLD = 0.01
+    const snapX = Math.abs(nx - 0.5) < SNAP_THRESHOLD
+    const snapY = Math.abs(ny - 0.5) < SNAP_THRESHOLD
+    if (snapX) nx = 0.5
+    if (snapY) ny = 0.5
+    alignSnap.value = { x: snapX, y: snapY }
     store.updateClip(
       d.clipId,
-      { x: clamp01Extended(nx), y: clamp01Extended(ny) } as any,
+      { x: nx, y: ny } as any,
       `canvas-move:${d.clipId}`
     )
   } else if (d.mode.startsWith('scale-') && d.pivotCanvas && d.initialDistToPivot) {
@@ -381,6 +460,8 @@ function onOverlayPointerUp(e: PointerEvent) {
     ;(e.currentTarget as HTMLElement).releasePointerCapture(e.pointerId)
     drag.value = null
   }
+  // ドラッグ終了で吸着ガイドを消す
+  alignSnap.value = { x: false, y: false }
 }
 
 function clamp01Extended(v: number) {
@@ -407,15 +488,28 @@ function onBodyPointerDown(e: PointerEvent) {
 
 <template>
   <div class="preview-panel">
-    <div ref="wrapperRef" class="canvas-wrapper" @click="onBackdropClick">
+    <div
+      ref="wrapperRef"
+      class="canvas-wrapper"
+      :class="{ scrollable: zoomMode !== 'fit' }"
+      @click="onBackdropClick"
+    >
+      <!-- sizer: 見た目のサイズ (scale 後) で場所を確保し、固定倍率時のスクロール量を正しくする -->
       <div
-        class="canvas-stage"
+        class="canvas-stage-sizer"
         :style="{
-          width: store.meta.width + 'px',
-          height: store.meta.height + 'px',
-          transform: `scale(${fitScale})`
+          width: store.meta.width * effectiveScale + 'px',
+          height: store.meta.height * effectiveScale + 'px'
         }"
       >
+        <div
+          class="canvas-stage"
+          :style="{
+            width: store.meta.width + 'px',
+            height: store.meta.height + 'px',
+            transform: `scale(${effectiveScale})`
+          }"
+        >
         <canvas ref="canvasRef" />
         <div
           ref="overlayRef"
@@ -423,6 +517,21 @@ function onBodyPointerDown(e: PointerEvent) {
           :style="{ width: store.meta.width + 'px', height: store.meta.height + 'px' }"
           @click.stop
         >
+          <!-- 三分割グリッド (rule of thirds) -->
+          <div v-if="showGrid" class="guide-layer" aria-hidden="true">
+            <div class="grid-line v" :style="{ left: '33.3333%', width: guideStroke + 'px' }" />
+            <div class="grid-line v" :style="{ left: '66.6667%', width: guideStroke + 'px' }" />
+            <div class="grid-line h" :style="{ top: '33.3333%', height: guideStroke + 'px' }" />
+            <div class="grid-line h" :style="{ top: '66.6667%', height: guideStroke + 'px' }" />
+          </div>
+          <!-- セーフエリア (90% アクションセーフ / 80% タイトルセーフ) -->
+          <div v-if="showSafe" class="guide-layer" aria-hidden="true">
+            <div class="safe-box action" :style="{ borderWidth: guideStroke + 'px' }" />
+            <div class="safe-box title" :style="{ borderWidth: guideStroke + 'px' }" />
+          </div>
+          <!-- ドラッグ中の中央吸着ガイド -->
+          <div v-if="alignSnap.x" class="align-guide v" :style="{ width: guideStroke * 2 + 'px' }" />
+          <div v-if="alignSnap.y" class="align-guide h" :style="{ height: guideStroke * 2 + 'px' }" />
           <div
             v-if="overlayBox && isManipulatable(selectedClip)"
             class="sel-box"
@@ -473,20 +582,55 @@ function onBodyPointerDown(e: PointerEvent) {
             <div class="rotate-line" />
           </div>
         </div>
+        </div>
       </div>
     </div>
 
     <div class="transport">
       <button class="ghost" @click="toStart" :title="t('先頭へ戻る', '先頭へ')">⏮</button>
+      <button
+        class="ghost step-btn mono"
+        :title="t('1フレーム前に戻ります', '1フレーム戻る')"
+        @click="stepFrame(-1)"
+      >|◀</button>
       <button class="primary play-btn" :title="playing ? t('一時停止', '一時停止') : t('再生', '再生')" @click="togglePlay">
         {{ playing ? '❙❙' : '▶' }}
       </button>
-      <div class="time mono">
+      <button
+        class="ghost step-btn mono"
+        :title="t('1フレーム先に進みます', '1フレーム進む')"
+        @click="stepFrame(1)"
+      >▶|</button>
+      <div
+        class="time mono"
+        :title="t('時間は 分:秒.フレーム番号 の形式で表示しています', '表示形式: 分:秒.フレーム (MM:SS.FF)')"
+      >
         <span>{{ fmt(playhead) }}</span>
         <span class="sep"> / </span>
         <span class="muted">{{ fmt(duration) }}</span>
       </div>
       <div class="spacer" />
+      <select
+        v-model="zoomMode"
+        class="zoom-select"
+        :title="t('プレビューの表示倍率を変えられます', 'プレビュー表示倍率')"
+      >
+        <option value="fit">{{ t('画面に合わせる', 'フィット') }}</option>
+        <option value="0.5">50%</option>
+        <option value="1">100%</option>
+      </select>
+      <button
+        class="ghost guide-btn"
+        :class="{ active: showGrid }"
+        :title="t('三分割のグリッド線を表示します', 'グリッド表示 (三分割線)')"
+        @click="showGrid = !showGrid"
+      >⊞</button>
+      <button
+        class="ghost guide-btn"
+        :class="{ active: showSafe }"
+        :title="t('セーフエリア (画面の安全な範囲) を表示します', 'セーフエリア表示 (90% / 80%)')"
+        @click="showSafe = !showSafe"
+      >▣</button>
       <div class="resolution muted mono">
         {{ store.meta.width }} × {{ store.meta.height }} · {{ store.meta.fps }}fps
       </div>
@@ -507,19 +651,30 @@ function onBodyPointerDown(e: PointerEvent) {
   flex: 1;
   min-height: 0;
   display: flex;
-  align-items: center;
-  justify-content: center;
   overflow: hidden;
   position: relative;
   background:
     radial-gradient(circle at 50% 50%, var(--bg-1) 0%, var(--bg-0) 80%);
 }
 
-.canvas-stage {
+/* 固定倍率 (50% / 100%) 時はスクロールしてパンできるようにする */
+.canvas-wrapper.scrollable {
+  overflow: auto;
+}
+
+.canvas-stage-sizer {
   /* flex 親で flex-shrink:1 に縮められるとアスペクト比が崩れるため固定 */
   flex-shrink: 0;
   flex-grow: 0;
-  transform-origin: center center;
+  /* margin:auto で中央寄せ (justify/align center と違い、
+     はみ出した際もスクロールで端まで到達できる) */
+  margin: auto;
+  position: relative;
+}
+
+.canvas-stage {
+  /* sizer の左上に合わせて縮小/等倍表示する */
+  transform-origin: 0 0;
   box-shadow:
     0 0 0 1px var(--line),
     0 20px 60px rgba(0, 0, 0, 0.5);
@@ -538,6 +693,48 @@ canvas {
   inset: 0;
   pointer-events: none;
 }
+
+/* ---------- 表示ガイド (グリッド / セーフエリア / 吸着ガイド) ---------- */
+/* % ベースで配置しているため canvas-stage のスケールに自動追従する */
+
+.guide-layer {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+.grid-line {
+  position: absolute;
+  background: rgba(255, 255, 255, 0.3);
+  pointer-events: none;
+}
+.grid-line.v { top: 0; bottom: 0; transform: translateX(-50%); }
+.grid-line.h { left: 0; right: 0; transform: translateY(-50%); }
+
+.safe-box {
+  position: absolute;
+  border-style: solid;
+  pointer-events: none;
+}
+/* アクションセーフ: 90% (上下左右 5% 内側) */
+.safe-box.action {
+  inset: 5%;
+  border-color: rgba(255, 255, 255, 0.45);
+}
+/* タイトルセーフ: 80% (上下左右 10% 内側) */
+.safe-box.title {
+  inset: 10%;
+  border-style: dashed;
+  border-color: rgba(255, 255, 255, 0.35);
+}
+
+.align-guide {
+  position: absolute;
+  background: var(--accent);
+  pointer-events: none;
+}
+.align-guide.v { left: 50%; top: 0; bottom: 0; transform: translateX(-50%); }
+.align-guide.h { top: 50%; left: 0; right: 0; transform: translateY(-50%); }
 
 .sel-box {
   position: absolute;
@@ -602,6 +799,28 @@ canvas {
 .play-btn {
   min-width: 48px;
   font-size: 13px;
+}
+
+.step-btn {
+  padding: 6px 6px;
+  font-size: 11px;
+  letter-spacing: -0.05em;
+}
+
+.zoom-select {
+  padding: 4px 6px;
+  font-size: 11px;
+}
+
+.guide-btn {
+  font-size: 14px;
+  padding: 4px 8px;
+  line-height: 1;
+}
+.guide-btn.active {
+  color: var(--accent);
+  border-color: var(--accent-dim);
+  background: var(--bg-hover);
 }
 
 .time {

@@ -19,13 +19,28 @@ import { sampleKeyframes } from './keyframes'
 import { sampleTransition, type TransitionSample } from './transitions'
 import { applyPixelEffects, hasPixelEffects } from './pixelEffects'
 
+/**
+ * WebAudio によるクリップ音声チェーン。
+ * el → MediaElementSource → low/mid/high (Biquad EQ) → gain → destination
+ * EQ をプレビューでも効かせ、100% を超える音量ブーストも可能にする。
+ */
+interface AudioChain {
+  src: MediaElementAudioSourceNode
+  low: BiquadFilterNode
+  mid: BiquadFilterNode
+  high: BiquadFilterNode
+  gain: GainNode
+}
+
 interface VideoMediaNode {
   el: HTMLVideoElement
   loaded: boolean
+  chain?: AudioChain
 }
 interface AudioMediaNode {
   el: HTMLAudioElement
   loaded: boolean
+  chain?: AudioChain
 }
 
 export interface EffectiveTransform {
@@ -55,6 +70,22 @@ class PixelBuffer {
   }
 }
 
+// ============================================================
+// アクティブエンジンのモジュールシングルトン
+// ============================================================
+// useKeyboard などコンポーネント外のコードから「現在プレビューに
+// 使われているエンジン」へアクセスするための登録口。
+// PreviewEngine の生成時に自動登録され、dispose() で解除される。
+let activeEngine: PreviewEngine | null = null
+
+export function registerActiveEngine(e: PreviewEngine | null) {
+  activeEngine = e
+}
+
+export function getActiveEngine(): PreviewEngine | null {
+  return activeEngine
+}
+
 export class PreviewEngine {
   private canvas: HTMLCanvasElement
   private ctx: CanvasRenderingContext2D
@@ -67,10 +98,60 @@ export class PreviewEngine {
   private playing = false
   private lastWallClock = 0
   private rafId: number | null = null
+  // 再生レート (シャトル)。負値で逆再生。J/K/L ショートカット等から設定される
+  private rate = 1
 
   private onFrame?: (playhead: number) => void
   private onError?: (msg: string) => void
   private pixelBuf = new PixelBuffer()
+  // プレビュー音声用の AudioContext (EQ / 音量ブーストのルーティング先)。
+  // ブラウザの自動再生制限があるため、生成は初回利用時・resume は play() 時
+  private audioCtx: AudioContext | null = null
+
+  private getAudioCtx(): AudioContext | null {
+    if (this.audioCtx) return this.audioCtx
+    const Ctx =
+      (globalThis as any).AudioContext || (globalThis as any).webkitAudioContext
+    if (!Ctx) return null
+    try {
+      this.audioCtx = new Ctx()
+    } catch {
+      this.audioCtx = null
+    }
+    return this.audioCtx
+  }
+
+  /**
+   * メディア要素に EQ + ゲインの WebAudio チェーンを張る。
+   * createMediaElementSource は同一要素へ 1 回しか呼べないため、
+   * 要素生成直後に 1 度だけ呼ぶこと。失敗時は undefined (素の音声出力のまま)。
+   */
+  private attachAudioChain(el: HTMLMediaElement): AudioChain | undefined {
+    const ctx = this.getAudioCtx()
+    if (!ctx) return undefined
+    try {
+      const src = ctx.createMediaElementSource(el)
+      const low = ctx.createBiquadFilter()
+      low.type = 'lowshelf'
+      low.frequency.value = 200
+      const mid = ctx.createBiquadFilter()
+      mid.type = 'peaking'
+      mid.frequency.value = 1000
+      mid.Q.value = 1
+      const high = ctx.createBiquadFilter()
+      high.type = 'highshelf'
+      high.frequency.value = 5000
+      const gain = ctx.createGain()
+      src.connect(low)
+      low.connect(mid)
+      mid.connect(high)
+      high.connect(gain)
+      gain.connect(ctx.destination)
+      return { src, low, mid, high, gain }
+    } catch {
+      return undefined
+    }
+  }
 
   constructor(canvas: HTMLCanvasElement, state: ProjectState) {
     this.canvas = canvas
@@ -79,6 +160,8 @@ export class PreviewEngine {
     this.ctx = ctx
     this.state = state
     this.resizeCanvas()
+    // このインスタンスをアクティブエンジンとして登録
+    registerActiveEngine(this)
   }
 
   setState(state: ProjectState) {
@@ -110,6 +193,7 @@ export class PreviewEngine {
       if (!liveIds.has(id)) {
         node.el.pause()
         node.el.src = ''
+        node.chain?.src.disconnect()
         this.videoNodes.delete(id)
       }
     }
@@ -117,6 +201,7 @@ export class PreviewEngine {
       if (!liveIds.has(id)) {
         node.el.pause()
         node.el.src = ''
+        node.chain?.src.disconnect()
         this.audioNodes.delete(id)
       }
     }
@@ -126,19 +211,39 @@ export class PreviewEngine {
     if (this.playing) return
     this.playing = true
     this.lastWallClock = performance.now()
+    // ユーザー操作起点の再生で AudioContext を起こす (自動再生制限対策)
+    this.audioCtx?.resume().catch(() => {})
     this.loop()
   }
 
   pause() {
+    const wasPlaying = this.playing
     this.playing = false
     if (this.rafId !== null) cancelAnimationFrame(this.rafId)
     this.rafId = null
     for (const n of this.videoNodes.values()) n.el.pause()
     for (const n of this.audioNodes.values()) n.el.pause()
+    // 外部 (ショートカット等) からの pause でも UI の再生状態が
+    // 同期するよう、停止直後に onFrame を 1 回通知する
+    if (wasPlaying) this.onFrame?.(this.state.timeline.playhead)
   }
 
   isPlaying() {
     return this.playing
+  }
+
+  /**
+   * 再生レート (シャトル) を設定。負値で逆再生。
+   * -8..8 に clamp し、0 (と非数) は 1 に丸める。
+   * K での停止時に 1 へ戻すのは呼び出し側の責務。
+   */
+  setPlaybackRate(r: number) {
+    if (!Number.isFinite(r) || r === 0) r = 1
+    this.rate = Math.max(-8, Math.min(8, r))
+  }
+
+  getPlaybackRate(): number {
+    return this.rate
   }
 
   private loop = () => {
@@ -147,26 +252,38 @@ export class PreviewEngine {
     const dt = (now - this.lastWallClock) / 1000
     this.lastWallClock = now
 
-    // 範囲再生: out 点が設定されていれば in 点へ戻ってループ。
-    // out 点なしで末尾に達した場合は停止。
+    // 再生レート (シャトル) を掛けて進める。負レートなら逆再生
     const tl = this.state.timeline
-    let t = tl.playhead + dt
-    const rangeEnd = tl.outPoint ?? tl.duration
-    if (t >= rangeEnd) {
-      if (tl.outPoint != null) {
-        t = tl.inPoint ?? 0
-        tl.playhead = t
-        this.renderAt(t, true).catch(console.error)
-        this.onFrame?.(t)
-        this.rafId = requestAnimationFrame(this.loop)
+    let t = tl.playhead + dt * this.rate
+
+    if (this.rate < 0) {
+      // 逆再生: 先頭 (0) に達したら 0 で停止
+      if (t <= 0) {
+        tl.playhead = 0
+        this.renderAt(0, true).catch(console.error)
+        // pause() 内で onFrame が通知される
+        this.pause()
         return
       }
-      t = rangeEnd
-      tl.playhead = t
-      this.renderAt(t, true).catch(console.error)
-      this.onFrame?.(t)
-      this.pause()
-      return
+    } else {
+      // 範囲再生: out 点が設定されていれば in 点へ戻ってループ。
+      // out 点なしで末尾に達した場合は停止。
+      const rangeEnd = tl.outPoint ?? tl.duration
+      if (t >= rangeEnd) {
+        if (tl.outPoint != null) {
+          t = tl.inPoint ?? 0
+          tl.playhead = t
+          this.renderAt(t, true).catch(console.error)
+          this.onFrame?.(t)
+          this.rafId = requestAnimationFrame(this.loop)
+          return
+        }
+        tl.playhead = rangeEnd
+        this.renderAt(rangeEnd, true).catch(console.error)
+        // pause() 内で onFrame が通知される
+        this.pause()
+        return
+      }
     }
     tl.playhead = t
     this.renderAt(t, true).catch(console.error)
@@ -271,67 +388,66 @@ export class PreviewEngine {
     const anySolo = this.state.tracks.some(t => t.solo)
 
     for (const clip of activeClips) {
+      if (clip.kind !== 'video' && clip.kind !== 'audio') continue
       const tr = this.state.tracks.find(x => x.id === clip.trackId)
       const trans = sampleTransition(clip, t)
       const eff = this.computeEffective(clip, t, trans)
       const trackVol = tr?.volume ?? 1
       // ソロはトラック種別を問わず適用する (video トラックの S ボタンも効く)
       const muteBySolo = anySolo && !tr?.solo
-      const effVol = Math.max(0, Math.min(1, eff.volume * masterVol * trackVol))
+      // WebAudio チェーンがあれば 100% 超のブーストも通す (エクスポートと同じ挙動)
+      const rawVol = Math.max(0, eff.volume * masterVol * trackVol)
 
-      if (clip.kind === 'video') {
-        const node = await this.ensureVideoNode(clip)
-        if (!node) continue
-        const speed = clip.speed ?? 1
-        const local = this.localTime(clip, t)
-        // reverse: クリップが指す素材区間の「終端」から逆方向へ。
-        // 素材ファイル全長 (node.el.duration) ではなく、クリップが使う
-        // 区間長 (clip.duration * speed) を基準にする。
-        let inClipTime: number
-        if (clip.reversed) {
-          const segmentEnd = (clip.sourceIn ?? 0) + clip.duration * speed
-          inClipTime = Math.max(0, segmentEnd - local)
-        } else {
-          inClipTime = local + (clip.sourceIn ?? 0)
-        }
-        try {
-          node.el.playbackRate = Math.max(0.0625, Math.min(16, speed))
-        } catch {}
-        if (Math.abs(node.el.currentTime - inClipTime) > 0.2) {
-          node.el.currentTime = inClipTime
-        }
-        node.el.muted = !!(clip.muted || tr?.muted || muteBySolo)
-        node.el.volume = effVol
-        if (this.playing && node.el.paused && !clip.reversed) {
-          node.el.play().catch(() => {})
-        }
-        // reverse 再生は <video> 要素では不可能なため、renderAt 側で seek しつつ描画
-        if (clip.reversed) node.el.pause()
-      } else if (clip.kind === 'audio') {
-        const node = await this.ensureAudioNode(clip)
-        if (!node) continue
-        const speed = clip.speed ?? 1
-        const local = this.localTime(clip, t)
-        let inClipTime: number
-        if (clip.reversed) {
-          const segmentEnd = (clip.sourceIn ?? 0) + clip.duration * speed
-          inClipTime = Math.max(0, segmentEnd - local)
-        } else {
-          inClipTime = local + (clip.sourceIn ?? 0)
-        }
-        try {
-          node.el.playbackRate = Math.max(0.0625, Math.min(16, speed))
-        } catch {}
-        if (Math.abs(node.el.currentTime - inClipTime) > 0.2) {
-          node.el.currentTime = inClipTime
-        }
-        node.el.muted = !!(clip.muted || tr?.muted || muteBySolo)
-        node.el.volume = effVol
-        if (this.playing && node.el.paused && !clip.reversed) {
-          node.el.play().catch(() => {})
-        }
-        if (clip.reversed) node.el.pause()
+      const node =
+        clip.kind === 'video'
+          ? await this.ensureVideoNode(clip)
+          : await this.ensureAudioNode(clip)
+      if (!node) continue
+
+      const speed = clip.speed ?? 1
+      const local = this.localTime(clip, t)
+      const inClipTime = local + (clip.sourceIn ?? 0)
+      try {
+        // クリップ speed に再生レート (シャトル) を乗算して追従させる
+        node.el.playbackRate = Math.max(0.25, Math.min(16, speed * Math.abs(this.rate)))
+      } catch {}
+      if (Math.abs(node.el.currentTime - inClipTime) > 0.2) {
+        node.el.currentTime = inClipTime
       }
+      node.el.muted = !!(clip.muted || tr?.muted || muteBySolo)
+      this.applyAudioParams(node, clip, rawVol)
+      if (this.playing && node.el.paused && this.rate > 0) {
+        node.el.play().catch(() => {})
+      }
+      // 負レート (シャトル逆走) は媒体要素では再生できないため、
+      // pause したまま seek 駆動 (コマ送り) で描画する
+      if (this.rate < 0) node.el.pause()
+    }
+  }
+
+  /**
+   * 音量と EQ をノードへ反映する。
+   * WebAudio チェーンがあれば gain (0..2) + BiquadFilter で適用し、
+   * 無ければ el.volume (0..1 clamp) のみのフォールバック。
+   */
+  private applyAudioParams(
+    node: VideoMediaNode | AudioMediaNode,
+    clip: Clip,
+    rawVol: number
+  ) {
+    const eq = (clip as any).eq as
+      | { low?: number; mid?: number; high?: number }
+      | undefined
+    if (node.chain) {
+      node.el.volume = 1
+      // クリップ(≤2) × トラック(≤2) × マスター(≤2) の乗算結果を許容
+      // (エクスポートのゲイン構成と同じ上限)
+      node.chain.gain.gain.value = Math.max(0, Math.min(8, rawVol))
+      node.chain.low.gain.value = Math.max(-24, Math.min(24, eq?.low ?? 0))
+      node.chain.mid.gain.value = Math.max(-24, Math.min(24, eq?.mid ?? 0))
+      node.chain.high.gain.value = Math.max(-24, Math.min(24, eq?.high ?? 0))
+    } else {
+      node.el.volume = Math.max(0, Math.min(1, rawVol))
     }
   }
 
@@ -341,15 +457,8 @@ export class PreviewEngine {
         const node = await this.ensureVideoNode(clip)
         if (!node) continue
         node.el.pause()
-        const speed = clip.speed ?? 1
         const local = this.localTime(clip, t)
-        let inClipTime: number
-        if (clip.reversed) {
-          const segmentEnd = (clip.sourceIn ?? 0) + clip.duration * speed
-          inClipTime = Math.max(0, segmentEnd - local)
-        } else {
-          inClipTime = local + (clip.sourceIn ?? 0)
-        }
+        const inClipTime = local + (clip.sourceIn ?? 0)
         node.el.currentTime = inClipTime
       } else if (clip.kind === 'audio') {
         const node = await this.ensureAudioNode(clip)
@@ -379,7 +488,7 @@ export class PreviewEngine {
     el.addEventListener('error', () => {
       this.onError?.(`動画を読み込めませんでした`)
     })
-    node = { el, loaded: false }
+    node = { el, loaded: false, chain: this.attachAudioChain(el) }
     this.videoNodes.set(clip.id, node)
     await waitEvent(el, 'loadeddata').catch(() => {})
     node.loaded = true
@@ -397,7 +506,7 @@ export class PreviewEngine {
     el.addEventListener('error', () => {
       this.onError?.(`音声を読み込めませんでした`)
     })
-    node = { el, loaded: false }
+    node = { el, loaded: false, chain: this.attachAudioChain(el) }
     this.audioNodes.set(clip.id, node)
     await waitEvent(el, 'loadeddata').catch(() => {})
     node.loaded = true
@@ -648,17 +757,24 @@ export class PreviewEngine {
 
   dispose() {
     this.pause()
+    // 自分がアクティブエンジンとして登録されている場合のみ解除する
+    // (新しいエンジンが先に登録された後で旧エンジンが破棄されても消さない)
+    if (getActiveEngine() === this) registerActiveEngine(null)
     for (const n of this.videoNodes.values()) {
       n.el.pause()
       n.el.src = ''
+      n.chain?.src.disconnect()
     }
     this.videoNodes.clear()
     for (const n of this.audioNodes.values()) {
       n.el.pause()
       n.el.src = ''
+      n.chain?.src.disconnect()
     }
     this.audioNodes.clear()
     this.imageCache.clear()
+    this.audioCtx?.close().catch(() => {})
+    this.audioCtx = null
   }
 }
 

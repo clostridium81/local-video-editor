@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, watch, nextTick } from 'vue'
 import { useProjectStore } from '../stores/projectStore'
 import { toast } from '../composables/useToast'
 import { useLocale } from '../composables/useLocale'
@@ -64,13 +64,63 @@ const resolvedBitrate = computed(() => {
 
 const abortCtrl = ref<AbortController | null>(null)
 
-// fps 候補: 定番 + 作品の fps (重複は除外して1つにまとめる)
+// 用途プリセット: 選ぶと形式/解像度/fps/画質をまとめて設定する
+type UsagePreset = 'custom' | 'youtube' | 'youtube60' | 'archive' | 'web' | 'gif'
+const usagePreset = ref<UsagePreset>('custom')
+
+// プリセット適用によるフィールド変更を「手動変更」と誤検知しないためのフラグ
+let applyingPreset = false
+
+function applyUsagePreset(p: UsagePreset) {
+  if (p === 'custom') return // カスタムは何も変更しない
+  applyingPreset = true
+  if (p === 'youtube') {
+    format.value = 'mp4'
+    resolutionPreset.value = '1080p'
+    fps.value = 30
+    bitratePreset.value = 'medium'
+  } else if (p === 'youtube60') {
+    format.value = 'mp4'
+    resolutionPreset.value = '1080p'
+    fps.value = 60
+    bitratePreset.value = 'high'
+  } else if (p === 'archive') {
+    format.value = 'mp4'
+    resolutionPreset.value = 'project'
+    fps.value = store.state.meta.fps
+    bitratePreset.value = 'high'
+  } else if (p === 'web') {
+    format.value = 'webm'
+    resolutionPreset.value = '720p'
+    fps.value = 30
+    bitratePreset.value = 'low'
+  } else if (p === 'gif') {
+    format.value = 'gif'
+    resolutionPreset.value = '480p'
+    fps.value = 12
+  }
+  // プリセットではビットレートは自動計算に任せる
+  customBitrate.value = null
+  // 同一フラッシュ内で走る手動変更 watch を除外してからフラグを戻す
+  nextTick(() => {
+    applyingPreset = false
+  })
+}
+
+watch(usagePreset, p => applyUsagePreset(p))
+
+// 個別項目を手動で変更したらプリセット表示を「カスタム」に戻す
+watch([format, fps, resolutionPreset, bitratePreset, customBitrate], () => {
+  if (applyingPreset) return
+  if (usagePreset.value !== 'custom') usagePreset.value = 'custom'
+})
+
+// fps 候補: 定番 + 作品の fps + 現在値 (GIF プリセットの 12 など)。重複は除外
 const fpsOptions = computed(() => {
   const base = [24, 30, 60]
-  const projectFps = store.state.meta.fps
-  return base.includes(projectFps)
-    ? base
-    : [...base, projectFps].sort((a, b) => a - b)
+  return [...new Set([...base, store.state.meta.fps, fps.value])].sort(
+    (a, b) => a - b
+  )
 })
 
 // In/Out 点が設定されているか (未設定なら「開始〜終了」radio を無効化)
@@ -97,6 +147,20 @@ const exportLength = computed(() => {
     : dur
   return Math.min(dur, contentEnd)
 })
+
+// 推定ファイルサイズ (MB)。映像ビットレート + 音声 192 kbps を長さ分積算
+// GIF はビットレートベースの計算が成立しないため対象外 (表示側で目安なしと明示)
+const estimatedSizeMB = computed(() => {
+  const audioBps =
+    includeAudio.value && format.value !== 'gif' ? 192_000 : 0
+  return ((resolvedBitrate.value + audioBps) * exportLength.value) / 8 / 1e6
+})
+
+// 推定サイズの表示用フォーマット (大きい値は小数を出さない)
+function fmtSizeMB(mb: number): string {
+  if (mb >= 100) return Math.round(mb).toLocaleString()
+  return mb.toFixed(1)
+}
 
 onMounted(async () => {
   if (!hasWebCodecs) {
@@ -261,6 +325,18 @@ function fmtPhaseMessage(m: string): string {
       </div>
 
       <div v-if="!running" class="modal-body">
+        <label class="field preset-field">
+          <span>{{ t('用途プリセット (よく使う設定をまとめて選べます)', '用途プリセット') }}</span>
+          <select v-model="usagePreset">
+            <option value="custom">カスタム (手動設定)</option>
+            <option value="youtube">YouTube (1080p / 30fps / 高画質 MP4)</option>
+            <option value="youtube60">YouTube 60fps (1080p / 60fps / 最高画質 MP4)</option>
+            <option value="archive">高画質アーカイブ (作品サイズ / 最高画質)</option>
+            <option value="web">Web 軽量 (720p / 30fps / 標準 WebM)</option>
+            <option value="gif">GIF アニメ (480p / 12fps)</option>
+          </select>
+        </label>
+
         <div class="row-2">
           <label class="field">
             <span>形式</span>
@@ -356,6 +432,8 @@ function fmtPhaseMessage(m: string): string {
           <div>出力: {{ resolution.width }} × {{ resolution.height }} / {{ fps }} fps</div>
           <div>画質: {{ Math.round(resolvedBitrate / 1000) }} kbps</div>
           <div>長さ: {{ exportLength.toFixed(1) }} 秒</div>
+          <div v-if="format === 'gif'">推定サイズ: — (GIF は目安なし)</div>
+          <div v-else>推定サイズ: 約 {{ fmtSizeMB(estimatedSizeMB) }} MB</div>
         </div>
 
         <div class="actions">
@@ -445,6 +523,17 @@ function fmtPhaseMessage(m: string): string {
 }
 .field > span {
   color: var(--fg-2);
+}
+/* 用途プリセット: 最上部で目立つようアクセント枠で囲む */
+.preset-field {
+  padding: 8px 10px;
+  background: var(--bg-2);
+  border: 1px solid var(--accent);
+  border-radius: var(--radius-sm);
+}
+.preset-field > span {
+  color: var(--accent);
+  font-weight: 600;
 }
 .toggle {
   display: inline-flex;
