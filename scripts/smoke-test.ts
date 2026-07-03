@@ -11,6 +11,7 @@ import { sampleTransition } from '../src/engine/transitions'
 import { HistoryManager } from '../src/stores/history'
 import { applyPixelEffects, hasPixelEffects, hexToRgb } from '../src/engine/pixelEffects'
 import { EFFECT_PRESETS, getPreset } from '../src/engine/effectPresets'
+import { contentSignature, isEmptyProject } from '../src/stores/backupSignature'
 import type { Clip, Keyframe, ProjectState, PixelEffects } from '../src/types/project'
 
 let failures = 0
@@ -222,6 +223,87 @@ console.log('effect presets:')
   check('全プリセットに一意の id', new Set(EFFECT_PRESETS.map(p => p.id)).size === EFFECT_PRESETS.length)
   check('全プリセットに両言語ラベル',
     EFFECT_PRESETS.every(p => p.labelEasy && p.labelNormal))
+}
+
+// ---------- バックアップ差分検知 (未保存で閉じる警告の判定) ----------
+console.log('backup signature:')
+{
+  function makeState(): ProjectState {
+    return {
+      meta: { id: 'p1', name: 'x', createdAt: 1, updatedAt: 1, width: 1920, height: 1080, fps: 30, backgroundColor: '#000' },
+      assets: {},
+      folders: [],
+      tracks: [{ id: 't1', kind: 'video', name: 'V1', muted: false, locked: false, order: 1 }],
+      clips: [],
+      markers: [],
+      timeline: { playhead: 0, zoom: 50, duration: 60, snapping: true, rippleMode: false, masterVolume: 1 }
+    }
+  }
+  const mkClip = (id: string): Clip => ({
+    id, kind: 'text', trackId: 't1', start: 0, duration: 3, opacity: 1,
+    text: 'a', fontFamily: 'sans-serif', fontSize: 72, color: '#fff',
+    x: 0.5, y: 0.5, align: 'center', bold: true, italic: false
+  } as Clip)
+
+  const base = makeState()
+  const sig = contentSignature(base)
+
+  // 同一内容 → 同一署名 (べき等)
+  check('同一内容は同じ署名', sig === contentSignature(makeState()))
+
+  // playhead / zoom 変更 → 署名不変 (再生・表示は編集ではない)
+  {
+    const s = makeState(); s.timeline.playhead = 42; s.timeline.zoom = 200
+    check('playhead/zoom は署名に影響しない', contentSignature(s) === sig)
+  }
+
+  // updatedAt 変更 → 署名不変
+  {
+    const s = makeState(); s.meta.updatedAt = 999999
+    check('updatedAt は署名に影響しない', contentSignature(s) === sig)
+  }
+
+  // クリップ追加 → 署名変化 (編集は必ず捕捉)
+  {
+    const s = makeState(); s.clips.push(mkClip('c1'))
+    check('クリップ追加で署名が変わる', contentSignature(s) !== sig)
+  }
+
+  // クリップの微小プロパティ変更 → 署名変化
+  {
+    const s1 = makeState(); s1.clips.push(mkClip('c1'))
+    const s2 = makeState(); const c = mkClip('c1'); (c as any).start = 0.01; s2.clips.push(c)
+    check('クリップ start の変更で署名が変わる', contentSignature(s1) !== contentSignature(s2))
+  }
+
+  // マーカー・トラック・メタ名・masterVolume・in/out も検知対象
+  {
+    const s = makeState(); s.markers!.push({ id: 'm', time: 1, label: 'x' })
+    check('マーカー追加で署名が変わる', contentSignature(s) !== sig)
+  }
+  {
+    const s = makeState(); s.meta.name = 'renamed'
+    check('プロジェクト名変更で署名が変わる', contentSignature(s) !== sig)
+  }
+  {
+    const s = makeState(); s.timeline.masterVolume = 0.5
+    check('マスター音量変更で署名が変わる', contentSignature(s) !== sig)
+  }
+  {
+    const s = makeState(); s.timeline.outPoint = 10
+    check('Out点設定で署名が変わる', contentSignature(s) !== sig)
+  }
+
+  // 空プロジェクト判定
+  check('初期状態は空プロジェクト', isEmptyProject(makeState()))
+  {
+    const s = makeState(); s.clips.push(mkClip('c1'))
+    check('クリップありは非空', !isEmptyProject(s))
+  }
+  {
+    const s = makeState(); s.assets['a'] = { id: 'a', kind: 'image', name: 'x', mimeType: 'image/png', size: 1, createdAt: 1 }
+    check('素材ありは非空', !isEmptyProject(s))
+  }
 }
 
 console.log(failures === 0 ? '\nALL PASS' : `\n${failures} FAILURES`)

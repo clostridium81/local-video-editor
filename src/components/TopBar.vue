@@ -40,7 +40,10 @@ const showHelp = ref(false)
 async function onSave() {
   saving.value = true
   try {
-    await exportBackup(store.serialize())
+    // ダウンロードした内容と一致する署名を記録するため、同じスナップショットを使う
+    const snapshot = store.serialize()
+    await exportBackup(snapshot)
+    store.markBackedUp(snapshot)
     toast.success(t('バックアップを保存しました', 'バックアップを保存しました'))
   } catch (e: any) {
     console.error(e)
@@ -85,6 +88,8 @@ async function onFileChosen(e: Event) {
     store.replaceState(project)
     // 再読込時に「最新プロジェクト」として復元されるよう即保存
     await saveProjectState(store.serialize())
+    // 復元した内容 = 読み込んだバックアップファイルそのものなので「バックアップ済み」
+    store.markBackedUp()
     toast.success(t(`復元しました (素材 ${assetCount} 件)`, `復元しました (素材 ${assetCount} 件)`))
   } catch (err: any) {
     console.error(err)
@@ -157,7 +162,16 @@ function onExport() {
       <div class="sep" />
       <button class="ghost" @click="onNew">{{ t('新規', '新規') }}</button>
       <button class="ghost" @click="onRestoreClick">{{ t('復元', '復元') }}</button>
-      <button class="ghost" :disabled="saving" @click="onSave">
+      <button
+        class="ghost backup-btn"
+        :class="{ dirty: store.isDirtySinceBackup }"
+        :disabled="saving"
+        :title="store.isDirtySinceBackup
+          ? t('まだバックアップしていない変更があります', '未バックアップの変更があります')
+          : t('プロジェクトをまるごと保存', 'プロジェクト全体をバックアップ')"
+        @click="onSave"
+      >
+        <span v-if="store.isDirtySinceBackup" class="dirty-dot" />
         {{ saving ? t('保存中…', '保存中…') : t('バックアップ', 'バックアップ') }}
       </button>
       <button class="ghost icon-btn" :title="t('作品の切り替え', 'プロジェクト管理')" @click="showProjects = true">📂</button>
@@ -286,5 +300,33 @@ function onExport() {
   height: 20px;
   background: var(--line);
   margin: 0 4px;
+}
+
+/* 未バックアップの変更があるときのバックアップボタン強調 */
+.backup-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+.backup-btn.dirty {
+  color: var(--accent-hi);
+  border-color: var(--accent);
+  background: rgba(232, 168, 56, 0.12);
+}
+.backup-btn.dirty:hover {
+  background: rgba(232, 168, 56, 0.2);
+}
+.dirty-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--accent);
+  flex-shrink: 0;
+  box-shadow: 0 0 5px rgba(232, 168, 56, 0.7);
+  animation: dirty-pulse 2s ease-in-out infinite;
+}
+@keyframes dirty-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.45; }
 }
 </style>

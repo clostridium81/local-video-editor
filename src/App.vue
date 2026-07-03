@@ -10,11 +10,13 @@ import { useKeyboard } from './composables/useKeyboard'
 import { useTutorial } from './composables/useTutorial'
 import { useLayout } from './composables/useLayout'
 import { useLocale } from './composables/useLocale'
-import { computed, onMounted } from 'vue'
+import { useProjectStore } from './stores/projectStore'
+import { computed, onMounted, onBeforeUnmount } from 'vue'
 
 useKeyboard()
 const tutorial = useTutorial()
 const { t } = useLocale()
+const store = useProjectStore()
 
 const {
   leftWidth,
@@ -67,9 +69,24 @@ function startResize(e: MouseEvent, kind: ResizeKind) {
   window.addEventListener('mouseup', onUp)
 }
 
+// ---------- タブを閉じる際の未バックアップ警告 ----------
+// 最後の ZIP バックアップ以降に編集があれば、ブラウザ標準の離脱確認を出す。
+// (メッセージ文言は現代ブラウザでは固定で、カスタム文字列は表示されない)
+function onBeforeUnload(e: BeforeUnloadEvent) {
+  if (store.hasUnbackedUpChanges()) {
+    e.preventDefault()
+    e.returnValue = ''
+  }
+}
+
 onMounted(() => {
+  window.addEventListener('beforeunload', onBeforeUnload)
   // 初回アクセス時に自動表示 (少し遅らせてレイアウト確定後)
   setTimeout(() => tutorial.openIfFirstVisit(), 400)
+})
+
+onBeforeUnmount(() => {
+  window.removeEventListener('beforeunload', onBeforeUnload)
 })
 </script>
 
