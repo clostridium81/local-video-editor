@@ -8,10 +8,64 @@ import Toast from './components/Toast.vue'
 import TutorialOverlay from './components/TutorialOverlay.vue'
 import { useKeyboard } from './composables/useKeyboard'
 import { useTutorial } from './composables/useTutorial'
-import { onMounted } from 'vue'
+import { useLayout } from './composables/useLayout'
+import { useLocale } from './composables/useLocale'
+import { computed, onMounted } from 'vue'
 
 useKeyboard()
 const tutorial = useTutorial()
+const { t } = useLocale()
+
+const {
+  leftWidth,
+  rightWidth,
+  timelineHeight,
+  setLeftWidth,
+  setRightWidth,
+  setTimelineHeight,
+  reset
+} = useLayout()
+
+const gridCols = computed(
+  () => `${leftWidth.value}px 5px 1fr 5px ${rightWidth.value}px`
+)
+
+// ---------- エリア境界のドラッグリサイズ ----------
+
+type ResizeKind = 'left' | 'right' | 'timeline'
+
+function startResize(e: MouseEvent, kind: ResizeKind) {
+  e.preventDefault()
+  const startX = e.clientX
+  const startY = e.clientY
+  const orig =
+    kind === 'left'
+      ? leftWidth.value
+      : kind === 'right'
+        ? rightWidth.value
+        : timelineHeight.value
+  document.body.style.cursor = kind === 'timeline' ? 'row-resize' : 'col-resize'
+  document.body.style.userSelect = 'none'
+  const onMove = (ev: MouseEvent) => {
+    if (kind === 'left') {
+      setLeftWidth(orig + (ev.clientX - startX))
+    } else if (kind === 'right') {
+      // 右パネルは左へドラッグすると広がる
+      setRightWidth(orig - (ev.clientX - startX))
+    } else {
+      // タイムラインは上へドラッグすると広がる
+      setTimelineHeight(orig - (ev.clientY - startY))
+    }
+  }
+  const onUp = () => {
+    window.removeEventListener('mousemove', onMove)
+    window.removeEventListener('mouseup', onUp)
+    document.body.style.cursor = ''
+    document.body.style.userSelect = ''
+  }
+  window.addEventListener('mousemove', onMove)
+  window.addEventListener('mouseup', onUp)
+}
 
 onMounted(() => {
   // 初回アクセス時に自動表示 (少し遅らせてレイアウト確定後)
@@ -22,16 +76,34 @@ onMounted(() => {
 <template>
   <div class="app-root">
     <TopBar />
-    <div class="main">
+    <div class="main" :style="{ gridTemplateColumns: gridCols }">
       <aside class="left" data-tour="media-library">
         <MediaLibrary />
       </aside>
+      <div
+        class="resizer resizer-v"
+        :title="t('ドラッグで幅を調整 / ダブルクリックで元に戻す', 'ドラッグで幅を調整 / ダブルクリックでリセット')"
+        @mousedown="(e) => startResize(e, 'left')"
+        @dblclick="reset('leftWidth')"
+      />
       <section class="center">
         <div data-tour="preview" class="preview-wrap">
           <PreviewPanel />
         </div>
-        <TimelinePanel />
+        <div
+          class="resizer resizer-h"
+          :title="t('ドラッグで高さを調整 / ダブルクリックで元に戻す', 'ドラッグで高さを調整 / ダブルクリックでリセット')"
+          @mousedown="(e) => startResize(e, 'timeline')"
+          @dblclick="reset('timelineHeight')"
+        />
+        <TimelinePanel :style="{ height: timelineHeight + 'px' }" />
       </section>
+      <div
+        class="resizer resizer-v"
+        :title="t('ドラッグで幅を調整 / ダブルクリックで元に戻す', 'ドラッグで幅を調整 / ダブルクリックでリセット')"
+        @mousedown="(e) => startResize(e, 'right')"
+        @dblclick="reset('rightWidth')"
+      />
       <aside class="right" data-tour="inspector">
         <InspectorPanel />
       </aside>
@@ -52,7 +124,7 @@ onMounted(() => {
 .main {
   flex: 1;
   display: grid;
-  grid-template-columns: 260px 1fr 300px;
+  grid-template-columns: 260px 5px 1fr 5px 300px;
   min-height: 0;
 }
 
@@ -83,5 +155,24 @@ onMounted(() => {
   min-height: 0;
   display: flex;
   flex-direction: column;
+}
+
+/* ---------- エリア境界リサイザー ---------- */
+.resizer {
+  background: var(--bg-1);
+  transition: background 120ms ease;
+  z-index: 5;
+}
+.resizer:hover,
+.resizer:active {
+  background: var(--accent-dim);
+}
+.resizer-v {
+  cursor: col-resize;
+}
+.resizer-h {
+  height: 5px;
+  flex-shrink: 0;
+  cursor: row-resize;
 }
 </style>

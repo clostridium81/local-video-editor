@@ -20,8 +20,10 @@ const sections = computed(() => locale.isEasy.value ? [
     title: '再生',
     items: [
       ['スペース', '再生 / 一時停止'],
+      ['J / K / L', '逆再生 / 一時停止 / 再生 (押すたびに速くなります)'],
       ['← / →', '1 コマずつ移動'],
       ['Shift + ← / →', '1 秒ずつ移動'],
+      ['↑ / ↓', '前 / 次の編集点へ移動'],
       ['Home / End', '先頭へ / 末尾へ']
     ]
   },
@@ -36,6 +38,8 @@ const sections = computed(() => locale.isEasy.value ? [
       ['Cmd/Ctrl + D', '複製'],
       ['Cmd/Ctrl + A', 'すべて選択'],
       ['S', 'クリップを分割'],
+      [', / .', '選んだクリップを 1 コマ移動'],
+      ['Shift + , / .', '選んだクリップを 1 秒移動'],
       ['Cmd/Ctrl + L', 'クリップをリンク'],
       ['Cmd/Ctrl + Shift + L', 'リンクを解除'],
       ['Delete / Backspace', '選んだクリップを削除']
@@ -57,8 +61,10 @@ const sections = computed(() => locale.isEasy.value ? [
     title: '再生',
     items: [
       ['スペース', '再生 / 一時停止'],
+      ['J / K / L', '逆再生 / 停止 / 再生 (連打でレート 1→2→4→8)'],
       ['← / →', 'playhead を 1 フレーム移動'],
       ['Shift + ← / →', 'playhead を 1 秒移動'],
+      ['↑ / ↓', '前 / 次の編集点へジャンプ'],
       ['Home / End', '先頭 / 末尾へ']
     ]
   },
@@ -73,6 +79,8 @@ const sections = computed(() => locale.isEasy.value ? [
       ['Cmd/Ctrl + D', '複製'],
       ['Cmd/Ctrl + A', '全選択'],
       ['S', 'クリップを分割'],
+      [', / .', '選択クリップを 1 フレーム移動'],
+      ['Shift + , / .', '選択クリップを 1 秒移動'],
       ['Cmd/Ctrl + L', 'クリップをリンク'],
       ['Cmd/Ctrl + Shift + L', 'リンクを解除'],
       ['Delete / Backspace', '選択クリップを削除']

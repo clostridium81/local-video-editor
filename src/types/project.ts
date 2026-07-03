@@ -215,8 +215,6 @@ export interface BaseClip {
   transitionOut?: Transition
   // 再生速度 (1.0 = 等速、2.0 = 2倍速、0.5 = スロー)
   speed?: number
-  // 逆再生 (video/audio)
-  reversed?: boolean
   // ブレンドモード (映像のみ有効)
   blendMode?: BlendMode
   // 他のクリップと連動 (例: 動画 + その音声)

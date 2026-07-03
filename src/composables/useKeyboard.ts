@@ -2,6 +2,7 @@ import { onBeforeUnmount, onMounted } from 'vue'
 import { useProjectStore } from '../stores/projectStore'
 import { useSelection } from './useSelection'
 import { useClipboard } from './useClipboard'
+import { getActiveEngine } from '../engine/previewEngine'
 
 // ============================================================
 // グローバルキーボードショートカット
@@ -136,6 +137,49 @@ export function useKeyboard() {
       return
     }
 
+    // J / K / L シャトル再生。
+    // アクティブエンジンへ直接アクセスして play/pause/レートを制御する。
+    // L: 再生開始 or レート順送り (1→2→4→8)
+    // J: 逆方向 (-1→-2→-4→-8)
+    // K: 一時停止してレートを 1 にリセット
+    if (
+      !isCmdOrCtrl(e) &&
+      ['j', 'k', 'l'].includes(e.key.toLowerCase())
+    ) {
+      e.preventDefault()
+      const engine = getActiveEngine()
+      if (!engine) return
+      const key = e.key.toLowerCase()
+      if (key === 'k') {
+        engine.pause()
+        engine.setPlaybackRate(1)
+        return
+      }
+      const rate = engine.getPlaybackRate()
+      if (key === 'l') {
+        if (!engine.isPlaying() || rate < 0) {
+          // 順方向 1x で再生開始。末尾 (Out 点) に到達済みなら範囲先頭へ戻す
+          const tl = store.state.timeline
+          const rangeEnd = tl.outPoint ?? tl.duration
+          if (tl.playhead >= rangeEnd - 0.01) {
+            store.setPlayhead(tl.inPoint ?? 0)
+          }
+          engine.setPlaybackRate(1)
+          engine.play()
+        } else {
+          engine.setPlaybackRate(Math.min(8, rate * 2))
+        }
+      } else {
+        if (!engine.isPlaying() || rate > 0) {
+          engine.setPlaybackRate(-1)
+          engine.play()
+        } else {
+          engine.setPlaybackRate(Math.max(-8, rate * 2))
+        }
+      }
+      return
+    }
+
     // Markers & in/out
     if (e.key.toLowerCase() === 'm' && !isCmdOrCtrl(e) && !e.shiftKey) {
       e.preventDefault()
@@ -180,6 +224,60 @@ export function useKeyboard() {
       e.preventDefault()
       const ids = selection.selectedClipIds.value
       if (ids.length > 0) store.unlinkClips(ids)
+      return
+    }
+
+    // , / . : 選択クリップのフレームナッジ (Shift で 1 秒)。
+    // 全選択クリップに同じデルタを適用し、最左が 0 を切らないようクランプ。
+    // e.code で判定する (Shift+, は e.key が '<' 等になるため)
+    if ((e.code === 'Comma' || e.code === 'Period') && !isCmdOrCtrl(e)) {
+      const ids = selection.selectedClipIds.value
+      if (ids.length === 0) return
+      const clips = store.state.clips.filter(c => ids.includes(c.id))
+      if (clips.length === 0) return
+      e.preventDefault()
+      const fps = store.state.meta.fps || 30
+      const step = e.shiftKey ? 1 : 1 / fps
+      let delta = (e.code === 'Period' ? 1 : -1) * step
+      const minStart = Math.min(...clips.map(c => c.start))
+      if (minStart + delta < 0) delta = -minStart
+      if (delta === 0) return
+      for (const c of clips) {
+        store.updateClip(c.id, { start: c.start + delta }, 'nudge')
+      }
+      return
+    }
+
+    // ↑ / ↓ : 前 / 次の編集点へ playhead をジャンプ。
+    // 編集点 = 全クリップの start と start+duration、および全マーカー時刻
+    if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
+      e.preventDefault()
+      const points = new Set<number>()
+      for (const c of store.state.clips) {
+        points.add(c.start)
+        points.add(c.start + c.duration)
+      }
+      for (const m of store.state.markers ?? []) points.add(m.time)
+      const sorted = [...points].sort((a, b) => a - b)
+      const ph = store.state.timeline.playhead
+      const EPS = 1e-4
+      if (e.key === 'ArrowUp') {
+        // 直前の編集点へ (現在位置から EPS 以上離れたもの)
+        for (let i = sorted.length - 1; i >= 0; i--) {
+          if (sorted[i] < ph - EPS) {
+            store.setPlayhead(sorted[i])
+            break
+          }
+        }
+      } else {
+        // 直後の編集点へ
+        for (const p of sorted) {
+          if (p > ph + EPS) {
+            store.setPlayhead(p)
+            break
+          }
+        }
+      }
       return
     }
 

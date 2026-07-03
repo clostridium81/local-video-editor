@@ -182,7 +182,8 @@ function setTransition(side: 'in' | 'out', tr: Transition | undefined) {
 }
 
 function applyFadePreset(side: 'in' | 'out') {
-  setTransition(side, { type: 'fade', duration: 0.5 })
+  // キビキビした印象になるよう既定は短め (以前は 0.5s で遅く感じた)
+  setTransition(side, { type: 'fade', duration: 0.25 })
 }
 
 function clearTransition(side: 'in' | 'out') {
@@ -203,11 +204,6 @@ function setSpeed(v: number) {
   const c = selectedClip.value
   if (!c) return
   store.updateClip(c.id, { speed: Math.max(0.125, Math.min(8, v)) } as any, `speed:${c.id}`)
-}
-function setReversed(v: boolean) {
-  const c = selectedClip.value
-  if (!c) return
-  store.updateClip(c.id, { reversed: v } as any)
 }
 function setBlendMode(m: BlendMode) {
   const c = selectedClip.value
@@ -810,8 +806,14 @@ function kindNameJa(kind: string): string {
       </section>
 
       <!-- トランジション -->
+      <!-- 音声クリップは映像用の効果 (スライド/ズーム/ワイプ) が意味を持たないため、
+           音量フェード専用のメニューを表示する -->
       <section class="section">
-        <div class="section-head">{{ t('トランジション (つなぎ)', 'トランジション') }}</div>
+        <div class="section-head">
+          {{ selectedClip.kind === 'audio'
+            ? t('フェード (音量)', 'オーディオフェード')
+            : t('トランジション (つなぎ)', 'トランジション') }}
+        </div>
         <div class="sub-title">{{ t('入り', '入り') }}</div>
         <div class="grid-2">
           <label class="field">
@@ -821,17 +823,19 @@ function kindNameJa(kind: string): string {
               @change="(e) => {
                 const t = (e.target as HTMLSelectElement).value
                 if (!t) clearTransition('in')
-                else setTransition('in', { type: t as TransitionType, duration: selectedClip!.transitionIn?.duration ?? 0.5 })
+                else setTransition('in', { type: t as TransitionType, duration: selectedClip!.transitionIn?.duration ?? 0.3 })
               }"
             >
               <option value="">なし</option>
-              <option value="fade">フェードイン (じわっと出る)</option>
-              <option value="slide-left">右から入る</option>
-              <option value="slide-right">左から入る</option>
-              <option value="slide-up">下から入る</option>
-              <option value="slide-down">上から入る</option>
-              <option value="zoom">ズームイン (大きくなる)</option>
-              <option value="wipe">ワイプ (拭って出る)</option>
+              <option value="fade">{{ selectedClip.kind === 'audio' ? 'フェードイン (音が徐々に大きく)' : 'フェードイン (じわっと出る)' }}</option>
+              <template v-if="selectedClip.kind !== 'audio'">
+                <option value="slide-left">右から入る</option>
+                <option value="slide-right">左から入る</option>
+                <option value="slide-up">下から入る</option>
+                <option value="slide-down">上から入る</option>
+                <option value="zoom">ズームイン (大きくなる)</option>
+                <option value="wipe">ワイプ (拭って出る)</option>
+              </template>
             </select>
           </label>
           <label class="field">
@@ -839,7 +843,7 @@ function kindNameJa(kind: string): string {
             <input
               type="number"
               min="0"
-              step="0.1"
+              step="0.05"
               :value="selectedClip.transitionIn?.duration ?? 0"
               :disabled="!selectedClip.transitionIn"
               @change="(e) => {
@@ -862,17 +866,19 @@ function kindNameJa(kind: string): string {
               @change="(e) => {
                 const t = (e.target as HTMLSelectElement).value
                 if (!t) clearTransition('out')
-                else setTransition('out', { type: t as TransitionType, duration: selectedClip!.transitionOut?.duration ?? 0.5 })
+                else setTransition('out', { type: t as TransitionType, duration: selectedClip!.transitionOut?.duration ?? 0.3 })
               }"
             >
               <option value="">なし</option>
-              <option value="fade">フェードアウト (じわっと消える)</option>
-              <option value="slide-left">左へ出る</option>
-              <option value="slide-right">右へ出る</option>
-              <option value="slide-up">上へ出る</option>
-              <option value="slide-down">下へ出る</option>
-              <option value="zoom">ズームアウト (小さくなる)</option>
-              <option value="wipe">ワイプ (拭って消える)</option>
+              <option value="fade">{{ selectedClip.kind === 'audio' ? 'フェードアウト (音が徐々に小さく)' : 'フェードアウト (じわっと消える)' }}</option>
+              <template v-if="selectedClip.kind !== 'audio'">
+                <option value="slide-left">左へ出る</option>
+                <option value="slide-right">右へ出る</option>
+                <option value="slide-up">上へ出る</option>
+                <option value="slide-down">下へ出る</option>
+                <option value="zoom">ズームアウト (小さくなる)</option>
+                <option value="wipe">ワイプ (拭って消える)</option>
+              </template>
             </select>
           </label>
           <label class="field">
@@ -880,7 +886,7 @@ function kindNameJa(kind: string): string {
             <input
               type="number"
               min="0"
-              step="0.1"
+              step="0.05"
               :value="selectedClip.transitionOut?.duration ?? 0"
               :disabled="!selectedClip.transitionOut"
               @change="(e) => {
@@ -895,30 +901,20 @@ function kindNameJa(kind: string): string {
         </div>
       </section>
 
-      <!-- 速度 / 逆再生 / ブレンド -->
+      <!-- 速度 -->
       <section v-if="selectedClip.kind !== 'text' && selectedClip.kind !== 'shape'" class="section">
         <div class="section-head">{{ t('再生', '再生') }}</div>
-        <div class="grid-2">
-          <label class="field">
-            <span>速さ (倍) <span class="mono muted">{{ (selectedClip.speed ?? 1).toFixed(2) }}</span></span>
-            <input
-              type="range"
-              min="0.25"
-              max="4"
-              step="0.05"
-              :value="selectedClip.speed ?? 1"
-              @input="(e) => setSpeed(Number((e.target as HTMLInputElement).value))"
-            />
-          </label>
-          <label class="toggle" style="align-self: end;">
-            <input
-              type="checkbox"
-              :checked="!!selectedClip.reversed"
-              @change="(e) => setReversed((e.target as HTMLInputElement).checked)"
-            />
-            <span>逆再生</span>
-          </label>
-        </div>
+        <label class="field">
+          <span>速さ (倍) <span class="mono muted">{{ (selectedClip.speed ?? 1).toFixed(2) }}</span></span>
+          <input
+            type="range"
+            min="0.25"
+            max="8"
+            step="0.05"
+            :value="selectedClip.speed ?? 1"
+            @input="(e) => setSpeed(Number((e.target as HTMLInputElement).value))"
+          />
+        </label>
         <div class="section-hint">
           {{ t(
             '※ 速さを変えてもクリップの長さは変わらず、再生される素材の範囲が変わります',

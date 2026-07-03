@@ -116,22 +116,16 @@ console.log('history:')
   check('merge 後 undo スタック空', !h2.canUndo())
 }
 
-// ---------- 逆再生シーク位置の計算 (A-2/C-4 の式の検証) ----------
-console.log('reverse seek math:')
+// ---------- 順方向シーク位置の計算 (speed 考慮) ----------
+console.log('forward seek math:')
 {
-  // 10s 素材、sourceIn=2, duration=3 (timeline 秒), speed=2 → 素材消費 6s (2s〜8s)
+  // sourceIn=2, duration=3 (timeline 秒), speed=2 → 素材消費 6s (2s〜8s)
   const sourceIn = 2
   const duration = 3
   const speed = 2
-  const segmentEnd = sourceIn + duration * speed // 8
-  // クリップ先頭 (local=0) では素材 8s 地点、末尾 (local=duration*speed=6) では 2s 地点
-  check('reverse 先頭 → 素材 8s', approx(Math.max(0, segmentEnd - 0), 8))
-  check('reverse 末尾 → 素材 2s', approx(Math.max(0, segmentEnd - duration * speed), 2))
-
-  // 反転バッファ内オフセット (C-4): bufDur=10 → [10-2-6, 10-2] = [2, 8]
-  const bufDur = 10
-  const baseOffset = Math.max(0, bufDur - sourceIn - duration * speed)
-  check('reverse バッファ offset=2', approx(baseOffset, 2))
+  // クリップ先頭 (local=0) では素材 2s 地点、末尾 (local=duration*speed=6) では 8s 地点
+  check('先頭 → 素材 2s', approx(0 + sourceIn, 2))
+  check('末尾 → 素材 8s', approx(duration * speed + sourceIn, 8))
 }
 
 // ---------- pixel effects ----------

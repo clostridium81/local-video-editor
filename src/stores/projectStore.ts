@@ -376,13 +376,10 @@ export const useProjectStore = defineStore('project', () => {
     }
     if (c.kind === 'video' || c.kind === 'audio') {
       // タイムライン上で localSplit 秒進んだ間に、素材は localSplit * speed 秒
-      // 進んでいる (speed=2 なら倍消費)。逆再生時は素材側オフセット (sourceIn)
-      // は終端基準なので動かさず、再生中の "残り素材時間" が短くなる扱いにする。
+      // 進んでいる (speed=2 なら倍消費)
       const speed = (c as any).speed ?? 1
-      const reversed = !!(c as any).reversed
-      ;(rightBase as VideoClip | AudioClip).sourceIn = reversed
-        ? (c.sourceIn ?? 0)
-        : (c.sourceIn ?? 0) + localSplit * speed
+      ;(rightBase as VideoClip | AudioClip).sourceIn =
+        (c.sourceIn ?? 0) + localSplit * speed
     }
 
     state.value.clips.splice(idx, 1, leftClip, rightBase as Clip)
