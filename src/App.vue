@@ -6,6 +6,7 @@ import InspectorPanel from './components/InspectorPanel.vue'
 import TimelinePanel from './components/TimelinePanel.vue'
 import Toast from './components/Toast.vue'
 import TutorialOverlay from './components/TutorialOverlay.vue'
+import BackupReminderDialog from './components/BackupReminderDialog.vue'
 import { useKeyboard } from './composables/useKeyboard'
 import { useTutorial } from './composables/useTutorial'
 import { useLayout } from './composables/useLayout'
@@ -132,6 +133,10 @@ onBeforeUnmount(() => {
     </div>
     <Toast />
     <TutorialOverlay v-if="tutorial.showing.value" />
+    <BackupReminderDialog
+      v-if="store.shouldPromptBackup"
+      @close="store.dismissBackupPrompt()"
+    />
   </div>
 </template>
 

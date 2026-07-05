@@ -42,8 +42,11 @@ export class HistoryManager {
    * 同じ mergeKey が mergeWindow 以内に続けて来たら直前エントリを上書きせず
    * 「最初のエントリだけ」残し、途中の変更は破棄する。(=ドラッグ中の無数の
    * 微少変化を 1 回分にまとめる)
+   *
+   * 返り値: 新しい履歴エントリを積んだら true、mergeでまとめたら false。
+   * (編集回数のカウントに使う。ドラッグ 1 回 = 1 エントリ = 1 回)
    */
-  record(current: ProjectState, mergeKey?: string) {
+  record(current: ProjectState, mergeKey?: string): boolean {
     const now = Date.now()
     if (
       mergeKey &&
@@ -55,7 +58,7 @@ export class HistoryManager {
       this.lastTime = now
       this.redoStack.length = 0
       this.version++
-      return
+      return false
     }
 
     this.undoStack.push(snap(current))
@@ -66,6 +69,7 @@ export class HistoryManager {
     this.lastMergeKey = mergeKey ?? null
     this.lastTime = now
     this.version++
+    return true
   }
 
   /**

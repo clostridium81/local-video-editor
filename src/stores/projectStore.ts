@@ -1,6 +1,6 @@
 import { defineStore } from 'pinia'
 import { nanoid } from 'nanoid'
-import { ref, computed, watch } from 'vue'
+import { ref, computed } from 'vue'
 import type {
   Asset,
   AssetFolder,
@@ -31,9 +31,7 @@ import {
   saveAssetBlob,
   deleteAssetBlob,
   getAssetObjectURL,
-  revokeAllObjectURLs,
-  saveProjectState,
-  loadLatestProjectState
+  revokeAllObjectURLs
 } from '../persistence/assetStore'
 import { detectAssetKind, extractMediaMeta } from '../persistence/mediaMeta'
 import { historyManager } from './history'
@@ -57,7 +55,6 @@ import { contentSignature, isEmptyProject } from './backupSignature'
 const DEFAULT_WIDTH = 1920
 const DEFAULT_HEIGHT = 1080
 const DEFAULT_FPS = 30
-const AUTOSAVE_DEBOUNCE_MS = 1200
 
 function makeEmptyProject(name = 'なまえなしの さくひん'): ProjectState {
   const now = Date.now()
@@ -92,9 +89,17 @@ function makeEmptyProject(name = 'なまえなしの さくひん'): ProjectStat
   }
 }
 
+// 何回編集したらバックアップ促進ウィンドウを出すか (履歴に積まれた新規操作の数)
+const EDIT_PROMPT_THRESHOLD = 25
+
 export const useProjectStore = defineStore('project', () => {
   const state = ref<ProjectState>(makeEmptyProject())
   const historyVersion = ref(0)
+
+  // 最後のバックアップ以降の編集回数と、促進ウィンドウの表示フラグ。
+  // 自動保存を廃したため、手動バックアップを忘れないよう定期的に促す。
+  const editsSinceBackup = ref(0)
+  const shouldPromptBackup = ref(false)
 
   function bumpHistoryVersion() {
     historyVersion.value = historyManager.getVersion()
@@ -124,8 +129,22 @@ export const useProjectStore = defineStore('project', () => {
   // ---------- history ----------
 
   function recordHistory(mergeKey?: string) {
-    historyManager.record(state.value, mergeKey)
+    // record は「新しい履歴エントリを積んだか」を返す。
+    // mergeKey でまとめられた連続変更 (ドラッグ等) は 1 回とカウントする。
+    const isNewEntry = historyManager.record(state.value, mergeKey)
     bumpHistoryVersion()
+    if (isNewEntry) {
+      editsSinceBackup.value++
+      if (editsSinceBackup.value >= EDIT_PROMPT_THRESHOLD) {
+        shouldPromptBackup.value = true
+      }
+    }
+  }
+
+  /** 促進ウィンドウを閉じる (「後で」)。次の閾値まで再表示しない */
+  function dismissBackupPrompt() {
+    editsSinceBackup.value = 0
+    shouldPromptBackup.value = false
   }
 
   const canUndo = computed(() => {
@@ -608,67 +627,8 @@ export const useProjectStore = defineStore('project', () => {
     return getAssetObjectURL(state.value.meta.id, assetId)
   }
 
-  // ---------- 自動保存 / 起動時復元 ----------
-
-  let autosaveTimer: number | null = null
-  let autosaveSuspended = false
-  let lastSavedAt = 0
-
-  function scheduleAutosave() {
-    if (autosaveSuspended) return
-    if (autosaveTimer !== null) window.clearTimeout(autosaveTimer)
-    autosaveTimer = window.setTimeout(async () => {
-      autosaveTimer = null
-      try {
-        await saveProjectState(state.value)
-        lastSavedAt = Date.now()
-      } catch (err: any) {
-        if (err?.name === 'QuotaExceededError') {
-          toast.error('保存できる容量がいっぱいです (自動保存)')
-        } else {
-          // 連続エラー時のスパム防止: 最後の保存失敗から 10s 経過時のみ
-          console.error('autosave error', err)
-        }
-      }
-    }, AUTOSAVE_DEBOUNCE_MS)
-  }
-
-  // state 全体を deep watch。巨大 state では重くなるので debounce 側で吸収
-  watch(
-    () => state.value,
-    () => scheduleAutosave(),
-    { deep: true }
-  )
-
-  function suspendAutosave() {
-    autosaveSuspended = true
-  }
-  function resumeAutosave() {
-    autosaveSuspended = false
-  }
-
-  async function bootstrap(): Promise<boolean> {
-    try {
-      const latest = await loadLatestProjectState()
-      if (latest && latest.meta && latest.clips) {
-        // 後方互換: 欠けているフィールドを初期化
-        if (!latest.folders) latest.folders = []
-        if (!latest.markers) latest.markers = []
-        if (!latest.timeline.snapping) latest.timeline.snapping = true
-        if (latest.timeline.rippleMode === undefined) latest.timeline.rippleMode = false
-        if (latest.timeline.masterVolume === undefined) latest.timeline.masterVolume = 1
-        state.value = latest
-        historyManager.clear()
-        bumpHistoryVersion()
-        // 復元したプロジェクトの最終バックアップ署名を読み直す (跨セッション)
-        loadBackupSig(latest.meta.id)
-        return true
-      }
-    } catch (err) {
-      console.warn('bootstrap failed', err)
-    }
-    return false
-  }
+  // 自動保存・起動時自動復元は廃止。データの保存/復元は手動バックアップ
+  // (ZIP エクスポート/インポート) からのみ行う。
 
   // ---------- マーカー ----------
 
@@ -1022,6 +982,9 @@ export const useProjectStore = defineStore('project', () => {
     }
     // 記録対象が現在開いているプロジェクトなら reactive 状態も更新
     if (s.meta.id === state.value.meta.id) lastBackupSig.value = sig
+    // バックアップしたので編集カウントと促進フラグをリセット
+    editsSinceBackup.value = 0
+    shouldPromptBackup.value = false
   }
 
   /**
@@ -1096,14 +1059,12 @@ export const useProjectStore = defineStore('project', () => {
     undo,
     redo,
     recordHistory,
-    // autosave
-    bootstrap,
-    suspendAutosave,
-    resumeAutosave,
-    lastSavedAt: () => lastSavedAt,
     // backup tracking
     markBackedUp,
     hasUnbackedUpChanges,
+    editsSinceBackup,
+    shouldPromptBackup,
+    dismissBackupPrompt,
     isDirtySinceBackup,
     // markers
     addMarker,

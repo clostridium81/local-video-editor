@@ -1,5 +1,4 @@
 import { openDB, type IDBPDatabase } from 'idb'
-import type { ProjectState } from '../types/project'
 
 // ============================================================
 // IndexedDB 素材ストア + プロジェクトストア
@@ -21,13 +20,6 @@ interface StoredAsset {
   projectId: string
   assetId: string
   blob: Blob
-}
-
-export interface StoredProject {
-  id: string
-  name: string
-  updatedAt: number
-  state: ProjectState
 }
 
 let dbPromise: Promise<IDBPDatabase> | null = null
@@ -110,6 +102,18 @@ export async function clearProject(projectId: string): Promise<void> {
     await cursor.delete()
     cursor = await cursor.continue()
   }
+  await tx.done
+}
+
+/**
+ * IndexedDB の全データ (素材 Blob + 保存済みプロジェクト状態) を消去する。
+ * 自動保存を廃したため、起動時に前セッションの残骸を掃除するのに使う。
+ */
+export async function clearAllData(): Promise<void> {
+  const db = await getDB()
+  const tx = db.transaction([ASSET_STORE, PROJECT_STORE], 'readwrite')
+  await tx.objectStore(ASSET_STORE).clear()
+  await tx.objectStore(PROJECT_STORE).clear()
   await tx.done
 }
 
