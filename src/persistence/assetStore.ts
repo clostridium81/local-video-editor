@@ -1,13 +1,15 @@
 import { openDB, type IDBPDatabase } from 'idb'
 
 // ============================================================
-// IndexedDB 素材ストア + プロジェクトストア
+// IndexedDB 素材ストア
 // ============================================================
 // 設計方針:
 // - 素材の Blob 本体だけを 'assets' ストアで持つ
-// - プロジェクト状態は 'projects' ストアに JSON として保存 (自動保存用)
 // - 複数プロジェクトを跨いでも素材を共有できるように
 //   (projectId, assetId) をキーにする
+// - プロジェクト状態の永続化 (自動保存) は廃止。データの保存/復元は
+//   手動バックアップ (ZIP エクスポート/インポート) のみ。
+//   'projects' ストアは既存 DB との互換と起動時クリーンアップのため残す。
 // ============================================================
 
 const DB_NAME = 'local-video-editor'
@@ -106,7 +108,7 @@ export async function clearProject(projectId: string): Promise<void> {
 }
 
 /**
- * IndexedDB の全データ (素材 Blob + 保存済みプロジェクト状態) を消去する。
+ * IndexedDB の全データ (素材 Blob + 旧 projects ストアの残骸) を消去する。
  * 自動保存を廃したため、起動時に前セッションの残骸を掃除するのに使う。
  */
 export async function clearAllData(): Promise<void> {
@@ -115,54 +117,6 @@ export async function clearAllData(): Promise<void> {
   await tx.objectStore(ASSET_STORE).clear()
   await tx.objectStore(PROJECT_STORE).clear()
   await tx.done
-}
-
-// ---------- Project state persistence ----------
-
-export async function saveProjectState(state: ProjectState): Promise<void> {
-  const db = await getDB()
-  const record: StoredProject = {
-    id: state.meta.id,
-    name: state.meta.name,
-    updatedAt: state.meta.updatedAt,
-    state
-  }
-  await db.put(PROJECT_STORE, record)
-}
-
-export async function loadProjectState(
-  projectId: string
-): Promise<ProjectState | null> {
-  const db = await getDB()
-  const record = (await db.get(PROJECT_STORE, projectId)) as
-    | StoredProject
-    | undefined
-  return record?.state ?? null
-}
-
-export async function loadLatestProjectState(): Promise<ProjectState | null> {
-  const db = await getDB()
-  const tx = db.transaction(PROJECT_STORE)
-  const index = tx.store.index('updatedAt')
-  let cursor = await index.openCursor(null, 'prev')
-  const record = (cursor?.value as StoredProject | undefined) ?? null
-  await tx.done
-  return record?.state ?? null
-}
-
-export async function listStoredProjects(): Promise<
-  Array<{ id: string; name: string; updatedAt: number }>
-> {
-  const db = await getDB()
-  const records = (await db.getAll(PROJECT_STORE)) as StoredProject[]
-  return records
-    .map(r => ({ id: r.id, name: r.name, updatedAt: r.updatedAt }))
-    .sort((a, b) => b.updatedAt - a.updatedAt)
-}
-
-export async function deleteProjectState(projectId: string): Promise<void> {
-  const db = await getDB()
-  await db.delete(PROJECT_STORE, projectId)
 }
 
 // ============================================================
