@@ -2,13 +2,11 @@
 import { ref } from 'vue'
 import { useProjectStore } from '../stores/projectStore'
 import { exportBackup, importBackup } from '../persistence/backup'
-import { saveProjectState } from '../persistence/assetStore'
 import { toast } from '../composables/useToast'
 import { hasWebCodecs } from '../engine/capabilities'
 import ExportDialog from './ExportDialog.vue'
 import AudioMixer from './AudioMixer.vue'
 import RecorderDialog from './RecorderDialog.vue'
-import ProjectsDialog from './ProjectsDialog.vue'
 import ShortcutHelp from './ShortcutHelp.vue'
 import { useTutorial } from '../composables/useTutorial'
 import { useLocale } from '../composables/useLocale'
@@ -34,7 +32,6 @@ const saving = ref(false)
 const showExport = ref(false)
 const showMixer = ref(false)
 const showRecorder = ref(false)
-const showProjects = ref(false)
 const showHelp = ref(false)
 
 async function onSave() {
@@ -75,46 +72,29 @@ async function onFileChosen(e: Event) {
   try {
     // 現プロジェクトが空なら破棄しても失うものがないので確認を省く
     if (!isCurrentProjectEmpty() && !confirm(t(
-      '今の作品を閉じて、保存したデータから復元します。よろしいですか?',
-      '現在のプロジェクトを破棄してバックアップから復元します。よろしいですか？'
+      '今の作品を閉じて、バックアップから復元します。今の内容は消えます (バックアップしていない場合は戻せません)。よろしいですか?',
+      '現在のプロジェクトを破棄してバックアップから復元します (未バックアップなら復元不可)。よろしいですか？'
     ))) return
-    store.suspendAutosave()
-    // 先にインポートを完了させてから切り替える。
-    // (先に現プロジェクトの素材を消すと、ZIP が壊れていた場合に
-    //  現プロジェクトまで失われる。旧プロジェクトはプロジェクト管理から
-    //  開き直せるよう、素材ごと残しておく)
+    // importBackup が素材を IndexedDB に書き戻す (プレビュー/エクスポート用)。
+    // プロジェクト状態はメモリ上の store に反映するだけで、自動保存はしない。
     const { project, assetCount } = await importBackup(file)
-    project.meta.updatedAt = Date.now()
     store.replaceState(project)
-    // 再読込時に「最新プロジェクト」として復元されるよう即保存
-    await saveProjectState(store.serialize())
     // 復元した内容 = 読み込んだバックアップファイルそのものなので「バックアップ済み」
     store.markBackedUp()
     toast.success(t(`復元しました (素材 ${assetCount} 件)`, `復元しました (素材 ${assetCount} 件)`))
   } catch (err: any) {
     console.error(err)
     toast.error(t('復元に失敗しました: ', '復元に失敗しました: ') + (err?.message ?? ''))
-  } finally {
-    store.resumeAutosave()
   }
 }
 
 async function onNew() {
-  // ProjectsDialog の「新しい作品」と同じ挙動に統一する。
-  // (以前はここだけ現プロジェクトを素材ごと完全削除していて、
-  //  同じ名前の操作なのに挙動が真逆でデータ消失の危険があった)
-  if (!confirm(t(
-    '新しい作品を始めます。今の作品は保存され、「作品の切り替え」(📂) からいつでも開けます。',
-    '新規プロジェクトを作成します。現在のプロジェクトは保存され、プロジェクト管理 (📂) から開けます。'
+  // 自動保存はないので、未バックアップの内容は失われる旨を明示して確認する
+  if (!isCurrentProjectEmpty() && !confirm(t(
+    '新しい作品を始めます。今の内容は消えます (バックアップしていない場合は戻せません)。よろしいですか?',
+    '新規プロジェクトを作成します。現在の内容は破棄されます (未バックアップなら復元不可)。よろしいですか？'
   ))) return
-  store.suspendAutosave()
-  try {
-    await saveProjectState(store.serialize())
-  } catch (err) {
-    console.warn('save before new failed', err)
-  }
   store.resetToEmpty()
-  store.resumeAutosave()
   toast.info(t('新しい作品を作成しました', '新規プロジェクトを作成しました'))
 }
 
@@ -174,7 +154,6 @@ function onExport() {
         <span v-if="store.isDirtySinceBackup" class="dirty-dot" />
         {{ saving ? t('保存中…', '保存中…') : t('バックアップ', 'バックアップ') }}
       </button>
-      <button class="ghost icon-btn" :title="t('作品の切り替え', 'プロジェクト管理')" @click="showProjects = true">📂</button>
       <button class="ghost icon-btn" :title="t('録音・録画', '録音・録画')" @click="showRecorder = true">🎙</button>
       <button class="ghost icon-btn" :title="t('音声ミキサー', 'オーディオミキサー')" @click="showMixer = !showMixer" :class="{ active: showMixer }">🎚</button>
       <button
@@ -217,7 +196,6 @@ function onExport() {
   <ExportDialog v-if="showExport" @close="showExport = false" />
   <AudioMixer v-if="showMixer" @close="showMixer = false" />
   <RecorderDialog v-if="showRecorder" @close="showRecorder = false" />
-  <ProjectsDialog v-if="showProjects" @close="showProjects = false" />
   <ShortcutHelp v-if="showHelp" @close="showHelp = false" />
 </template>
 

@@ -244,7 +244,6 @@ async function onStart() {
 
   const ctrl = new AbortController()
   abortCtrl.value = ctrl
-  store.suspendAutosave()
 
   const opts: ExportOptions = {
     format: format.value,
@@ -280,7 +279,6 @@ async function onStart() {
   } finally {
     running.value = false
     abortCtrl.value = null
-    store.resumeAutosave()
   }
 }
 
