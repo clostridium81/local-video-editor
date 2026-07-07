@@ -191,17 +191,13 @@ export class PreviewEngine {
     const liveIds = new Set(this.state.clips.map(c => c.id))
     for (const [id, node] of this.videoNodes) {
       if (!liveIds.has(id)) {
-        node.el.pause()
-        node.el.src = ''
-        node.chain?.src.disconnect()
+        disposeMediaNode(node)
         this.videoNodes.delete(id)
       }
     }
     for (const [id, node] of this.audioNodes) {
       if (!liveIds.has(id)) {
-        node.el.pause()
-        node.el.src = ''
-        node.chain?.src.disconnect()
+        disposeMediaNode(node)
         this.audioNodes.delete(id)
       }
     }
@@ -767,22 +763,24 @@ export class PreviewEngine {
     // 自分がアクティブエンジンとして登録されている場合のみ解除する
     // (新しいエンジンが先に登録された後で旧エンジンが破棄されても消さない)
     if (getActiveEngine() === this) registerActiveEngine(null)
-    for (const n of this.videoNodes.values()) {
-      n.el.pause()
-      n.el.src = ''
-      n.chain?.src.disconnect()
-    }
+    for (const n of this.videoNodes.values()) disposeMediaNode(n)
     this.videoNodes.clear()
-    for (const n of this.audioNodes.values()) {
-      n.el.pause()
-      n.el.src = ''
-      n.chain?.src.disconnect()
-    }
+    for (const n of this.audioNodes.values()) disposeMediaNode(n)
     this.audioNodes.clear()
     this.imageCache.clear()
     this.audioCtx?.close().catch(() => {})
     this.audioCtx = null
   }
+}
+
+// src = '' での解放は error イベントを発火させ「読み込めませんでした」通知が
+// 出てしまう (クリップ削除のたびにトーストが出る)。src 属性を外してから
+// load() すると error なしでリソースを解放できる。
+function disposeMediaNode(node: { el: HTMLMediaElement; chain?: AudioChain }) {
+  node.el.pause()
+  node.el.removeAttribute('src')
+  node.el.load()
+  node.chain?.src.disconnect()
 }
 
 // ============================================================
