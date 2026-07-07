@@ -14,9 +14,13 @@ type Mode = 'camera' | 'screen' | 'mic' | 'tts'
 const mode = ref<Mode>('camera')
 const recording = ref(false)
 const elapsed = ref(0)
+const screenUseMic = ref(true)
 let timer: number | null = null
 let mediaRecorder: MediaRecorder | null = null
 let stream: MediaStream | null = null
+let displayStream: MediaStream | null = null
+let micStream: MediaStream | null = null
+let audioCtx: AudioContext | null = null
 let chunks: Blob[] = []
 const previewRef = ref<HTMLVideoElement>()
 
@@ -40,10 +44,28 @@ async function startRecording() {
   if (recording.value) return
   chunks = []
   try {
+    if (mode.value === 'screen' && screenUseMic.value) {
+      // getDisplayMedia などの await 後に生成すると自動再生制限で suspended になり
+      // ミックス音声が無音になるため、クリック直後の同期タイミングで生成しておく
+      audioCtx = new AudioContext()
+    }
     if (mode.value === 'camera') {
       stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true })
     } else if (mode.value === 'screen') {
-      stream = await (navigator.mediaDevices as any).getDisplayMedia({ video: true, audio: true })
+      displayStream = await (navigator.mediaDevices as any).getDisplayMedia({ video: true, audio: true })
+      if (screenUseMic.value) {
+        try {
+          micStream = await navigator.mediaDevices.getUserMedia({ audio: true })
+        } catch (err) {
+          console.error(err)
+          toast.warn('マイクを取得できませんでした。画面のみ録画します')
+        }
+      }
+      stream = micStream ? mixScreenAndMic(displayStream!, micStream) : displayStream
+      if (!micStream && audioCtx) {
+        audioCtx.close().catch(() => {})
+        audioCtx = null
+      }
     } else if (mode.value === 'mic') {
       stream = await navigator.mediaDevices.getUserMedia({ audio: true })
     } else {
@@ -78,6 +100,21 @@ async function startRecording() {
   }
 }
 
+// 画面共有の音声(あれば)とマイク音声を 1 本の音声トラックに合成する。
+// MediaStream に音声トラックを複数入れても MediaRecorder は先頭しか録らないため。
+function mixScreenAndMic(screen: MediaStream, mic: MediaStream): MediaStream {
+  const ctx = audioCtx ?? (audioCtx = new AudioContext())
+  // suspended のままだと合成先が無音になる
+  if (ctx.state !== 'running') ctx.resume().catch(() => {})
+  const dest = ctx.createMediaStreamDestination()
+  const screenAudio = screen.getAudioTracks()
+  if (screenAudio.length > 0) {
+    ctx.createMediaStreamSource(new MediaStream(screenAudio)).connect(dest)
+  }
+  ctx.createMediaStreamSource(mic).connect(dest)
+  return new MediaStream([...screen.getVideoTracks(), ...dest.stream.getAudioTracks()])
+}
+
 function stopRecording() {
   if (!recording.value || !mediaRecorder) return
   mediaRecorder.stop()
@@ -103,9 +140,13 @@ async function handleRecorderStop() {
 }
 
 function stopStream() {
-  if (stream) {
-    for (const t of stream.getTracks()) t.stop()
-    stream = null
+  for (const s of [stream, displayStream, micStream]) {
+    if (s) for (const t of s.getTracks()) t.stop()
+  }
+  stream = displayStream = micStream = null
+  if (audioCtx) {
+    audioCtx.close().catch(() => {})
+    audioCtx = null
   }
   if (previewRef.value) previewRef.value.srcObject = null
   if (mediaRecorder) mediaRecorder = null
@@ -211,6 +252,10 @@ function fmt(s: number) {
 
         <div v-if="mode !== 'tts'">
           <video ref="previewRef" class="preview" muted autoplay playsinline />
+          <label v-if="mode === 'screen'" class="mic-check">
+            <input type="checkbox" v-model="screenUseMic" :disabled="recording" />
+            <span>{{ t('マイクの音も一緒に録音する', 'マイク音声も一緒に録音する') }}</span>
+          </label>
           <div class="state mono">{{ recording ? (t('録画中', 'REC') + ' ' + fmt(elapsed)) : t('待機中', '待機中') }}</div>
           <div class="actions">
             <button class="ghost" @click="emit('close')" :disabled="recording">{{ t('閉じる', '閉じる') }}</button>
@@ -312,6 +357,16 @@ function fmt(s: number) {
   color: var(--fg-1);
   font-size: 12px;
 }
+.mic-check {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 8px;
+  font-size: 12px;
+  color: var(--fg-2);
+  cursor: pointer;
+}
+.mic-check input { cursor: pointer; }
 .actions {
   display: flex;
   justify-content: flex-end;
