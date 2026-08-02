@@ -12,6 +12,13 @@ import { HistoryManager } from '../src/stores/history'
 import { applyPixelEffects, hasPixelEffects, hexToRgb } from '../src/engine/pixelEffects'
 import { EFFECT_PRESETS, getPreset } from '../src/engine/effectPresets'
 import { contentSignature, isEmptyProject } from '../src/stores/backupSignature'
+import {
+  mapClipTimeToSource,
+  isClipActiveAt,
+  clipSourceTimestamps,
+  selectSourceKind
+} from '../src/engine/frameTiming'
+import { ExportProfiler } from '../src/engine/exportProfiler'
 import type { Clip, Keyframe, ProjectState, PixelEffects } from '../src/types/project'
 
 let failures = 0
@@ -121,12 +128,93 @@ console.log('history:')
 console.log('forward seek math:')
 {
   // sourceIn=2, duration=3 (timeline 秒), speed=2 → 素材消費 6s (2s〜8s)
-  const sourceIn = 2
-  const duration = 3
-  const speed = 2
-  // クリップ先頭 (local=0) では素材 2s 地点、末尾 (local=duration*speed=6) では 8s 地点
-  check('先頭 → 素材 2s', approx(0 + sourceIn, 2))
-  check('末尾 → 素材 8s', approx(duration * speed + sourceIn, 8))
+  const clip = { start: 10, duration: 3, sourceIn: 2, speed: 2 }
+  check('先頭 → 素材 2s', approx(mapClipTimeToSource(clip, 10), 2))
+  check('中間 → 素材 5s', approx(mapClipTimeToSource(clip, 11.5), 5))
+  check('末尾 → 素材 8s', approx(mapClipTimeToSource(clip, 13), 8))
+  check('speed 省略 = 1', approx(mapClipTimeToSource({ start: 10, duration: 3 }, 11), 1))
+  check('sourceIn 省略 = 0', approx(mapClipTimeToSource({ start: 10, duration: 3, speed: 0.5 }, 12), 1))
+  // 逆再生 (speed<0) でも式自体は成立する (負方向に進む)
+  check('speed<0 は素材時刻が減少', mapClipTimeToSource({ start: 0, duration: 4, sourceIn: 8, speed: -1 }, 2) < 8)
+}
+
+// ---------- エクスポートのフレームスケジュール ----------
+console.log('frame timing:')
+{
+  const clip = { start: 1, duration: 2, sourceIn: 0.5, speed: 1 }
+  check('開始前は非アクティブ', !isClipActiveAt(clip, 0.99))
+  check('開始時刻はアクティブ', isClipActiveAt(clip, 1))
+  check('終了時刻 (排他) は非アクティブ', !isClipActiveAt(clip, 3))
+
+  // rangeStart=0, fps=10, totalFrames=50 (5秒) → クリップは t=1.0〜2.9 の 20 フレーム
+  const plan = clipSourceTimestamps(clip, 0, 10, 50)
+  check('plan あり', plan !== null)
+  if (plan) {
+    check('最初のフレーム番号 = 10', plan.firstFrameIndex === 10)
+    check('フレーム数 = 20', plan.timestamps.length === 20)
+    check('先頭タイムスタンプ = sourceIn', approx(plan.timestamps[0], 0.5))
+    check('末尾タイムスタンプ = sourceIn + 1.9', approx(plan.timestamps[19], 2.4))
+    const monotonic = plan.timestamps.every((v, i, a) => i === 0 || v >= a[i - 1])
+    check('単調非減少', monotonic)
+  }
+
+  // speed=2 + sourceIn: メインループと同じ式で素材時刻が進む
+  const plan2 = clipSourceTimestamps({ start: 0, duration: 1, sourceIn: 3, speed: 2 }, 0, 10, 10)
+  check('speed=2: 2 倍で進む', !!plan2 && approx(plan2.timestamps[5], 3 + 0.5 * 2))
+
+  // 範囲とまったく重ならないクリップ
+  check('範囲外クリップは null', clipSourceTimestamps({ start: 100, duration: 5 }, 0, 10, 50) === null)
+
+  // 範囲の途中から始まるエクスポート (rangeStart>0)
+  const plan3 = clipSourceTimestamps({ start: 0, duration: 10, sourceIn: 0 }, 4, 10, 10)
+  check('rangeStart オフセット反映', !!plan3 && plan3.firstFrameIndex === 0 && approx(plan3.timestamps[0], 4))
+
+  // 負のタイムスタンプは 0 にクランプ (<video> と同じ挙動)
+  const plan4 = clipSourceTimestamps({ start: 0, duration: 2, sourceIn: -1 }, 0, 10, 5)
+  check('負の素材時刻は 0 クランプ', !!plan4 && plan4.timestamps[0] === 0)
+}
+
+// ---------- フレーム供給元の選定 ----------
+console.log('source kind selection:')
+{
+  const base = {
+    hasDecoder: true,
+    parsedOk: true,
+    canDecode: true,
+    speed: 1,
+    activeDecoders: 0,
+    maxDecoders: 4
+  }
+  check('全条件 OK → decoder', selectSourceKind(base) === 'decoder')
+  check('VideoDecoder なし → element', selectSourceKind({ ...base, hasDecoder: false }) === 'element')
+  check('パース失敗 → element', selectSourceKind({ ...base, parsedOk: false }) === 'element')
+  check('コーデック非対応 → element', selectSourceKind({ ...base, canDecode: false }) === 'element')
+  check('逆再生 → element', selectSourceKind({ ...base, speed: -1 }) === 'element')
+  check('speed 0 → element', selectSourceKind({ ...base, speed: 0 }) === 'element')
+  check('高速でも順方向なら decoder', selectSourceKind({ ...base, speed: 8 }) === 'decoder')
+  check('デコーダ上限到達 → element', selectSourceKind({ ...base, activeDecoders: 4 }) === 'element')
+}
+
+// ---------- エクスポートプロファイラ ----------
+console.log('export profiler:')
+{
+  let now = 0
+  const p = new ExportProfiler({ now: () => now })
+  p.begin('a')
+  now = 10
+  p.end('a')
+  p.begin('a')
+  now = 25
+  p.end('a')
+  p.add('b', 5)
+  const s = p.summary()
+  check('累積 totalMs', approx(s.a.totalMs, 25))
+  check('回数カウント', s.a.count === 2)
+  check('平均', approx(s.a.avgMs, 12.5))
+  check('add 直接加算', approx(s.b.totalMs, 5) && s.b.count === 1)
+  check('begin なしの end は無視', (() => { p.end('zzz'); return !('zzz' in p.summary()) })())
+  check('elapsedMs', approx(p.elapsedMs(), 25))
+  check('oneLine に区間名', p.oneLine().includes('a '))
 }
 
 // ---------- pixel effects ----------

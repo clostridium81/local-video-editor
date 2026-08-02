@@ -28,6 +28,7 @@ Local Video Editor - 引き継ぎ作業書（Phase 2以降）
 * ProjectState は常に JSON シリアライズ可能。Blob / ObjectURL は絶対にストアに混入させない。これがバックアップ ZIP の核心。
 * Canvas 合成は 2D Contextで開始、PreviewEngine クラスに抽象化済。将来 WebGL/WebGPU に差し替え可能。
 * **動画・音声デコードはブラウザ標準 <video> / <audio>**。FFmpeg.wasm には依存しない。将来のエクスポートでのみ WebCodecs を導入する。
+* エクスポートのデマックスは mediabunny (純TS、WASMなし、mp4-muxer/webm-muxer と同一作者) + WebCodecs VideoDecoder のシーケンシャルデコード (src/engine/frameSource.ts)。非対応環境・コーデック・逆再生クリップは従来の <video> シークに自動フォールバック。FFmpeg.wasm 非依存は継続。
 * Pinia setup store の戻り値はテンプレート・スクリプトとも store.xxx でアクセス（自動 unwrap）。store.xxx.value と書かない。
 
 :file_folder: ファイル構成（再掲）

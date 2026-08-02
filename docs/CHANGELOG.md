@@ -1,5 +1,40 @@
 # Changelog
 
+## [0.5.0] — 書き出し高速化 (WebCodecs VideoDecoder シーケンシャルデコード)
+
+書き出しのボトルネックだった「毎フレームの `<video>` シーク待ち」を排除し、動画主体のプロジェクトで書き出しを大幅に高速化した。エンコードは従来どおり WebCodecs (HW支援) + mp4-muxer / webm-muxer。**FFmpeg.wasm 非依存は継続** (検討の結果、WASM エンコーダ化はむしろ 5〜20 倍の劣化になるため不採用)。
+
+### デコードパスの刷新
+
+- 新規 [src/engine/frameSource.ts](src/engine/frameSource.ts): クリップごとの `FrameSource` 抽象 (「素材内時刻 → 描画可能フレーム」)
+  - **DecoderFrameSource**: mediabunny (純TS demuxer、mp4-muxer と同一作者) + `VideoDecoder`。クリップが必要とする全フレームの素材内時刻を事前列挙し `VideoSampleSink.samplesAtTimestamps()` でシーケンシャルデコード。KF アラインシーク・重複パケット排除・デコード済みキュー上限 (メモリ抑制) はライブラリ側が管理
+  - **VideoElementFrameSource**: 従来の非表示 `<video>` + seek。`VideoDecoder` 非対応環境・コーデック非対応・逆再生 (speed ≤ 0)・同時デコーダ上限 (4) 超過時のフォールバック
+  - 実行時のデコード失敗 / タイムアウト (2s) は `<video>` に自動で切り替えて書き出しを続行 (書き出し自体は落とさない)
+  - 回転メタデータ付き素材 (iPhone .mov 等) は `VideoSample.draw()` で回転を反映
+  - MOV rotation / PAR は displayWidth/Height 基準で描画
+- 新規 [src/engine/frameTiming.ts](src/engine/frameTiming.ts): フレームスケジュールの純ロジック (`mapClipTimeToSource` / `clipSourceTimestamps` / `selectSourceKind`)。エクスポートループとデコーダの時刻計算を一元化し、smoke-test の対象に
+- 新規 [src/engine/mediabunnyLoader.ts](src/engine/mediabunnyLoader.ts): 使用シンボルのみの静的 re-export を動的 import することでツリーシェイク (mediabunny チャンク 670KB → 220KB / gzip 57KB、書き出し時のみロード)
+- `<video>` 要素の事前一括生成をやめ、クリップがアクティブになった時に生成・終了したら即解放 (GIF パスも共通化)
+
+### エンコーダまわりの改善
+
+- `hardwareAcceleration: 'prefer-hardware'` + `latencyMode: 'quality'` を `isConfigSupported` で事前検査して採用 (非対応なら段階的フォールバック) ([exportEngine.ts](src/engine/exportEngine.ts))
+- `encodeQueueSize > 8` でバックプレッシャ待ちを追加 (長尺書き出しのメモリ膨張防止)
+- 出力 `VideoFrame` に `duration` を付与
+- **中断時のリーク修正**: エンコーダ・`<video>`・デコーダの解放を try/finally 化 (従来はキャンセル時に `VideoEncoder` と `<video>` がリークしていた)
+
+### 計測
+
+- 新規 [src/engine/exportProfiler.ts](src/engine/exportProfiler.ts): フレーム取得待ち (frameWait) / 描画 (draw) / エンコード待ち (encodeWait/encodeFlush) / 音声 (audioMix/audioEncode) の内訳を書き出し完了時に 1 行でコンソール出力。`localStorage.setItem('export-profile', '1')` で詳細テーブル
+- 完了ログにソース種別の実績 (decoder/element) と HW エンコード採用状況を表示
+
+### その他
+
+- smoke-test に frameTiming / profiler のケースを追加、`npm run smoke` スクリプト追加 (devDependency: tsx)
+- design.md にデマックス方針を追記
+
+---
+
 ## [0.4.0] — こども向けリリース対応 (やさしい日本語 + 表示切替)
 
 日本のこども向けリリース版として、UI 全体をやさしい日本語に書き換え、ふつうの日本語との切替も可能にした。

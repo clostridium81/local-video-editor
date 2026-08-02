@@ -10,9 +10,13 @@ export const hasWebCodecs =
 
 export const hasOffscreenCanvas = typeof OffscreenCanvas !== 'undefined'
 
+/** エクスポートのシーケンシャルデコード (frameSource.ts) に使う */
+export const hasVideoDecoder = typeof (globalThis as any).VideoDecoder !== 'undefined'
+
 export interface CodecConfig {
   codec: string
   hardwareAcceleration?: 'prefer-hardware' | 'prefer-software' | 'no-preference'
+  latencyMode?: 'quality' | 'realtime'
   bitrate?: number
   width?: number
   height?: number

@@ -125,6 +125,10 @@ src/
 ├── engine/
 │   ├── previewEngine.ts             Canvas 合成・再生 (WebAudio EQ 含む)
 │   ├── exportEngine.ts              MP4/WebM/GIF エクスポート (WebCodecs)
+│   ├── frameSource.ts               エクスポート用フレーム供給 (VideoDecoder / <video> フォールバック)
+│   ├── frameTiming.ts               フレームスケジュール純ロジック
+│   ├── mediabunnyLoader.ts          mediabunny の遅延ロード (ツリーシェイク用)
+│   ├── exportProfiler.ts            書き出し内訳の計測
 │   ├── keyframes.ts                 キーフレーム補間
 │   ├── transitions.ts               トランジション計算
 │   ├── effectPresets.ts             エフェクトプリセット定義
@@ -175,7 +179,8 @@ src/
 - IndexedDB (`idb` ラッパー)
 - fflate (ZIP 入出力)
 - mp4-muxer / webm-muxer / gifenc (エクスポート)
-- WebCodecs (エクスポート)
+- WebCodecs (エクスポート: VideoEncoder + VideoDecoder)
+- mediabunny (エクスポート時のデマックス。純TS・WASMなし)
 - nanoid (ID 生成)
 
 ## 設計メモ
@@ -184,7 +189,7 @@ src/
 - **時刻は秒単位の number で統一**
 - **ProjectState は常に JSON シリアライズ可能** (Blob / ObjectURL は store に入れない)
 - **Canvas 合成は 2D Context** (将来 WebGL/WebGPU に差し替え可能)
-- **デコードはブラウザ標準 `<video>`/`<audio>`** (エクスポート時のみ WebCodecs)
+- **プレビューのデコードはブラウザ標準 `<video>`/`<audio>`**。エクスポートは WebCodecs VideoDecoder のシーケンシャルデコード (非対応時は `<video>` シークに自動フォールバック)。FFmpeg.wasm には依存しない
 - **履歴はスナップショットベース** (JSON シリアライズ)。mergeKey で高頻度変更をまとめる
 - **永続化はしない**: 自動保存・自動復元は廃止し、手動バックアップ ZIP に一本化。起動時に前セッションの IndexedDB 残骸を掃除する
 - 詳細は [docs/CHANGELOG.md](docs/CHANGELOG.md) を参照
