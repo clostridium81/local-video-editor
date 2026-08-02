@@ -204,7 +204,21 @@ function assetHint(a: Asset): string {
 <template>
   <div class="panel-title">
     <span>{{ t('素材', 'メディア') }}</span>
-    <button class="ghost" @click="onPickClick">＋ {{ t('追加', '追加') }}</button>
+  </div>
+
+  <!-- 編集はここから始まるので、素材追加は最も目立つ導線にする -->
+  <div class="add-wrap">
+    <button
+      class="primary add-btn"
+      :class="{ pulse: allAssets.length === 0 }"
+      @click="onPickClick"
+    >
+      <span class="plus">＋</span>
+      <span>{{ t('ファイルを追加', '素材を追加') }}</span>
+    </button>
+    <div class="add-hint">
+      {{ t('ドラッグ&ドロップでも OK', 'ドラッグ&ドロップでも追加できます') }}
+    </div>
   </div>
 
   <div class="search-wrap">
@@ -428,6 +442,45 @@ function assetHint(a: Asset): string {
   color: var(--fg-2);
   font-size: 11px;
   padding: 8px;
+}
+
+/* ---------- 素材追加ボタン ---------- */
+.add-wrap {
+  padding: 10px 10px 8px;
+}
+.add-btn {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  padding: 10px 12px;
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  border-radius: var(--radius);
+}
+.add-btn .plus {
+  font-size: 15px;
+  line-height: 1;
+}
+/* 素材が 1 つも無いうちは、最初の一歩として控えめに脈打たせる */
+.add-btn.pulse {
+  animation: add-pulse 2.4s ease-in-out infinite;
+}
+@keyframes add-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(232, 168, 56, 0.4); }
+  50% { box-shadow: 0 0 0 7px rgba(232, 168, 56, 0); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .add-btn.pulse { animation: none; }
+}
+.add-hint {
+  margin-top: 5px;
+  text-align: center;
+  font-size: 9.5px;
+  color: var(--fg-3);
+  letter-spacing: 0.02em;
 }
 
 .search-wrap {
