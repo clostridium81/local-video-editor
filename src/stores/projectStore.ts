@@ -3,7 +3,6 @@ import { nanoid } from 'nanoid'
 import { ref, computed } from 'vue'
 import type {
   Asset,
-  AssetFolder,
   Clip,
   Keyframe,
   KeyframeableProperty,
@@ -70,7 +69,6 @@ function makeEmptyProject(name = 'なまえなしの さくひん'): ProjectStat
       backgroundColor: '#000000'
     },
     assets: {},
-    folders: [],
     tracks: [
       { id: nanoid(), kind: 'video', name: 'V1', muted: false, locked: false, order: 1 },
       { id: nanoid(), kind: 'video', name: 'V2', muted: false, locked: false, order: 2 },
@@ -234,11 +232,22 @@ export const useProjectStore = defineStore('project', () => {
     const asset = state.value.assets[assetId]
     if (!asset) return null
 
-    const trackKind = asset.kind === 'audio' ? 'audio' : 'video'
+    // 配置先トラックが指定されていればその種別に従う。
+    // 動画素材を音声トラックに置いた場合は「音声だけを使うクリップ」になる。
+    let trackId = opts.trackId
+    const explicitTrack = trackId
+      ? state.value.tracks.find(t => t.id === trackId)
+      : undefined
+    if (trackId && !explicitTrack) return null
+    // 音声トラックに置けるのは音声を持つ素材 (audio / video) だけ
+    if (explicitTrack?.kind === 'audio' && asset.kind === 'image') return null
+    if (explicitTrack?.kind === 'video' && asset.kind === 'audio') return null
+
+    const trackKind =
+      explicitTrack?.kind ?? (asset.kind === 'audio' ? 'audio' : 'video')
     // 適合トラックが無ければ自動で作る (例: video トラック全削除済みに image を投入)。
     // fallback で逆種別のトラック (例: audio に image) に置くと、タイムラインから
     // 消えたように見えてしまうのを防ぐ。
-    let trackId = opts.trackId
     if (!trackId) {
       const compat = tracks.value.find(t => t.kind === trackKind)
       if (compat) {
@@ -266,7 +275,15 @@ export const useProjectStore = defineStore('project', () => {
     recordHistory()
 
     let clip: Clip
-    if (asset.kind === 'video') {
+    if (trackKind === 'audio') {
+      // 音声トラック: 素材が動画でも音声クリップとして扱う (映像は使わない)
+      clip = {
+        ...base,
+        kind: 'audio',
+        assetId,
+        volume: 1
+      } as AudioClip
+    } else if (asset.kind === 'video') {
       clip = {
         ...base,
         kind: 'video',
@@ -277,7 +294,9 @@ export const useProjectStore = defineStore('project', () => {
         rotation: 0,
         volume: 1
       } as VideoClip
-    } else if (asset.kind === 'image') {
+    } else {
+      // ここに来るのは映像トラック + 画像素材のみ
+      // (音声素材は上のガードで映像トラックに置けない)
       clip = {
         ...base,
         kind: 'image',
@@ -287,13 +306,6 @@ export const useProjectStore = defineStore('project', () => {
         scale: 1,
         rotation: 0
       } as ImageClip
-    } else {
-      clip = {
-        ...base,
-        kind: 'audio',
-        assetId,
-        volume: 1
-      } as AudioClip
     }
 
     state.value.clips.push(clip)
@@ -909,41 +921,6 @@ export const useProjectStore = defineStore('project', () => {
     touch()
   }
 
-  // ---------- フォルダ ----------
-
-  function addFolder(name: string, color?: string): AssetFolder {
-    recordHistory('folder:add')
-    const f: AssetFolder = { id: nanoid(), name, color, parentId: null }
-    if (!state.value.folders) state.value.folders = []
-    state.value.folders.push(f)
-    touch()
-    return f
-  }
-  function removeFolder(id: string) {
-    if (!state.value.folders) return
-    recordHistory('folder:del')
-    state.value.folders = state.value.folders.filter(f => f.id !== id)
-    for (const a of Object.values(state.value.assets)) {
-      if (a.folderId === id) a.folderId = null
-    }
-    touch()
-  }
-  function renameFolder(id: string, name: string) {
-    if (!state.value.folders) return
-    const i = state.value.folders.findIndex(f => f.id === id)
-    if (i < 0) return
-    recordHistory(`folder:rename:${id}`)
-    state.value.folders[i] = { ...state.value.folders[i], name }
-    touch()
-  }
-  function moveAssetToFolder(assetId: string, folderId: string | null) {
-    const a = state.value.assets[assetId]
-    if (!a) return
-    recordHistory(`asset:fold:${assetId}`)
-    state.value.assets[assetId] = { ...a, folderId }
-    touch()
-  }
-
   // ---------- バックアップ状態の追跡 ----------
   // 「最後に ZIP バックアップ (エクスポート/インポート) した内容」のハッシュを
   // localStorage に記録し、タブを閉じる際に未バックアップの編集があるかを判定する。
@@ -1094,12 +1071,7 @@ export const useProjectStore = defineStore('project', () => {
     setTextDecor,
     setTextAnim,
     setBlendMode,
-    setAudioEQ,
-    // folders
-    addFolder,
-    removeFolder,
-    renameFolder,
-    moveAssetToFolder
+    setAudioEQ
   }
 })
 

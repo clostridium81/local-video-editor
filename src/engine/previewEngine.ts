@@ -38,7 +38,9 @@ interface VideoMediaNode {
   chain?: AudioChain
 }
 interface AudioMediaNode {
-  el: HTMLAudioElement
+  // 音声トラックのクリップ用。動画素材を音声だけ使う場合は <video> 要素を
+  // 音声源として使う (映像は描画しない) ため HTMLMediaElement で受ける
+  el: HTMLMediaElement
   loaded: boolean
   chain?: AudioChain
 }
@@ -503,7 +505,14 @@ export class PreviewEngine {
     if (node) return node
     const url = await getAssetObjectURL(this.state.meta.id, clip.assetId)
     if (!url) return null
-    const el = document.createElement('audio')
+    // 動画素材を音声トラックに置いた場合 (音声だけ使う) は <video> を音声源にする。
+    // <audio> でも多くのブラウザは mp4 の音声を再生できるが、動画コンテナは
+    // <video> の方が確実にデコードされるため要素を使い分ける
+    const isVideoAsset = this.state.assets[clip.assetId]?.kind === 'video'
+    const el: HTMLMediaElement = isVideoAsset
+      ? document.createElement('video')
+      : document.createElement('audio')
+    if (isVideoAsset) (el as HTMLVideoElement).playsInline = true
     el.src = url
     el.preload = 'auto'
     el.addEventListener('error', () => {
