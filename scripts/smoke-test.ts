@@ -320,7 +320,6 @@ console.log('backup signature:')
     return {
       meta: { id: 'p1', name: 'x', createdAt: 1, updatedAt: 1, width: 1920, height: 1080, fps: 30, backgroundColor: '#000' },
       assets: {},
-      folders: [],
       tracks: [{ id: 't1', kind: 'video', name: 'V1', muted: false, locked: false, order: 1 }],
       clips: [],
       markers: [],

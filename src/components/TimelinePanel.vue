@@ -13,6 +13,17 @@ const store = useProjectStore()
 const selection = useSelection()
 const scrollAreaRef = ref<HTMLDivElement>()
 const trackAreaRef = ref<HTMLDivElement>()
+const headersRef = ref<HTMLDivElement>()
+
+// ルーラー (時刻表示) は sticky で上端に固定するため、縦スクロールでは動かない。
+// トラックヘッダ側は独立した要素なので、行がずれないよう scrollTop を追従させる
+// (ヘッダ列の先頭スペーサーも sticky にしてルーラーと同じ位置に留める)。
+function onScrollSyncHeaders() {
+  const el = scrollAreaRef.value
+  const headers = headersRef.value
+  if (!el || !headers) return
+  if (headers.scrollTop !== el.scrollTop) headers.scrollTop = el.scrollTop
+}
 
 const zoom = computed(() => store.state.timeline.zoom)
 const duration = computed(() => store.state.timeline.duration)
@@ -71,7 +82,9 @@ function clipLabel(c: Clip): string {
   const assetId = (c as any).assetId as string | undefined
   if (assetId) {
     const a = store.getAsset(assetId)
-    return a?.name ?? c.kind
+    if (!a) return c.kind
+    // 動画素材を音声トラックに置いた「音声だけ」のクリップは一目で分かるようにする
+    return c.kind === 'audio' && a.kind === 'video' ? `♪ ${a.name}` : a.name
   }
   return c.kind
 }
@@ -372,6 +385,14 @@ watch(playhead, (t) => {
 
 // ---------- トラックへの素材ドロップ ----------
 
+// 素材の種別をそのトラックに置けるか。
+// 動画は映像トラック (映像+音声) にも音声トラック (音声のみ) にも置ける。
+function assetKindFitsTrack(kind: string, trackKind: Track['kind']): boolean {
+  if (kind === 'video') return true
+  if (kind === 'audio') return trackKind === 'audio'
+  return trackKind === 'video' // image
+}
+
 function onTrackDragOver(e: DragEvent, track: Track) {
   const types = e.dataTransfer?.types
   if (!types?.includes('application/x-lve-asset-id')) return
@@ -379,12 +400,12 @@ function onTrackDragOver(e: DragEvent, track: Track) {
   // preventDefault しない → ブラウザが no-drop カーソルを表示する
   const kind = types.includes('application/x-lve-kind-audio')
     ? 'audio'
-    : types.includes('application/x-lve-kind-video') ||
-        types.includes('application/x-lve-kind-image')
-      ? 'visual'
-      : null
-  if (kind === 'audio' && track.kind !== 'audio') return
-  if (kind === 'visual' && track.kind !== 'video') return
+    : types.includes('application/x-lve-kind-video')
+      ? 'video'
+      : types.includes('application/x-lve-kind-image')
+        ? 'image'
+        : null
+  if (kind && !assetKindFitsTrack(kind, track.kind)) return
   e.preventDefault()
   e.dataTransfer!.dropEffect = 'copy'
 }
@@ -398,8 +419,7 @@ function onTrackDrop(e: DragEvent, track: Track) {
   const t = Math.max(0, x / zoom.value)
   const asset = store.getAsset(assetId)
   if (!asset) return
-  if (asset.kind === 'audio' && track.kind === 'video') return
-  if (asset.kind !== 'audio' && track.kind === 'audio') return
+  if (!assetKindFitsTrack(asset.kind, track.kind)) return
   store.addClipFromAsset(assetId, { trackId: track.id, start: t })
 }
 
@@ -754,7 +774,7 @@ function hasWaveform(c: Clip): boolean {
     </div>
 
     <div class="tl-body" data-tour="timeline-body">
-      <div class="tl-headers">
+      <div ref="headersRef" class="tl-headers">
         <div class="header-spacer" />
         <div
           v-for="track in orderedTracks"
@@ -777,9 +797,17 @@ function hasWaveform(c: Clip): boolean {
             @click="store.updateTrack(track.id, { muted: !track.muted })"
           >M</button>
         </div>
+        <!-- tl-scroll 側は横スクロールバーの分だけ余計にスクロールできるため、
+             最下端でヘッダーが取り残されないよう同じ分の余白を持たせる -->
+        <div class="header-bottom-spacer" />
       </div>
 
-      <div ref="scrollAreaRef" class="tl-scroll" @wheel="onWheel">
+      <div
+        ref="scrollAreaRef"
+        class="tl-scroll"
+        @wheel="onWheel"
+        @scroll="onScrollSyncHeaders"
+      >
         <div
           ref="trackAreaRef"
           class="tl-content"
@@ -976,13 +1004,26 @@ function hasWaveform(c: Clip): boolean {
   border-right: 1px solid var(--line-weak);
   display: flex;
   flex-direction: column;
+  /* スクロールバーは出さず、tl-scroll に追従して scrollTop だけ動かす */
+  overflow: hidden;
 }
 .header-spacer {
   height: 24px;
+  flex-shrink: 0;
   border-bottom: 1px solid var(--line-weak);
+  /* ルーラーと同じく上端に固定 (縦スクロールしてもヘッダ列の頭がずれない) */
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: var(--bg-2);
+}
+.header-bottom-spacer {
+  height: 16px;
+  flex-shrink: 0;
 }
 .track-header {
   height: 48px;
+  flex-shrink: 0;
   display: flex;
   align-items: center;
   gap: 6px;
@@ -1025,7 +1066,12 @@ button.tiny.active {
   height: 24px;
   border-bottom: 1px solid var(--line);
   background: var(--bg-1);
-  position: relative;
+  /* 縦スクロールしても上端に留まる (トラックが増えても時刻表示とロケーター操作が
+     常に見える)。横方向はオフセット未指定なので通常どおり内容と一緒に流れる。
+     z-index はクリップ (最大 3) より上、snap-guide (9) / playhead (10) より下 */
+  position: sticky;
+  top: 0;
+  z-index: 8;
   cursor: pointer;
   user-select: none;
 }

@@ -30,7 +30,7 @@ export function hash53(str: string): string {
  * 「編集内容」の署名。バックアップに実質的に含まれる情報のみを対象にする。
  * - playhead / zoom は再生・表示の一時状態なので除外 (再生しただけで dirty にしない)
  * - meta.updatedAt は編集タイムスタンプなので 0 に正規化 (内容が同じなら同一署名)
- * これ以外 (meta のその他 / assets / folders / tracks / clips / markers /
+ * これ以外 (meta のその他 / assets / tracks / clips / markers /
  * in-out / snapping / rippleMode / masterVolume) はすべて対象に含めるので、
  * 実質的な編集はもれなく署名に反映される。
  */
@@ -38,7 +38,6 @@ export function contentSignature(s: ProjectState): string {
   const normalized = {
     meta: { ...s.meta, updatedAt: 0 },
     assets: s.assets,
-    folders: s.folders ?? [],
     tracks: s.tracks,
     clips: s.clips,
     markers: s.markers ?? [],

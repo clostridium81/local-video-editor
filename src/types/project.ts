@@ -25,7 +25,6 @@ export interface Asset {
   height?: number
   // 追加時のタイムスタンプ
   createdAt: number
-  folderId?: string | null
   tags?: string[]
 }
 
@@ -317,15 +316,6 @@ export interface Marker {
   color?: string
 }
 
-// ---------- アセットフォルダ ----------
-
-export interface AssetFolder {
-  id: string
-  name: string
-  color?: string
-  parentId?: string | null
-}
-
 // ---------- アセットタグ追加 ----------
 // Asset 型は破壊変更せず、メタ情報のみ拡張
 
@@ -347,7 +337,6 @@ export interface ProjectMeta {
 export interface ProjectState {
   meta: ProjectMeta
   assets: Record<string, Asset>
-  folders?: AssetFolder[]
   tracks: Track[]
   clips: Clip[]
   markers?: Marker[]

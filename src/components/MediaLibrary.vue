@@ -10,7 +10,10 @@ const locale = useLocale()
 const { t } = locale
 
 const searchQuery = ref('')
-const currentFolder = ref<string | null>(null)
+
+// 素材の種別で絞り込む (フォルダ整理の代わり)
+type KindFilter = 'all' | 'video' | 'image' | 'audio'
+const kindFilter = ref<KindFilter>('all')
 
 const store = useProjectStore()
 const storage = useStorage()
@@ -34,10 +37,12 @@ const storageBarColor = computed(() => {
   return 'var(--audio)'
 })
 
+const allAssets = computed<Asset[]>(() => Object.values(store.assets))
+
 const assetList = computed<Asset[]>(() => {
-  let list = Object.values(store.assets)
-  if (currentFolder.value !== null) {
-    list = list.filter(a => (a.folderId ?? null) === currentFolder.value)
+  let list = allAssets.value
+  if (kindFilter.value !== 'all') {
+    list = list.filter(a => a.kind === kindFilter.value)
   }
   const q = searchQuery.value.trim().toLowerCase()
   if (q) {
@@ -50,37 +55,25 @@ const assetList = computed<Asset[]>(() => {
   return list.sort((a, b) => b.createdAt - a.createdAt)
 })
 
-const folders = computed(() => store.state.folders ?? [])
-
-function addFolderPrompt() {
-  const name = window.prompt(t('フォルダの名前', 'フォルダ名'))
-  if (!name) return
-  store.addFolder(name)
-}
-function deleteFolder(id: string) {
-  if (!confirm(t(
-    'このフォルダを削除しますか? (中の素材は残ります)',
-    'このフォルダを削除しますか? (素材は残ります)'
-  ))) return
-  store.removeFolder(id)
-  if (currentFolder.value === id) currentFolder.value = null
-}
-function renameFolderPrompt(id: string, cur: string) {
-  const name = window.prompt(t('新しい名前', '新しい名前'), cur)
-  if (name) store.renameFolder(id, name)
-}
-
-function onAssetDragOverFolder(e: DragEvent, folderId: string | null) {
-  if (e.dataTransfer?.types.includes('application/x-lve-asset-id')) {
-    e.preventDefault()
-    e.dataTransfer.dropEffect = 'move'
+// 絞り込みチップに出す件数 (種別ごと)
+const kindCounts = computed<Record<KindFilter, number>>(() => {
+  const c: Record<KindFilter, number> = { all: 0, video: 0, image: 0, audio: 0 }
+  for (const a of allAssets.value) {
+    c.all++
+    c[a.kind]++
   }
-}
-function onAssetDropOnFolder(e: DragEvent, folderId: string | null) {
-  e.preventDefault()
-  const assetId = e.dataTransfer?.getData('application/x-lve-asset-id')
-  if (!assetId) return
-  store.moveAssetToFolder(assetId, folderId)
+  return c
+})
+
+// 絞り込みで 0 件になったのか、そもそも素材が無いのかを区別する
+// (前者はドロップ案内ではなく「該当なし」を出す)
+const filteredOut = computed(
+  () => assetList.value.length === 0 && allAssets.value.length > 0
+)
+
+function clearFilters() {
+  kindFilter.value = 'all'
+  searchQuery.value = ''
 }
 
 function onPickClick() {
@@ -193,6 +186,19 @@ function kindLabelJa(kind: string): string {
   if (kind === 'image') return t('画像', '画像')
   return kind
 }
+
+// 動画は音声トラックにも置ける (音声だけを使う) ので、その場でヒントを出す
+function assetHint(a: Asset): string {
+  if (a.kind !== 'video') return a.name
+  return (
+    a.name +
+    '\n' +
+    t(
+      '音のトラックに ドラッグすると 音だけ つかえます',
+      '音声トラックにドラッグすると音声だけを使えます'
+    )
+  )
+}
 </script>
 
 <template>
@@ -210,27 +216,20 @@ function kindLabelJa(kind: string): string {
     />
   </div>
 
-  <div class="folders">
+  <div class="kind-filters">
     <div
-      class="folder"
-      :class="{ active: currentFolder === null }"
-      @click="currentFolder = null"
-      @dragover="(e) => onAssetDragOverFolder(e, null)"
-      @drop="(e) => onAssetDropOnFolder(e, null)"
-    >{{ t('全部', '全て') }}</div>
+      class="kind-chip"
+      :class="{ active: kindFilter === 'all' }"
+      @click="kindFilter = 'all'"
+    >{{ t('全部', '全て') }} <span class="count mono">{{ kindCounts.all }}</span></div>
     <div
-      v-for="f in folders"
-      :key="f.id"
-      class="folder"
-      :class="{ active: currentFolder === f.id }"
-      :style="{ borderLeftColor: f.color ?? 'var(--accent)' }"
-      @click="currentFolder = f.id"
-      @dblclick="renameFolderPrompt(f.id, f.name)"
-      @contextmenu.prevent="deleteFolder(f.id)"
-      @dragover="(e) => onAssetDragOverFolder(e, f.id)"
-      @drop="(e) => onAssetDropOnFolder(e, f.id)"
-    >{{ f.name }}</div>
-    <button class="ghost tiny folder-add" @click="addFolderPrompt">＋</button>
+      v-for="k in (['video', 'image', 'audio'] as const)"
+      :key="k"
+      class="kind-chip"
+      :class="{ active: kindFilter === k }"
+      :style="{ borderLeftColor: kindColor(k) }"
+      @click="kindFilter = k"
+    >{{ kindLabelJa(k) }} <span class="count mono">{{ kindCounts[k] }}</span></div>
   </div>
 
   <div
@@ -240,7 +239,16 @@ function kindLabelJa(kind: string): string {
     @dragleave="onDragLeave"
     @drop="onDrop"
   >
-    <div v-if="assetList.length === 0" class="empty">
+    <div v-if="filteredOut" class="empty">
+      <div class="empty-icon">⌕</div>
+      <div class="empty-text">
+        <template v-if="locale.isEasy.value">この しゅるいの そざいは<br />ありません</template>
+        <template v-else>条件に一致する素材はありません</template>
+      </div>
+      <button class="ghost" @click="clearFilters">{{ t('しぼりこみを やめる', '絞り込みを解除') }}</button>
+    </div>
+
+    <div v-else-if="assetList.length === 0" class="empty">
       <div class="empty-icon">⬒</div>
       <div class="empty-text">
         <template v-if="locale.isEasy.value">動画・画像・音声を<br />ここにドラッグして追加</template>
@@ -260,7 +268,7 @@ function kindLabelJa(kind: string): string {
       >
         <div class="kind-dot" :style="{ background: kindColor(asset.kind) }" />
         <div class="asset-info">
-          <div class="asset-name" :title="asset.name">{{ asset.name }}</div>
+          <div class="asset-name" :title="assetHint(asset)">{{ asset.name }}</div>
           <div class="asset-meta mono">
             <span>{{ kindLabelJa(asset.kind) }}</span>
             <span v-if="asset.duration">· {{ formatDuration(asset.duration) }}</span>
@@ -432,14 +440,14 @@ function kindLabelJa(kind: string): string {
   padding: 4px 8px;
 }
 
-.folders {
+.kind-filters {
   display: flex;
   flex-wrap: wrap;
   gap: 4px;
   padding: 6px 8px;
   border-bottom: 1px solid var(--line-weak);
 }
-.folder {
+.kind-chip {
   padding: 3px 8px;
   font-size: 10px;
   background: var(--bg-2);
@@ -449,14 +457,15 @@ function kindLabelJa(kind: string): string {
   cursor: pointer;
   user-select: none;
 }
-.folder.active {
+.kind-chip.active {
   border-color: var(--accent);
   background: var(--bg-3);
   color: var(--fg-0);
 }
-.folder-add {
-  padding: 2px 6px;
-  font-size: 10px;
+.kind-chip .count {
+  font-size: 9px;
+  color: var(--fg-3);
+  margin-left: 2px;
 }
 
 /* ---------- ストレージ残量バー ---------- */
