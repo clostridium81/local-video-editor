@@ -262,13 +262,13 @@ function assetHint(a: Asset): string {
       <button class="ghost" @click="clearFilters">{{ t('しぼりこみを やめる', '絞り込みを解除') }}</button>
     </div>
 
+    <!-- 追加の導線は上のボタンに一本化し、ここはドロップ先の案内に徹する -->
     <div v-else-if="assetList.length === 0" class="empty">
       <div class="empty-icon">⬒</div>
       <div class="empty-text">
         <template v-if="locale.isEasy.value">動画・画像・音声を<br />ここにドラッグして追加</template>
         <template v-else>動画・画像・音声ファイルを<br />ドラッグ&ドロップ</template>
       </div>
-      <button class="ghost" @click="onPickClick">{{ t('ファイルを選ぶ', 'ファイルを選ぶ') }}</button>
     </div>
 
     <div v-else class="asset-list">
