@@ -17,19 +17,42 @@ import {
   applyChromaKey
 } from './previewEngine'
 import { applyPixelEffects, hasPixelEffects } from './pixelEffects'
-import { AVC_CODECS, AAC_CODEC, VP9_CODEC, OPUS_CODEC, hasWebCodecs } from './capabilities'
+import {
+  AVC_CODECS,
+  AAC_CODEC,
+  VP9_CODEC,
+  OPUS_CODEC,
+  hasWebCodecs,
+  canEncodeVideo,
+  type CodecConfig
+} from './capabilities'
+import {
+  ExportMediaCache,
+  createFrameSourceForClip,
+  type FrameSource,
+  type VideoFrameRef
+} from './frameSource'
+import {
+  clipSourceTimestamps,
+  isClipActiveAt,
+  mapClipTimeToSource,
+  type SourceKind
+} from './frameTiming'
+import { ExportProfiler, logProfile } from './exportProfiler'
 
 // ============================================================
 // MP4 / WebM エクスポート (WebCodecs + mp4-muxer / webm-muxer)
 // ============================================================
 // 実装戦略:
 // 1. OffscreenCanvas (fallback: <canvas>) を自前で作る
-// 2. 各 VideoClip の素材を専用 <video> 要素にロード
+// 2. 各 VideoClip に FrameSource を用意 (frameSource.ts)。
+//    通常は mediabunny + VideoDecoder のシーケンシャルデコード、
+//    使えない場合は従来の非表示 <video> + seek にフォールバック
 // 3. フレーム毎に t = i/fps で以下を実行:
-//    a. 必要な media を seek → seeked を await
+//    a. アクティブな VideoClip のフレームを FrameSource から取得
 //    b. 合成描画
 //    c. VideoFrame(canvas, { timestamp })
-//    d. encoder.encode(frame)
+//    d. encoder.encode(frame) (encodeQueueSize バックプレッシャ付き)
 // 4. 音声は OfflineAudioContext で全クリップをミックスし、
 //    結果 AudioBuffer を AudioData に区切って encode
 // 5. muxer で多重化
@@ -71,56 +94,6 @@ function checkAbort(signal?: AbortSignal) {
   if (signal?.aborted) throw new DOMException('Aborted', 'AbortError')
 }
 
-// ---------- 1 本の <video> ノードを準備 ----------
-
-async function makeHiddenVideo(url: string): Promise<HTMLVideoElement> {
-  const el = document.createElement('video')
-  el.src = url
-  el.crossOrigin = 'anonymous'
-  el.playsInline = true
-  el.preload = 'auto'
-  el.muted = true
-  await new Promise<void>((resolve, reject) => {
-    const done = () => {
-      el.removeEventListener('loadeddata', done)
-      el.removeEventListener('error', err)
-      resolve()
-    }
-    const err = () => {
-      el.removeEventListener('loadeddata', done)
-      el.removeEventListener('error', err)
-      reject(new Error('video load failed'))
-    }
-    el.addEventListener('loadeddata', done, { once: true })
-    el.addEventListener('error', err, { once: true })
-  })
-  return el
-}
-
-function seekVideo(el: HTMLVideoElement, t: number): Promise<void> {
-  return new Promise((resolve) => {
-    if (Math.abs(el.currentTime - t) < 0.003) {
-      resolve()
-      return
-    }
-    const onSeeked = () => {
-      el.removeEventListener('seeked', onSeeked)
-      resolve()
-    }
-    el.addEventListener('seeked', onSeeked, { once: true })
-    try {
-      el.currentTime = Math.max(0, t)
-    } catch {
-      resolve()
-    }
-    // タイムアウト保険 (1s)
-    setTimeout(() => {
-      el.removeEventListener('seeked', onSeeked)
-      resolve()
-    }, 1000)
-  })
-}
-
 // ---------- 画像のロード ----------
 
 async function loadImage(url: string): Promise<HTMLImageElement> {
@@ -137,7 +110,7 @@ async function loadImage(url: string): Promise<HTMLImageElement> {
 
 interface RenderContext {
   state: ProjectState
-  videoEls: Map<string, HTMLVideoElement> // clipId -> el
+  currentFrames: Map<string, VideoFrameRef> // clipId -> 現フレーム (毎フレーム更新)
   images: Map<string, HTMLImageElement> // assetId -> img
   canvas: OffscreenCanvas | HTMLCanvasElement
   ctx: OffscreenCanvasRenderingContext2D | CanvasRenderingContext2D
@@ -203,17 +176,17 @@ function drawFrame(rc: RenderContext, t: number) {
     if (blendMode !== 'normal') ctx.globalCompositeOperation = blendToCanvas(blendMode)
 
     if (clip.kind === 'video') {
-      const el = rc.videoEls.get(clip.id)
-      if (!el) {
+      const ref = rc.currentFrames.get(clip.id)
+      if (!ref) {
         ctx.restore()
         continue
       }
       drawVisualSource(
         ctx,
         rc,
-        el as any,
-        el.videoWidth,
-        el.videoHeight,
+        ref.image,
+        ref.width,
+        ref.height,
         eff,
         (clip as VideoClip).effects,
         (clip as VideoClip).colorGrade,
@@ -726,6 +699,133 @@ async function renderAudioMix(
   return await oc.startRendering()
 }
 
+// ---------- クリップ → FrameSource の解決 ----------
+
+interface SourceEntry {
+  source: FrameSource
+  kind: SourceKind
+  /** クリップの終了時刻 (これを過ぎたら close) */
+  end: number
+}
+
+/**
+ * エクスポートループの各フレームで、アクティブな VideoClip のフレームを
+ * FrameSource から取得して RenderContext.currentFrames に流し込む。
+ * ソースはクリップが最初にアクティブになった時に生成し、終わったら即解放。
+ */
+class VideoFrameResolver {
+  // null = 生成失敗 (以後このクリップはスキップ)
+  private sources = new Map<string, SourceEntry | null>()
+  private decoderCount = 0
+  /** ソース種別の使用実績 (ログ用) */
+  kinds = { decoder: 0, element: 0 }
+
+  constructor(
+    private projectId: string,
+    private videoClips: VideoClip[],
+    private cache: ExportMediaCache,
+    private rangeStart: number,
+    private fps: number,
+    private totalFrames: number
+  ) {}
+
+  async resolveFrames(t: number, out: Map<string, VideoFrameRef>): Promise<void> {
+    out.clear()
+    for (const [id, entry] of [...this.sources]) {
+      if (entry && t >= entry.end) {
+        entry.source.close()
+        if (entry.kind === 'decoder') this.decoderCount--
+        this.sources.delete(id)
+      }
+    }
+    const waits: Promise<void>[] = []
+    for (const vc of this.videoClips) {
+      if (!isClipActiveAt(vc, t)) continue
+      let entry = this.sources.get(vc.id)
+      if (entry === undefined) {
+        entry = await this.createFor(vc)
+        this.sources.set(vc.id, entry)
+      }
+      if (!entry) continue
+      waits.push(
+        entry.source.getFrameAt(mapClipTimeToSource(vc, t)).then(ref => {
+          if (ref) out.set(vc.id, ref)
+        })
+      )
+    }
+    await Promise.all(waits)
+  }
+
+  private async createFor(vc: VideoClip): Promise<SourceEntry | null> {
+    const plan = clipSourceTimestamps(vc, this.rangeStart, this.fps, this.totalFrames)
+    if (!plan) return null
+    const created = await createFrameSourceForClip({
+      projectId: this.projectId,
+      assetId: vc.assetId,
+      speed: vc.speed ?? 1,
+      timestamps: plan.timestamps,
+      cache: this.cache,
+      activeDecoders: this.decoderCount
+    })
+    if (!created) return null
+    if (created.kind === 'decoder') this.decoderCount++
+    this.kinds[created.kind]++
+    return { source: created.source, kind: created.kind, end: vc.start + vc.duration }
+  }
+
+  closeAll() {
+    for (const entry of this.sources.values()) {
+      try {
+        entry?.source.close()
+      } catch {
+        // ignore
+      }
+    }
+    this.sources.clear()
+    this.decoderCount = 0
+  }
+}
+
+// ---------- VideoEncoder 設定 ----------
+
+/** HW アクセラレーション優先 → 指定なしの順で通る設定を選ぶ */
+async function pickVideoEncoderConfig(base: CodecConfig): Promise<CodecConfig> {
+  const candidates: CodecConfig[] = [
+    { ...base, hardwareAcceleration: 'prefer-hardware', latencyMode: 'quality' },
+    { ...base, latencyMode: 'quality' },
+    base
+  ]
+  for (const cfg of candidates) {
+    if (await canEncodeVideo(cfg)) return cfg
+  }
+  return base
+}
+
+/** エンコードキューが溜まりすぎたら掃けるまで待つ (メモリ抑制) */
+const MAX_ENCODE_QUEUE = 8
+
+async function waitEncoderQueue(encoder: any, profiler?: ExportProfiler): Promise<void> {
+  if (!(encoder.encodeQueueSize > MAX_ENCODE_QUEUE)) return
+  profiler?.begin('encodeWait')
+  while (encoder.encodeQueueSize > MAX_ENCODE_QUEUE) {
+    // dequeue イベント非対応環境向けにタイムアウトとの併用
+    await new Promise<void>(resolve => {
+      const timer = setTimeout(resolve, 50)
+      if (typeof encoder.addEventListener === 'function') {
+        encoder.addEventListener(
+          'dequeue',
+          () => {
+            clearTimeout(timer)
+            resolve()
+          },
+          { once: true }
+        )
+      }
+    })
+  }
+  profiler?.end('encodeWait')
+}
+
 // ---------- メインエクスポート ----------
 
 export async function exportProject(
@@ -797,25 +897,27 @@ export async function exportProject(
   }
 
   // ---------- VideoEncoder ----------
+  const profiler = new ExportProfiler()
   const VE = (globalThis as any).VideoEncoder
-  const videoEncoder = new VE({
-    output: (chunk: any, metadata: any) => muxer.addVideoChunk(chunk, metadata),
-    error: (e: any) => {
-      console.error('video encoder error', e)
-    }
-  })
-  videoEncoder.configure({
+  const encoderConfig = await pickVideoEncoderConfig({
     codec: videoCodecStr,
     width,
     height,
     bitrate: videoBitrate,
     framerate: fps
   })
+  const videoEncoder = new VE({
+    output: (chunk: any, metadata: any) => muxer.addVideoChunk(chunk, metadata),
+    error: (e: any) => {
+      console.error('video encoder error', e)
+    }
+  })
+  videoEncoder.configure(encoderConfig)
 
-  // ---------- 素材準備 (video & image) ----------
+  // ---------- 素材準備 ----------
   const rc: RenderContext = {
     state,
-    videoEls: new Map(),
+    currentFrames: new Map(),
     images: new Map(),
     canvas: (globalThis as any).OffscreenCanvas
       ? new OffscreenCanvas(width, height)
@@ -824,155 +926,175 @@ export async function exportProject(
   }
   rc.ctx = (rc.canvas as any).getContext('2d') as any
 
-  const uniqVideoClips = state.clips.filter(c => c.kind === 'video') as VideoClip[]
-  const uniqImageAssetIds = new Set<string>()
-  for (const c of state.clips) if (c.kind === 'image') uniqImageAssetIds.add((c as ImageClip).assetId)
+  const videoClips = state.clips.filter(c => c.kind === 'video') as VideoClip[]
+  const mediaCache = new ExportMediaCache(state.meta.id)
+  const resolver = new VideoFrameResolver(
+    state.meta.id,
+    videoClips,
+    mediaCache,
+    rangeStart,
+    fps,
+    totalFrames
+  )
+  let audioEncoder: any = null
 
-  for (const vc of uniqVideoClips) {
-    const url = await getAssetObjectURL(state.meta.id, vc.assetId)
-    if (!url) continue
-    try {
-      const el = await makeHiddenVideo(url)
-      rc.videoEls.set(vc.id, el)
-    } catch (e) {
-      console.warn('video load failed', e)
-    }
-  }
-  for (const aid of uniqImageAssetIds) {
-    const url = await getAssetObjectURL(state.meta.id, aid)
-    if (!url) continue
-    try {
-      const img = await loadImage(url)
-      rc.images.set(aid, img)
-    } catch (e) {
-      console.warn('image load failed', e)
-    }
-  }
-
-  checkAbort(signal)
-
-  notifyProgress(opts, { phase: 'video', done: 0, total: totalFrames, message: '映像エンコード中…' })
-
-  const VFrame = (globalThis as any).VideoFrame
-  for (let i = 0; i < totalFrames; i++) {
-    checkAbort(signal)
-    const t = rangeStart + i / fps
-
-    const needed: HTMLVideoElement[] = []
-    const seeks: Promise<void>[] = []
-    for (const vc of uniqVideoClips) {
-      if (t >= vc.start && t < vc.start + vc.duration) {
-        const el = rc.videoEls.get(vc.id)
-        if (!el) continue
-        const speed = vc.speed ?? 1
-        const local = (t - vc.start) * speed
-        const inT = local + (vc.sourceIn ?? 0)
-        needed.push(el)
-        seeks.push(seekVideo(el, inT))
+  try {
+    profiler.begin('prepare')
+    const uniqImageAssetIds = new Set<string>()
+    for (const c of state.clips) if (c.kind === 'image') uniqImageAssetIds.add((c as ImageClip).assetId)
+    for (const aid of uniqImageAssetIds) {
+      const url = await getAssetObjectURL(state.meta.id, aid)
+      if (!url) continue
+      try {
+        const img = await loadImage(url)
+        rc.images.set(aid, img)
+      } catch (e) {
+        console.warn('image load failed', e)
       }
     }
-    await Promise.all(seeks)
+    profiler.end('prepare')
 
-    drawFrame(rc, t)
-
-    const frame = new VFrame(rc.canvas as any, { timestamp: Math.round((i * 1e6) / fps) })
-    const keyFrame = i % Math.max(1, Math.round(fps * 2)) === 0
-    videoEncoder.encode(frame, { keyFrame })
-    frame.close()
-
-    if (i % 5 === 0 || i === totalFrames - 1) {
-      notifyProgress(opts, { phase: 'video', done: i + 1, total: totalFrames })
-      // UI thread に譲る
-      await new Promise(r => setTimeout(r, 0))
-    }
-  }
-
-  await videoEncoder.flush()
-  videoEncoder.close()
-
-  // ---------- 音声 ----------
-  if (includeAudio) {
     checkAbort(signal)
-    notifyProgress(opts, { phase: 'audio', done: 0, total: 1, message: '音声をミックス中…' })
-    const sampleRate = 48000
-    let audioBuf: AudioBuffer | null = null
-    try {
-      audioBuf = await renderAudioMix(state, rangeDur, sampleRate, signal, rangeStart)
-    } catch (e) {
-      console.warn('audio mix failed', e)
+
+    notifyProgress(opts, { phase: 'video', done: 0, total: totalFrames, message: '映像エンコード中…' })
+
+    const VFrame = (globalThis as any).VideoFrame
+    const frameDurationUs = Math.round(1e6 / fps)
+    for (let i = 0; i < totalFrames; i++) {
+      checkAbort(signal)
+      const t = rangeStart + i / fps
+
+      profiler.begin('frameWait')
+      await resolver.resolveFrames(t, rc.currentFrames)
+      profiler.end('frameWait')
+
+      profiler.begin('draw')
+      drawFrame(rc, t)
+      profiler.end('draw')
+
+      await waitEncoderQueue(videoEncoder, profiler)
+      const frame = new VFrame(rc.canvas as any, {
+        timestamp: Math.round((i * 1e6) / fps),
+        duration: frameDurationUs
+      })
+      const keyFrame = i % Math.max(1, Math.round(fps * 2)) === 0
+      videoEncoder.encode(frame, { keyFrame })
+      frame.close()
+
+      if (i % 5 === 0 || i === totalFrames - 1) {
+        notifyProgress(opts, { phase: 'video', done: i + 1, total: totalFrames })
+        // UI thread に譲る
+        await new Promise(r => setTimeout(r, 0))
+      }
     }
-    if (audioBuf) {
-      const AE = (globalThis as any).AudioEncoder
-      const AData = (globalThis as any).AudioData
-      const audioEncoder = new AE({
-        output: (chunk: any, metadata: any) => muxer.addAudioChunk(chunk, metadata),
-        error: (e: any) => console.error('audio encoder error', e)
-      })
-      audioEncoder.configure({
-        codec: audioCodecStr,
-        sampleRate,
-        numberOfChannels: 2,
-        bitrate: audioBitrate
-      })
 
-      // ブロック単位で AudioData を生成 (interleaved f32)
-      const frameCount = audioBuf.length
-      const blockSize = 1024
-      const chL = audioBuf.getChannelData(0)
-      const chR = audioBuf.numberOfChannels > 1 ? audioBuf.getChannelData(1) : chL
-      const totalBlocks = Math.ceil(frameCount / blockSize)
+    profiler.begin('encodeFlush')
+    await videoEncoder.flush()
+    profiler.end('encodeFlush')
+    videoEncoder.close()
 
-      for (let b = 0; b < totalBlocks; b++) {
-        checkAbort(signal)
-        const off = b * blockSize
-        const end = Math.min(off + blockSize, frameCount)
-        const n = end - off
-        const data = new Float32Array(n * 2)
-        for (let i = 0; i < n; i++) {
-          data[i * 2] = chL[off + i]
-          data[i * 2 + 1] = chR[off + i]
-        }
-        const ts = Math.round((off * 1e6) / sampleRate)
-        const ad = new AData({
-          format: 'f32',
-          sampleRate,
-          numberOfFrames: n,
-          numberOfChannels: 2,
-          timestamp: ts,
-          data
+    // ---------- 音声 ----------
+    if (includeAudio) {
+      checkAbort(signal)
+      notifyProgress(opts, { phase: 'audio', done: 0, total: 1, message: '音声をミックス中…' })
+      const sampleRate = 48000
+      let audioBuf: AudioBuffer | null = null
+      profiler.begin('audioMix')
+      try {
+        audioBuf = await renderAudioMix(state, rangeDur, sampleRate, signal, rangeStart)
+      } catch (e) {
+        console.warn('audio mix failed', e)
+      }
+      profiler.end('audioMix')
+      if (audioBuf) {
+        const AE = (globalThis as any).AudioEncoder
+        const AData = (globalThis as any).AudioData
+        audioEncoder = new AE({
+          output: (chunk: any, metadata: any) => muxer.addAudioChunk(chunk, metadata),
+          error: (e: any) => console.error('audio encoder error', e)
         })
-        audioEncoder.encode(ad)
-        ad.close()
-        if (b % 50 === 0) {
-          notifyProgress(opts, { phase: 'audio', done: b + 1, total: totalBlocks })
-          await new Promise(r => setTimeout(r, 0))
+        audioEncoder.configure({
+          codec: audioCodecStr,
+          sampleRate,
+          numberOfChannels: 2,
+          bitrate: audioBitrate
+        })
+
+        // ブロック単位で AudioData を生成 (interleaved f32)
+        profiler.begin('audioEncode')
+        const frameCount = audioBuf.length
+        const blockSize = 1024
+        const chL = audioBuf.getChannelData(0)
+        const chR = audioBuf.numberOfChannels > 1 ? audioBuf.getChannelData(1) : chL
+        const totalBlocks = Math.ceil(frameCount / blockSize)
+
+        for (let b = 0; b < totalBlocks; b++) {
+          checkAbort(signal)
+          const off = b * blockSize
+          const end = Math.min(off + blockSize, frameCount)
+          const n = end - off
+          const data = new Float32Array(n * 2)
+          for (let i = 0; i < n; i++) {
+            data[i * 2] = chL[off + i]
+            data[i * 2 + 1] = chR[off + i]
+          }
+          const ts = Math.round((off * 1e6) / sampleRate)
+          const ad = new AData({
+            format: 'f32',
+            sampleRate,
+            numberOfFrames: n,
+            numberOfChannels: 2,
+            timestamp: ts,
+            data
+          })
+          audioEncoder.encode(ad)
+          ad.close()
+          if (b % 50 === 0) {
+            notifyProgress(opts, { phase: 'audio', done: b + 1, total: totalBlocks })
+            await new Promise(r => setTimeout(r, 0))
+          }
         }
+        await audioEncoder.flush()
+        audioEncoder.close()
+        profiler.end('audioEncode')
       }
-      await audioEncoder.flush()
-      audioEncoder.close()
     }
-  }
 
-  // ---------- Mux 完了 ----------
-  notifyProgress(opts, { phase: 'mux', done: 0, total: 1, message: '出力中…' })
-  muxer.finalize()
-  const buf = (muxer.target as any).buffer as ArrayBuffer
+    // ---------- Mux 完了 ----------
+    notifyProgress(opts, { phase: 'mux', done: 0, total: 1, message: '出力中…' })
+    muxer.finalize()
+    const buf = (muxer.target as any).buffer as ArrayBuffer
 
-  // クリーンアップ
-  for (const el of rc.videoEls.values()) {
-    el.src = ''
-    el.load()
-  }
+    notifyProgress(opts, { phase: 'done', done: 1, total: 1, message: '完了' })
+    logProfile(
+      profiler,
+      `${format} ${width}x${height}@${fps} ${totalFrames}f ` +
+        `(decoder:${resolver.kinds.decoder} / element:${resolver.kinds.element}, ` +
+        `hw:${encoderConfig.hardwareAcceleration ?? 'no-preference'})`
+    )
 
-  notifyProgress(opts, { phase: 'done', done: 1, total: 1, message: '完了' })
-
-  const safeName = state.meta.name.replace(/[^\p{L}\p{N}._-]+/gu, '_').slice(0, 64) || 'project'
-  const stamp = new Date().toISOString().replace(/[:.]/g, '-')
-  const ext = format === 'mp4' ? 'mp4' : 'webm'
-  return {
-    blob: new Blob([buf], { type: mimeType }),
-    filename: `${safeName}__${stamp}.${ext}`,
-    mime: mimeType
+    const safeName = state.meta.name.replace(/[^\p{L}\p{N}._-]+/gu, '_').slice(0, 64) || 'project'
+    const stamp = new Date().toISOString().replace(/[:.]/g, '-')
+    const ext = format === 'mp4' ? 'mp4' : 'webm'
+    return {
+      blob: new Blob([buf], { type: mimeType }),
+      filename: `${safeName}__${stamp}.${ext}`,
+      mime: mimeType
+    }
+  } finally {
+    // 中断・エラー時もフレームソース / デコーダ / エンコーダを確実に解放する
+    resolver.closeAll()
+    void mediaCache.closeAll()
+    try {
+      if (videoEncoder.state !== 'closed') videoEncoder.close()
+    } catch {
+      // ignore
+    }
+    try {
+      if (audioEncoder && audioEncoder.state !== 'closed') audioEncoder.close()
+    } catch {
+      // ignore
+    }
   }
 }
 
@@ -1007,7 +1129,7 @@ async function exportGIF(state: ProjectState, opts: ExportOptions): Promise<Expo
 
   const rc: RenderContext = {
     state,
-    videoEls: new Map(),
+    currentFrames: new Map(),
     images: new Map(),
     canvas: (globalThis as any).OffscreenCanvas
       ? new OffscreenCanvas(width, height)
@@ -1016,73 +1138,63 @@ async function exportGIF(state: ProjectState, opts: ExportOptions): Promise<Expo
   }
   rc.ctx = (rc.canvas as any).getContext('2d', { willReadFrequently: true }) as any
 
-  const uniqVideoClips = state.clips.filter(c => c.kind === 'video') as VideoClip[]
-  const uniqImageAssetIds = new Set<string>()
-  for (const c of state.clips) if (c.kind === 'image') uniqImageAssetIds.add((c as ImageClip).assetId)
+  const videoClips = state.clips.filter(c => c.kind === 'video') as VideoClip[]
+  const mediaCache = new ExportMediaCache(state.meta.id)
+  const resolver = new VideoFrameResolver(
+    state.meta.id,
+    videoClips,
+    mediaCache,
+    rangeStart,
+    fps,
+    totalFrames
+  )
 
-  for (const vc of uniqVideoClips) {
-    const url = await getAssetObjectURL(state.meta.id, vc.assetId)
-    if (!url) continue
-    try {
-      const el = await makeHiddenVideo(url)
-      rc.videoEls.set(vc.id, el)
-    } catch {}
-  }
-  for (const aid of uniqImageAssetIds) {
-    const url = await getAssetObjectURL(state.meta.id, aid)
-    if (!url) continue
-    try {
-      rc.images.set(aid, await loadImage(url))
-    } catch {}
-  }
+  try {
+    const uniqImageAssetIds = new Set<string>()
+    for (const c of state.clips) if (c.kind === 'image') uniqImageAssetIds.add((c as ImageClip).assetId)
+    for (const aid of uniqImageAssetIds) {
+      const url = await getAssetObjectURL(state.meta.id, aid)
+      if (!url) continue
+      try {
+        rc.images.set(aid, await loadImage(url))
+      } catch {}
+    }
 
-  notifyProgress(opts, { phase: 'video', done: 0, total: totalFrames, message: 'GIF を合成中…' })
+    notifyProgress(opts, { phase: 'video', done: 0, total: totalFrames, message: 'GIF を合成中…' })
 
-  const gif = GIFEncoder()
+    const gif = GIFEncoder()
 
-  for (let i = 0; i < totalFrames; i++) {
-    checkAbort(opts.signal)
-    const t = rangeStart + i / fps
+    for (let i = 0; i < totalFrames; i++) {
+      checkAbort(opts.signal)
+      const t = rangeStart + i / fps
 
-    const seeks: Promise<void>[] = []
-    for (const vc of uniqVideoClips) {
-      if (t >= vc.start && t < vc.start + vc.duration) {
-        const el = rc.videoEls.get(vc.id)
-        if (!el) continue
-        const speed = vc.speed ?? 1
-        const local = (t - vc.start) * speed
-        const inT = local + (vc.sourceIn ?? 0)
-        seeks.push(seekVideo(el, inT))
+      await resolver.resolveFrames(t, rc.currentFrames)
+
+      drawFrame(rc, t)
+      const img = (rc.ctx as CanvasRenderingContext2D).getImageData(0, 0, width, height)
+      const palette = quantize(img.data, 256)
+      const indexed = applyPalette(img.data, palette)
+      gif.writeFrame(indexed, width, height, { palette, delay: delayMs })
+
+      if (i % 3 === 0 || i === totalFrames - 1) {
+        notifyProgress(opts, { phase: 'video', done: i + 1, total: totalFrames })
+        await new Promise(r => setTimeout(r, 0))
       }
     }
-    await Promise.all(seeks)
+    gif.finish()
+    const buf = gif.bytes()
 
-    drawFrame(rc, t)
-    const img = (rc.ctx as CanvasRenderingContext2D).getImageData(0, 0, width, height)
-    const palette = quantize(img.data, 256)
-    const indexed = applyPalette(img.data, palette)
-    gif.writeFrame(indexed, width, height, { palette, delay: delayMs })
+    notifyProgress(opts, { phase: 'done', done: 1, total: 1, message: '完了' })
 
-    if (i % 3 === 0 || i === totalFrames - 1) {
-      notifyProgress(opts, { phase: 'video', done: i + 1, total: totalFrames })
-      await new Promise(r => setTimeout(r, 0))
+    const safeName = state.meta.name.replace(/[^\p{L}\p{N}._-]+/gu, '_').slice(0, 64) || 'project'
+    const stamp = new Date().toISOString().replace(/[:.]/g, '-')
+    return {
+      blob: new Blob([buf], { type: 'image/gif' }),
+      filename: `${safeName}__${stamp}.gif`,
+      mime: 'image/gif'
     }
-  }
-  gif.finish()
-  const buf = gif.bytes()
-
-  for (const el of rc.videoEls.values()) {
-    el.src = ''
-    el.load()
-  }
-
-  notifyProgress(opts, { phase: 'done', done: 1, total: 1, message: '完了' })
-
-  const safeName = state.meta.name.replace(/[^\p{L}\p{N}._-]+/gu, '_').slice(0, 64) || 'project'
-  const stamp = new Date().toISOString().replace(/[:.]/g, '-')
-  return {
-    blob: new Blob([buf], { type: 'image/gif' }),
-    filename: `${safeName}__${stamp}.gif`,
-    mime: 'image/gif'
+  } finally {
+    resolver.closeAll()
+    void mediaCache.closeAll()
   }
 }
