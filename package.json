@@ -7,12 +7,14 @@
     "dev": "vite",
     "build": "vue-tsc --noEmit && vite build",
     "preview": "vite preview",
-    "smoke": "tsx scripts/smoke-test.ts"
+    "smoke": "node --import tsx scripts/smoke-test.ts",
+    "test:session": "node --import tsx scripts/session-test.ts",
+    "test:preview-session": "node --import tsx scripts/preview-session-test.ts",
+    "test": "npm run smoke && npm run test:session && npm run test:preview-session"
   },
   "dependencies": {
     "fflate": "^0.8.2",
     "gifenc": "^1.0.3",
-    "idb": "^8.0.0",
     "mediabunny": "^1.52.2",
     "mp4-muxer": "^5.2.2",
     "nanoid": "^5.0.0",

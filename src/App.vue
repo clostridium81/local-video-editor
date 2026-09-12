@@ -11,7 +11,6 @@ import { useKeyboard } from './composables/useKeyboard'
 import { useTutorial } from './composables/useTutorial'
 import { useLayout } from './composables/useLayout'
 import { useLocale } from './composables/useLocale'
-import { useStorage } from './composables/useStorage'
 import { useProjectStore } from './stores/projectStore'
 import { computed, onMounted, onBeforeUnmount } from 'vue'
 
@@ -19,7 +18,6 @@ useKeyboard()
 const tutorial = useTutorial()
 const { t } = useLocale()
 const store = useProjectStore()
-const storage = useStorage()
 
 const {
   leftWidth,
@@ -84,9 +82,6 @@ function onBeforeUnload(e: BeforeUnloadEvent) {
 
 onMounted(() => {
   window.addEventListener('beforeunload', onBeforeUnload)
-  // ストレージを永続化 (退避されにくくする) + 残量を取得
-  storage.requestPersist()
-  storage.refreshEstimate()
   // 初回アクセス時に自動表示 (少し遅らせてレイアウト確定後)
   setTimeout(() => tutorial.openIfFirstVisit(), 400)
 })
@@ -101,7 +96,7 @@ onBeforeUnmount(() => {
     <TopBar />
     <div class="main" :style="{ gridTemplateColumns: gridCols }">
       <aside class="left" data-tour="media-library">
-        <MediaLibrary />
+        <MediaLibrary :key="store.sessionVersion" />
       </aside>
       <div
         class="resizer resizer-v"
@@ -111,7 +106,7 @@ onBeforeUnmount(() => {
       />
       <section class="center">
         <div data-tour="preview" class="preview-wrap">
-          <PreviewPanel />
+          <PreviewPanel :key="store.sessionVersion" />
         </div>
         <div
           class="resizer resizer-h"
@@ -119,7 +114,7 @@ onBeforeUnmount(() => {
           @mousedown="(e) => startResize(e, 'timeline')"
           @dblclick="reset('timelineHeight')"
         />
-        <TimelinePanel :style="{ height: timelineHeight + 'px' }" />
+        <TimelinePanel :key="store.sessionVersion" :style="{ height: timelineHeight + 'px' }" />
       </section>
       <div
         class="resizer resizer-v"

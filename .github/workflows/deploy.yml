@@ -35,6 +35,9 @@ jobs:
       - name: Type check
         run: npx vue-tsc --noEmit
 
+      - name: Regression tests
+        run: npm test
+
       - name: Build
         run: npx vite build
         # vite.config.ts の base はリポジトリ名にハードコードしてあるが、

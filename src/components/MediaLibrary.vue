@@ -1,10 +1,9 @@
 <script setup lang="ts">
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed } from 'vue'
 import { useProjectStore } from '../stores/projectStore'
 import type { Asset } from '../types/project'
 import { toast } from '../composables/useToast'
 import { useLocale } from '../composables/useLocale'
-import { useStorage } from '../composables/useStorage'
 
 const locale = useLocale()
 const { t } = locale
@@ -16,28 +15,13 @@ type KindFilter = 'all' | 'video' | 'image' | 'audio'
 const kindFilter = ref<KindFilter>('all')
 
 const store = useProjectStore()
-const storage = useStorage()
 const fileInputRef = ref<HTMLInputElement>()
 const isDragging = ref(false)
 const uploading = ref(false)
 
-onMounted(() => storage.refreshEstimate())
-
-// ---------- ストレージ残量表示 ----------
-const storagePct = computed(() => {
-  if (storage.usage.value == null || storage.quota.value == null || storage.quota.value === 0) {
-    return null
-  }
-  return Math.min(100, Math.round((storage.usage.value / storage.quota.value) * 100))
-})
-const storageBarColor = computed(() => {
-  const p = storagePct.value ?? 0
-  if (p >= 90) return 'var(--danger)'
-  if (p >= 75) return 'var(--accent)'
-  return 'var(--audio)'
-})
-
 const allAssets = computed<Asset[]>(() => Object.values(store.assets))
+
+const totalAssetBytes = computed(() => allAssets.value.reduce((sum, a) => sum + a.size, 0))
 
 const assetList = computed<Asset[]>(() => {
   let list = allAssets.value
@@ -89,34 +73,21 @@ async function onFileChange(e: Event) {
 }
 
 async function uploadFiles(files: File[]) {
-  // 保存前に空き容量をチェック。明らかに足りない場合は続行するか確認する
-  // (推定なので弾かず警告にとどめ、最終的な判断はユーザーに委ねる)
-  const total = files.reduce((sum, f) => sum + f.size, 0)
-  if (!storage.hasSpaceFor(total)) {
-    const free = storage.freeBytes()
-    const freeStr = free != null ? formatSize(free) : t('わずか', '不明')
-    const proceed = confirm(t(
-      `ほぞんできる ばしょが たりないかも (のこり ${freeStr})。それでも つづけますか?`,
-      `保存容量が不足する可能性があります (空き ${freeStr})。続行しますか?`
-    ))
-    if (!proceed) return
-  }
-
+  const session = store.sessionVersion
   uploading.value = true
   let ok = 0
   try {
     for (const f of files) {
-      const a = await store.addAssetFromFile(f)
+      if (session !== store.sessionVersion) break
+      const a = await store.addAssetFromFile(f, session)
       if (a) ok++
     }
-    if (ok > 0) toast.success(t(`${ok} 件のファイルを追加しました`, `${ok} 件の素材を追加しました`))
+    if (ok > 0 && session === store.sessionVersion) toast.success(t(`${ok} 件のファイルを追加しました`, `${ok} 件の素材を追加しました`))
   } catch (e: any) {
     console.error(e)
     toast.error(t('ファイルを追加できませんでした: ', '素材の追加に失敗しました: ') + (e?.message ?? ''))
   } finally {
     uploading.value = false
-    // 追加後に残量を更新
-    storage.refreshEstimate()
   }
 }
 
@@ -155,8 +126,6 @@ async function onDelete(asset: Asset) {
     `素材「${asset.name}」を削除します。この素材を使っているクリップも消えます。`
   ))) return
   await store.removeAsset(asset.id)
-  // 削除後に残量を更新
-  storage.refreshEstimate()
 }
 
 function formatSize(n: number): string {
@@ -300,26 +269,9 @@ function assetHint(a: Asset): string {
     </div>
   </div>
 
-  <!-- ストレージ残量 -->
-  <div
-    v-if="storagePct != null"
-    class="storage-bar"
-    :title="storage.persisted.value === true
-      ? t('この さくひんは きえないように ほぞんされています', '永続化済み: ブラウザに自動削除されにくい状態です')
-      : t('つかっている ようりょう', 'ブラウザストレージ使用量')"
-  >
-    <div class="storage-head">
-      <span class="storage-label">
-        {{ t('つかった ようりょう', 'ストレージ') }}
-        <span v-if="storage.persisted.value === true" class="persist-badge" :title="t('きえないように なっています', '永続化済み')">🔒</span>
-      </span>
-      <span class="storage-nums mono">
-        {{ formatSize(storage.usage.value ?? 0) }} / {{ formatSize(storage.quota.value ?? 0) }}
-      </span>
-    </div>
-    <div class="storage-track">
-      <div class="storage-fill" :style="{ width: storagePct + '%', background: storageBarColor }" />
-    </div>
+  <div class="session-info">
+    <div>{{ t('そざいの ごうけい', '素材ファイル合計') }}: {{ formatSize(totalAssetBytes) }}</div>
+    <div>{{ t('とじると きえます。つづきは ZIP に ほぞんしてね。', '素材・編集内容は自動保存されません。続けるには ZIP バックアップを保存してください。') }}</div>
   </div>
 
   <input
@@ -521,43 +473,13 @@ function assetHint(a: Asset): string {
   margin-left: 2px;
 }
 
-/* ---------- ストレージ残量バー ---------- */
-.storage-bar {
+/* ---------- 素材サイズと保存の案内 ---------- */
+.session-info {
   flex-shrink: 0;
-  padding: 6px 10px 8px;
+  padding: 8px 10px;
   border-top: 1px solid var(--line-weak);
-  background: var(--bg-1);
-}
-.storage-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  margin-bottom: 4px;
-}
-.storage-label {
-  font-size: 10px;
   color: var(--fg-2);
-  letter-spacing: 0.04em;
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-}
-.persist-badge {
-  font-size: 9px;
-}
-.storage-nums {
-  font-size: 9px;
-  color: var(--fg-3);
-}
-.storage-track {
-  height: 5px;
-  background: var(--bg-3);
-  border-radius: 3px;
-  overflow: hidden;
-}
-.storage-fill {
-  height: 100%;
-  border-radius: 3px;
-  transition: width 300ms ease, background 300ms ease;
+  font-size: 11px;
+  line-height: 1.6;
 }
 </style>

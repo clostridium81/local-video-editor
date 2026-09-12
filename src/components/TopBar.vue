@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref } from 'vue'
+import { ref, watch } from 'vue'
 import { useProjectStore } from '../stores/projectStore'
 import { exportBackup, importBackup } from '../persistence/backup'
 import { toast } from '../composables/useToast'
@@ -10,6 +10,7 @@ import RecorderDialog from './RecorderDialog.vue'
 import ShortcutHelp from './ShortcutHelp.vue'
 import { useTutorial } from '../composables/useTutorial'
 import { useLocale } from '../composables/useLocale'
+import { contentSignature } from '../stores/backupSignature'
 
 const tutorial = useTutorial()
 const locale = useLocale()
@@ -33,14 +34,21 @@ const showExport = ref(false)
 const showMixer = ref(false)
 const showRecorder = ref(false)
 const showHelp = ref(false)
+const restoring = ref(false)
+
+watch(() => store.sessionVersion, () => {
+  showMixer.value = false
+  showRecorder.value = false
+})
 
 async function onSave() {
   saving.value = true
+  const session = store.sessionVersion
   try {
     // ダウンロードした内容と一致する署名を記録するため、同じスナップショットを使う
     const snapshot = store.serialize()
     await exportBackup(snapshot)
-    store.markBackedUp(snapshot)
+    if (session === store.sessionVersion) store.markBackedUp(snapshot)
     toast.success(t('バックアップを保存しました', 'バックアップを保存しました'))
   } catch (e: any) {
     console.error(e)
@@ -67,24 +75,32 @@ function isCurrentProjectEmpty(): boolean {
 async function onFileChosen(e: Event) {
   const input = e.target as HTMLInputElement
   const file = input.files?.[0]
-  if (!file) return
+  if (!file || restoring.value) return
   input.value = ''
+  const session = store.sessionVersion
+  restoring.value = true
   try {
     // 現プロジェクトが空なら破棄しても失うものがないので確認を省く
     if (!isCurrentProjectEmpty() && !confirm(t(
       '今の作品を閉じて、バックアップから復元します。今の内容は消えます (バックアップしていない場合は戻せません)。よろしいですか?',
       '現在のプロジェクトを破棄してバックアップから復元します (未バックアップなら復元不可)。よろしいですか？'
     ))) return
-    // importBackup が素材を IndexedDB に書き戻す (プレビュー/エクスポート用)。
-    // プロジェクト状態はメモリ上の store に反映するだけで、自動保存はしない。
-    const { project, assetCount } = await importBackup(file)
-    store.replaceState(project)
+    const signature = contentSignature(store.state)
+    const { project, assetCount, blobs } = await importBackup(file)
+    if (session !== store.sessionVersion) return
+    if (signature !== contentSignature(store.state)) {
+      toast.warn('読み込み中に作品が編集されたため、復元を中止しました。もう一度復元してください。')
+      return
+    }
+    store.replaceState(project, blobs)
     // 復元した内容 = 読み込んだバックアップファイルそのものなので「バックアップ済み」
     store.markBackedUp()
     toast.success(t(`復元しました (素材 ${assetCount} 件)`, `復元しました (素材 ${assetCount} 件)`))
   } catch (err: any) {
     console.error(err)
     toast.error(t('復元に失敗しました: ', '復元に失敗しました: ') + (err?.message ?? ''))
+  } finally {
+    restoring.value = false
   }
 }
 
@@ -141,7 +157,7 @@ function onExport() {
       >↷</button>
       <div class="sep" />
       <button class="ghost" @click="onNew">{{ t('新規', '新規') }}</button>
-      <button class="ghost" @click="onRestoreClick">{{ t('復元', '復元') }}</button>
+      <button class="ghost" :disabled="restoring" @click="onRestoreClick">{{ restoring ? t('復元中…', '復元中…') : t('復元', '復元') }}</button>
       <button
         class="ghost backup-btn"
         :class="{ dirty: store.isDirtySinceBackup }"

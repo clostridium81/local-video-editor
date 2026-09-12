@@ -1,6 +1,6 @@
 import { zip, unzip, strToU8, strFromU8 } from 'fflate'
 import type { BackupManifest, ProjectState } from '../types/project'
-import { loadAssetBlob, saveAssetBlob } from './assetStore'
+import { loadAssetBlob } from './assetStore'
 
 // ============================================================
 // バックアップZIPの構造
@@ -53,10 +53,7 @@ function extForMime(mime: string, fallbackName: string): string {
 // ----------------------------------------------------------------
 // エクスポート
 // ----------------------------------------------------------------
-export async function exportBackup(
-  project: ProjectState,
-  opts: { filename?: string } = {}
-): Promise<void> {
+export async function createBackupBlob(project: ProjectState): Promise<Blob> {
   const manifest: BackupManifest = {
     format: 'local-video-editor-backup',
     version: 1,
@@ -70,19 +67,29 @@ export async function exportBackup(
     'project.json': strToU8(JSON.stringify(project, null, 2))
   }
 
-  // すべての素材を IndexedDB から読み出して ZIP に詰める
-  for (const asset of Object.values(project.assets)) {
+  // 全参照を最初に確保する。ZIP 作成中に作品を切り替えても途中で素材を失わない。
+  const sources = await Promise.all(Object.values(project.assets).map(async asset => {
     const blob = await loadAssetBlob(project.meta.id, asset.id)
     if (!blob) {
-      console.warn('素材が見つかりません (スキップ):', asset.name)
-      continue
+      throw new Error(`素材が見つかりません: ${asset.name}`)
     }
+    return { asset, blob }
+  }))
+  for (const { asset, blob } of sources) {
     const ext = extForMime(asset.mimeType, asset.name)
     const bytes = new Uint8Array(await blob.arrayBuffer())
     files[`assets/${asset.id}.${ext}`] = bytes
   }
 
   const zipped = await zipAsync(files)
+  return new Blob([zipped as BlobPart], { type: 'application/zip' })
+}
+
+export async function exportBackup(
+  project: ProjectState,
+  opts: { filename?: string } = {}
+): Promise<void> {
+  const blob = await createBackupBlob(project)
 
   const safeName = (opts.filename ?? project.meta.name).replace(
     /[\\/:*?"<>|]/g,
@@ -94,7 +101,7 @@ export async function exportBackup(
     .replace(/\..+/, '')
   const fname = `${safeName}__${ts}.lvebackup.zip`
 
-  downloadBlob(new Blob([zipped as BlobPart], { type: 'application/zip' }), fname)
+  downloadBlob(blob, fname)
 }
 
 function downloadBlob(blob: Blob, filename: string) {
@@ -115,6 +122,7 @@ function downloadBlob(blob: Blob, filename: string) {
 export interface ImportResult {
   project: ProjectState
   assetCount: number
+  blobs: ReadonlyMap<string, Blob>
 }
 
 export async function importBackup(file: File): Promise<ImportResult> {
@@ -134,22 +142,63 @@ export async function importBackup(file: File): Promise<ImportResult> {
   }
 
   const project = JSON.parse(strFromU8(files['project.json'])) as ProjectState
+  validateProjectReferences(project, manifest)
 
-  // 素材を IndexedDB に書き戻す
-  let assetCount = 0
+  // 全素材を検証してから呼び出し側で一括反映する。失敗時は現作品に触れない。
+  const blobs = new Map<string, Blob>()
   for (const [path, data] of Object.entries(files)) {
     if (!path.startsWith('assets/')) continue
     const filename = path.slice('assets/'.length)
     const assetId = filename.replace(/\.[^.]+$/, '')
+    if (!Object.hasOwn(project.assets, assetId)) continue
     const asset = project.assets[assetId]
-    if (!asset) {
-      console.warn('project.json に記載のない素材があります (スキップ):', filename)
-      continue
-    }
+    if (blobs.has(assetId)) throw new Error(`素材が重複しています: ${asset.name}`)
+    if (data.byteLength !== asset.size) throw new Error(`素材のサイズが一致しません: ${asset.name}`)
     const blob = new Blob([data as BlobPart], { type: asset.mimeType })
-    await saveAssetBlob(project.meta.id, assetId, blob)
-    assetCount++
+    blobs.set(assetId, blob)
   }
 
-  return { project, assetCount }
+  for (const asset of Object.values(project.assets)) {
+    if (!blobs.has(asset.id)) throw new Error(`バックアップに素材がありません: ${asset.name}`)
+  }
+  return { project, assetCount: blobs.size, blobs }
+}
+
+// ZIP v1 の構造・素材参照の整合性を確認する (エフェクト等の拡張フィールドは維持)。
+function validateProjectReferences(project: ProjectState, manifest: BackupManifest): void {
+  const validId = (id: unknown): id is string => typeof id === 'string' && /^[\w-]+$/.test(id)
+    && !['__proto__', 'constructor', 'prototype'].includes(id)
+  if (!project || !validId(project.meta?.id) || project.meta.id !== manifest.projectId
+    || typeof project.meta.name !== 'string' || !project.assets || Array.isArray(project.assets)
+    || typeof project.assets !== 'object' || !Array.isArray(project.tracks)
+    || !Array.isArray(project.clips) || !project.timeline
+    || ![project.meta.width, project.meta.height, project.meta.fps, project.timeline.zoom,
+      project.timeline.duration].every(n => Number.isFinite(n) && n > 0)
+    || !Number.isFinite(project.timeline.playhead)) {
+    throw new Error('バックアップのプロジェクト情報が不正です')
+  }
+  for (const [id, asset] of Object.entries(project.assets)) {
+    if (!validId(id) || !asset || asset.id !== id || !['video', 'image', 'audio'].includes(asset.kind)
+      || typeof asset.name !== 'string' || typeof asset.mimeType !== 'string'
+      || !Number.isSafeInteger(asset.size) || asset.size < 0) {
+      throw new Error('バックアップの素材情報が不正です')
+    }
+  }
+  const trackIds = new Set<string>()
+  for (const track of project.tracks) {
+    if (!track || !validId(track.id) || trackIds.has(track.id)
+      || !['video', 'audio'].includes(track.kind)) throw new Error('トラック情報が不正です')
+    trackIds.add(track.id)
+  }
+  const clipIds = new Set<string>()
+  for (const clip of project.clips) {
+    if (!clip || !validId(clip.id) || clipIds.has(clip.id) || !trackIds.has(clip.trackId)
+      || !['video', 'image', 'audio', 'text', 'shape'].includes(clip.kind)
+      || !Number.isFinite(clip.start) || !Number.isFinite(clip.duration) || clip.duration <= 0
+      || (['video', 'image', 'audio'].includes(clip.kind)
+        && (!('assetId' in clip) || !Object.hasOwn(project.assets, clip.assetId)))) {
+      throw new Error('クリップの素材・トラック参照が不正です')
+    }
+    clipIds.add(clip.id)
+  }
 }

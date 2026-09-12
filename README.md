@@ -1,9 +1,9 @@
 # Local Video Editor (ブラウザローカル動画編集アプリ)
 
 **完全にブラウザ内で動作する動画編集アプリケーション**。
-素材ファイルや編集データが外部サーバーに送信されることはありません (通信は Web フォントの読み込みのみ)。素材はセッション中ブラウザ内 (IndexedDB) でのみ扱われます。
+素材ファイルや編集データが外部サーバーに送信されることはありません (通信は Web フォントの読み込みのみ)。素材はタブ内の File / Blob 参照として扱い、IndexedDB への読み書きは行いません (旧版データの削除処理のみ残しています)。
 
-> **保存についての注意**: プロジェクトの自動保存・自動復元はありません。タブを閉じると編集内容は消えます。保存は**バックアップ ZIP のエクスポート/インポートのみ**です (未保存の編集があるままタブを閉じようとするとリマインダーが表示されます)。
+> **保存についての注意**: プロジェクトの自動保存・自動復元はありません。タブを閉じる・再読み込みすると素材と編集内容は消えます。保存は**バックアップ ZIP のエクスポート/インポートのみ**です (未保存の編集があるままタブを閉じようとするとリマインダーが表示されます)。
 
 ## 機能一覧
 
@@ -42,7 +42,7 @@
 
 - **バックアップ ZIP** でのプロジェクト全体エクスポート / インポート
 - 未バックアップの編集を検知して**タブを閉じる前にリマインド** (内容ハッシュによる差分検知)
-- `navigator.storage.persist()` によるストレージ永続化リクエストと残量表示
+- 素材ファイルの合計サイズと、ZIP バックアップが必要なことを素材パネルに表示
 
 ### エクスポート
 
@@ -116,7 +116,8 @@ src/
 ├── App.vue
 ├── types/project.ts                 状態モデル型
 ├── persistence/
-│   ├── assetStore.ts                IndexedDB (素材 Blob)
+│   ├── assetStore.ts                セッション内の File/Blob・Object URL 管理
+│   ├── legacyCleanup.ts             旧 IndexedDB の削除のみ
 │   ├── mediaMeta.ts                 メタデータ抽出
 │   └── backup.ts                    ZIP I/O
 ├── stores/
@@ -142,7 +143,6 @@ src/
 │   ├── useKeyboard.ts               グローバルショートカット
 │   ├── useLocale.ts                 やさしい日本語モード切替
 │   ├── useLayout.ts                 パネルレイアウト調整
-│   ├── useStorage.ts                ストレージ永続化・残量管理
 │   ├── useTutorial.ts               チュートリアルツアー
 │   └── useToast.ts                  トースト通知
 ├── styles/global.css
@@ -177,7 +177,7 @@ src/
 - Vue 3 (Composition API, `<script setup>`)
 - Pinia (setup store)
 - Vite + TypeScript
-- IndexedDB (`idb` ラッパー)
+- File / Blob と Map によるセッション素材管理
 - fflate (ZIP 入出力)
 - mp4-muxer / webm-muxer / gifenc (エクスポート)
 - WebCodecs (エクスポート: VideoEncoder + VideoDecoder)
@@ -191,6 +191,13 @@ src/
 - **ProjectState は常に JSON シリアライズ可能** (Blob / ObjectURL は store に入れない)
 - **Canvas 合成は 2D Context** (将来 WebGL/WebGPU に差し替え可能)
 - **プレビューのデコードはブラウザ標準 `<video>`/`<audio>`**。エクスポートは WebCodecs VideoDecoder のシーケンシャルデコード (非対応時は `<video>` シークに自動フォールバック)。FFmpeg.wasm には依存しない
-- **履歴はスナップショットベース** (JSON シリアライズ)。mergeKey で高頻度変更をまとめる
-- **永続化はしない**: 自動保存・自動復元は廃止し、手動バックアップ ZIP に一本化。起動時に前セッションの IndexedDB 残骸を掃除する
+- **履歴はスナップショットベース** (JSON シリアライズ)。素材の追加・削除も Undo / Redo 対象。履歴からも参照されなくなった素材は解放する。mergeKey で高頻度変更をまとめる
+- **素材・作品を永続化しない**: 手動バックアップ ZIP に一本化。新規作成・復元時には旧セッションの素材、URL、描画キャッシュを解放する。表示設定とバックアップ済み判定用ハッシュは localStorage に残す
+- **旧データの移行**: 起動時に旧 `local-video-editor` IndexedDB の削除だけを要求する。旧タブによるブロックや削除失敗は画面で通知する。その他のデータベースは削除しない
+- **セキュリティ境界**: 同一オリジンの別アプリから IndexedDB 内の素材を読み取る経路をなくす。XSS や同一オリジンのウィンドウ間アクセスを隔離するものではない。File/Blob の内部配置やスワップ等はブラウザ・OS に依存し、物理ディスクへの一切の書き込みを禁止する保証ではない
+- 移行の仕様と検証範囲は [セッション素材管理の検証記録](docs/session-storage-migration.md) を参照
 - 詳細は [docs/CHANGELOG.md](docs/CHANGELOG.md) を参照
+
+## 回帰テスト
+
+Node.js 22 で `npm test` (編集ロジック + セッション素材・ZIP の回帰テスト)、`npm run build` (型チェック + 本番ビルド) を実行します。GitHub Pages のビルドでも回帰テストを実行します。実ブラウザのデコード・録画・エンコードは別途確認が必要です。

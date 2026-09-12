@@ -7,20 +7,20 @@ import type { ProjectState } from '../types/project'
 // - 現在状態の直前にスナップショット(JSON deep copy)を undo に積む
 // - undo 実行時、現在状態を redo に移し、undo.pop() を現在状態にする
 // - mergeKey + mergeWindow によってドラッグなど高頻度変更を 1 エントリにまとめる
-// - 素材追加/削除は IndexedDB への副作用があるため履歴対象外 (呼び出し側で clear)
+// - 素材追加/削除も履歴対象。履歴が参照する Blob は素材ストア側で保持する。
 // ============================================================
 
 const DEFAULT_MAX = 100
 const DEFAULT_MERGE_WINDOW_MS = 400
 
-type Snapshot = string // JSON 文字列 (deep copy のコストを削減)
+type Snapshot = { json: string; assetIds: string[] }
 
 function snap(state: ProjectState): Snapshot {
-  return JSON.stringify(state)
+  return { json: JSON.stringify(state), assetIds: Object.keys(state.assets) }
 }
 
 function restore(s: Snapshot): ProjectState {
-  return JSON.parse(s) as ProjectState
+  return JSON.parse(s.json) as ProjectState
 }
 
 export class HistoryManager {
@@ -99,6 +99,10 @@ export class HistoryManager {
 
   canUndo() {
     return this.undoStack.length > 0
+  }
+
+  retainedAssetIds(): Set<string> {
+    return new Set([...this.undoStack, ...this.redoStack].flatMap(s => s.assetIds))
   }
   canRedo() {
     return this.redoStack.length > 0

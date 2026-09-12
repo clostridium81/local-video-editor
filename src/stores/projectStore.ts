@@ -1,6 +1,6 @@
 import { defineStore } from 'pinia'
 import { nanoid } from 'nanoid'
-import { ref, computed } from 'vue'
+import { ref, computed, watch } from 'vue'
 import type {
   Asset,
   Clip,
@@ -28,9 +28,9 @@ import type {
 import { getPreset } from '../engine/effectPresets'
 import {
   saveAssetBlob,
-  deleteAssetBlob,
   getAssetObjectURL,
-  revokeAllObjectURLs
+  replaceSessionAssets,
+  retainProjectAssets
 } from '../persistence/assetStore'
 import { detectAssetKind, extractMediaMeta } from '../persistence/mediaMeta'
 import { historyManager } from './history'
@@ -42,6 +42,9 @@ import {
 } from '../engine/keyframes'
 import { toast } from '../composables/useToast'
 import { contentSignature, isEmptyProject } from './backupSignature'
+import { useClipboard } from '../composables/useClipboard'
+import { useSelection } from '../composables/useSelection'
+import { clearWaveformCache } from '../engine/waveform'
 
 // ============================================================
 // プロジェクトストア
@@ -93,6 +96,14 @@ const EDIT_PROMPT_THRESHOLD = 25
 export const useProjectStore = defineStore('project', () => {
   const state = ref<ProjectState>(makeEmptyProject())
   const historyVersion = ref(0)
+  const sessionVersion = ref(0)
+
+  // 操作完了後に実行する。削除/Undo の途中で必要な Blob を解放しない。
+  watch(() => [Object.keys(state.value.assets), historyVersion.value], () => {
+    const retained = historyManager.retainedAssetIds()
+    for (const id of Object.keys(state.value.assets)) retained.add(id)
+    retainProjectAssets(state.value.meta.id, retained)
+  }, { flush: 'post' })
 
   // 最後のバックアップ以降の編集回数と、促進ウィンドウの表示フラグ。
   // 自動保存を廃したため、手動バックアップを忘れないよう定期的に促す。
@@ -172,7 +183,8 @@ export const useProjectStore = defineStore('project', () => {
 
   // ---------- 素材の追加 ----------
 
-  async function addAssetFromFile(file: File): Promise<Asset | null> {
+  async function addAssetFromFile(file: File, expectedSession = sessionVersion.value): Promise<Asset | null> {
+    if (expectedSession !== sessionVersion.value) return null
     const kind = detectAssetKind(file)
     if (!kind) {
       toast.warn(`この形式のファイルは使えません: ${file.name}`)
@@ -180,6 +192,8 @@ export const useProjectStore = defineStore('project', () => {
     }
     const assetId = nanoid()
     const mediaMeta = await extractMediaMeta(file, kind).catch(() => ({}))
+    // メタデータ読み込み中に新規作成/復元した場合、前の操作を新しい作品に混ぜない。
+    if (expectedSession !== sessionVersion.value) return null
     const asset: Asset = {
       id: assetId,
       kind,
@@ -192,34 +206,26 @@ export const useProjectStore = defineStore('project', () => {
       createdAt: Date.now()
     }
     try {
-      await saveAssetBlob(state.value.meta.id, assetId, file)
-    } catch (err: any) {
-      if (err?.name === 'QuotaExceededError') {
-        toast.error(`保存できる容量がいっぱいです: ${file.name}`)
-      } else {
-        toast.error(`ファイルを追加できませんでした: ${file.name}`)
-      }
+      saveAssetBlob(state.value.meta.id, assetId, file)
+    } catch {
+      toast.error(`ファイルを追加できませんでした: ${file.name}`)
       return null
     }
+    recordHistory()
     state.value.assets[assetId] = asset
     touch()
-    // 素材追加は履歴外 (IndexedDB 副作用のため)。
-    // 履歴をクリアすると undo が詰まるので残すが、以降の undo で素材を失う
-    // 可能性に備えて clear 不要 (undo で消えても IndexedDB 上 blob は残る)。
     return asset
   }
 
   async function removeAsset(assetId: string) {
+    if (!state.value.assets[assetId]) return
+    recordHistory()
     state.value.clips = state.value.clips.filter(c => {
       if ('assetId' in c && c.assetId === assetId) return false
       return true
     })
     delete state.value.assets[assetId]
-    try {
-      await deleteAssetBlob(state.value.meta.id, assetId)
-    } catch (err) {
-      toast.error('素材を削除できませんでした')
-    }
+    // Blob は Undo/Redo からも参照されなくなった時点で解放する。
     touch()
   }
 
@@ -467,6 +473,7 @@ export const useProjectStore = defineStore('project', () => {
   }
 
   function pasteClipsAtPlayhead(clips: Clip[]): string[] {
+    clips = clips.filter(c => !('assetId' in c) || !!state.value.assets[c.assetId])
     if (clips.length === 0) return []
     const minStart = Math.min(...clips.map(c => c.start))
     const offset = state.value.timeline.playhead - minStart
@@ -614,21 +621,25 @@ export const useProjectStore = defineStore('project', () => {
   /**
    * プロジェクト全体を置き換え (復元時に使用)。履歴はクリア。
    */
-  function replaceState(newState: ProjectState) {
-    revokeAllObjectURLs()
+  function replaceState(newState: ProjectState, blobs: ReadonlyMap<string, Blob>) {
+    for (const id of Object.keys(newState.assets)) {
+      if (!blobs.has(id)) throw new Error(`復元する素材がありません: ${id}`)
+    }
+    replaceSessionAssets(newState.meta.id, blobs)
     state.value = newState
+    sessionVersion.value++
     historyManager.clear()
     bumpHistoryVersion()
+    useClipboard().clear()
+    useSelection().clearSelection()
+    clearWaveformCache()
+    dismissBackupPrompt()
     // 切替先プロジェクトの最終バックアップ署名を読み直す
     loadBackupSig(newState.meta.id)
   }
 
   function resetToEmpty() {
-    revokeAllObjectURLs()
-    state.value = makeEmptyProject()
-    historyManager.clear()
-    bumpHistoryVersion()
-    loadBackupSig(state.value.meta.id)
+    replaceState(makeEmptyProject(), new Map())
   }
 
   function serialize(): ProjectState {
@@ -994,6 +1005,7 @@ export const useProjectStore = defineStore('project', () => {
 
   return {
     state,
+    sessionVersion,
     meta,
     assets,
     tracks,

@@ -2,20 +2,22 @@ import { createApp } from 'vue'
 import { createPinia } from 'pinia'
 import App from './App.vue'
 import './styles/global.css'
-import { clearAllData } from './persistence/assetStore'
+import { cleanupLegacyStorage } from './persistence/legacyCleanup'
+import { toast } from './composables/useToast'
 
 const app = createApp(App)
 const pinia = createPinia()
 app.use(pinia)
 
-// 自動保存・自動復元は廃止。データの保存/復元は手動バックアップ (ZIP) のみ。
-// 起動時は常に空プロジェクトから始め、前セッションの IndexedDB 残骸を掃除する。
-// (掃除に失敗してもマウントは続行する)
-;(async () => {
-  try {
-    await clearAllData()
-  } catch (err) {
-    console.warn('storage cleanup failed', err)
+app.mount('#app')
+
+let cleanupNotice: string | undefined
+cleanupLegacyStorage(status => {
+  if (cleanupNotice) toast.dismiss(cleanupNotice)
+  cleanupNotice = undefined
+  if (status === 'blocked') {
+    cleanupNotice = toast.warn('旧版で保存した素材の削除が保留されています。このアプリの古いタブを閉じてください。', 0)
+  } else if (status === 'failed' || status === 'unavailable') {
+    cleanupNotice = toast.warn('旧版で保存した素材を削除できませんでした。旧版を使ったことがある場合は、ブラウザのサイトデータ設定で削除してください。', 0)
   }
-  app.mount('#app')
-})()
+})

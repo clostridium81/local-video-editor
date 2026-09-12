@@ -14,14 +14,15 @@ const saving = ref(false)
 async function onBackup() {
   if (saving.value) return
   saving.value = true
+  const session = store.sessionVersion
   try {
     // TopBar のバックアップと同じ: ダウンロードした内容の署名を記録する
     const snapshot = store.serialize()
     await exportBackup(snapshot)
     // markBackedUp が shouldPromptBackup を false にするのでダイアログは自動で閉じる
-    store.markBackedUp(snapshot)
+    if (session === store.sessionVersion) store.markBackedUp(snapshot)
     toast.success(t('バックアップを保存しました', 'バックアップを保存しました'))
-    emit('close')
+    if (session === store.sessionVersion) emit('close')
   } catch (e: any) {
     console.error(e)
     toast.error(

@@ -9,6 +9,7 @@ const { t } = locale
 
 const emit = defineEmits<{ close: [] }>()
 const store = useProjectStore()
+const recordingSession = store.sessionVersion
 
 type Mode = 'camera' | 'screen' | 'mic' | 'tts'
 const mode = ref<Mode>('camera')
@@ -130,13 +131,13 @@ async function handleRecorderStop() {
   stopStream()
   try {
     const file = new File([blob], name, { type: blob.type })
-    await store.addAssetFromFile(file)
-    toast.success(`録画を素材に追加しました: ${name}`)
+    const asset = await store.addAssetFromFile(file, recordingSession)
+    if (asset) toast.success(`録画を素材に追加しました: ${name}`)
   } catch (err) {
     console.error(err)
     toast.error('素材に追加できませんでした')
   }
-  emit('close')
+  if (recordingSession === store.sessionVersion) emit('close')
 }
 
 function stopStream() {
@@ -217,9 +218,9 @@ async function generateTTS() {
 
     const blob = new Blob(ttsChunks, { type: 'audio/webm' })
     const file = new File([blob], `tts__${Date.now()}.webm`, { type: 'audio/webm' })
-    await store.addAssetFromFile(file)
-    toast.success('読み上げの音声を素材に追加しました')
-    emit('close')
+    const asset = await store.addAssetFromFile(file, recordingSession)
+    if (asset) toast.success('読み上げの音声を素材に追加しました')
+    if (recordingSession === store.sessionVersion) emit('close')
   } catch (err: any) {
     console.error(err)
     toast.error('読み上げができませんでした: ' + (err?.message ?? ''))
