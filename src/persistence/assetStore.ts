@@ -1,157 +1,75 @@
-import { openDB, type IDBPDatabase } from 'idb'
-
-// ============================================================
-// IndexedDB 素材ストア
-// ============================================================
-// 設計方針:
-// - 素材の Blob 本体だけを 'assets' ストアで持つ
-// - 複数プロジェクトを跨いでも素材を共有できるように
-//   (projectId, assetId) をキーにする
-// - プロジェクト状態の永続化 (自動保存) は廃止。データの保存/復元は
-//   手動バックアップ (ZIP エクスポート/インポート) のみ。
-//   'projects' ストアは既存 DB との互換と起動時クリーンアップのため残す。
-// ============================================================
-
-const DB_NAME = 'local-video-editor'
-const DB_VERSION = 2
-const ASSET_STORE = 'assets'
-const PROJECT_STORE = 'projects'
-
-interface StoredAsset {
-  key: string // `${projectId}:${assetId}`
-  projectId: string
-  assetId: string
+// 素材はタブのセッション内だけで参照する。File/Blob のコピーや永続化はしない。
+// project.json と履歴には素材 ID とメタデータだけを持つ。
+interface SessionAsset {
   blob: Blob
+  url?: string
 }
 
-let dbPromise: Promise<IDBPDatabase> | null = null
+const projects = new Map<string, Map<string, SessionAsset>>()
 
-function getDB() {
-  if (!dbPromise) {
-    dbPromise = openDB(DB_NAME, DB_VERSION, {
-      upgrade(db, oldVersion) {
-        if (oldVersion < 1) {
-          if (!db.objectStoreNames.contains(ASSET_STORE)) {
-            const store = db.createObjectStore(ASSET_STORE, { keyPath: 'key' })
-            store.createIndex('projectId', 'projectId', { unique: false })
-          }
-        }
-        if (oldVersion < 2) {
-          if (!db.objectStoreNames.contains(PROJECT_STORE)) {
-            const pstore = db.createObjectStore(PROJECT_STORE, { keyPath: 'id' })
-            pstore.createIndex('updatedAt', 'updatedAt', { unique: false })
-          }
-        }
-      }
-    })
-  }
-  return dbPromise
+export function saveAssetBlob(projectId: string, assetId: string, blob: Blob): void {
+  let assets = projects.get(projectId)
+  if (!assets) projects.set(projectId, assets = new Map())
+  revokeAssetObjectURL(projectId, assetId)
+  assets.set(assetId, { blob })
 }
 
-function makeKey(projectId: string, assetId: string) {
-  return `${projectId}:${assetId}`
+// 既存のデコード/描画側の非同期インターフェースを維持する。
+export async function loadAssetBlob(projectId: string, assetId: string): Promise<Blob | null> {
+  return projects.get(projectId)?.get(assetId)?.blob ?? null
 }
 
-// ---------- Asset Blob ----------
-
-export async function saveAssetBlob(
-  projectId: string,
-  assetId: string,
-  blob: Blob
-): Promise<void> {
-  const db = await getDB()
-  const record: StoredAsset = {
-    key: makeKey(projectId, assetId),
-    projectId,
-    assetId,
-    blob
-  }
-  await db.put(ASSET_STORE, record)
-}
-
-export async function loadAssetBlob(
-  projectId: string,
-  assetId: string
-): Promise<Blob | null> {
-  const db = await getDB()
-  const record = (await db.get(ASSET_STORE, makeKey(projectId, assetId))) as
-    | StoredAsset
-    | undefined
-  return record?.blob ?? null
-}
-
-export async function deleteAssetBlob(
-  projectId: string,
-  assetId: string
-): Promise<void> {
-  const db = await getDB()
-  await db.delete(ASSET_STORE, makeKey(projectId, assetId))
+export function deleteAssetBlob(projectId: string, assetId: string): void {
+  revokeAssetObjectURL(projectId, assetId)
+  const assets = projects.get(projectId)
+  assets?.delete(assetId)
+  if (assets?.size === 0) projects.delete(projectId)
 }
 
 export async function listProjectAssets(projectId: string): Promise<string[]> {
-  const db = await getDB()
-  const index = db.transaction(ASSET_STORE).store.index('projectId')
-  const records = (await index.getAll(projectId)) as StoredAsset[]
-  return records.map(r => r.assetId)
+  return [...(projects.get(projectId)?.keys() ?? [])]
 }
 
-export async function clearProject(projectId: string): Promise<void> {
-  const db = await getDB()
-  const tx = db.transaction(ASSET_STORE, 'readwrite')
-  const index = tx.store.index('projectId')
-  let cursor = await index.openCursor(projectId)
-  while (cursor) {
-    await cursor.delete()
-    cursor = await cursor.continue()
-  }
-  await tx.done
-}
-
-/**
- * IndexedDB の全データ (素材 Blob + 旧 projects ストアの残骸) を消去する。
- * 自動保存を廃したため、起動時に前セッションの残骸を掃除するのに使う。
- */
-export async function clearAllData(): Promise<void> {
-  const db = await getDB()
-  const tx = db.transaction([ASSET_STORE, PROJECT_STORE], 'readwrite')
-  await tx.objectStore(ASSET_STORE).clear()
-  await tx.objectStore(PROJECT_STORE).clear()
-  await tx.done
-}
-
-// ============================================================
-// Object URL キャッシュ
-// ============================================================
-// <video>, <img> 要素で Blob を表示するために createObjectURL が必要。
-// 同じ素材を何度も URL 化すると漏れるので、キャッシュを持つ。
-// ============================================================
-
-const urlCache = new Map<string, string>()
-
-export async function getAssetObjectURL(
-  projectId: string,
-  assetId: string
-): Promise<string | null> {
-  const key = makeKey(projectId, assetId)
-  const cached = urlCache.get(key)
-  if (cached) return cached
-  const blob = await loadAssetBlob(projectId, assetId)
-  if (!blob) return null
-  const url = URL.createObjectURL(blob)
-  urlCache.set(key, url)
-  return url
-}
-
-export function revokeAssetObjectURL(projectId: string, assetId: string) {
-  const key = makeKey(projectId, assetId)
-  const url = urlCache.get(key)
-  if (url) {
-    URL.revokeObjectURL(url)
-    urlCache.delete(key)
+/** 現在の作品にも Undo/Redo 履歴にもない素材の参照を解放する。 */
+export function retainProjectAssets(projectId: string, retained: ReadonlySet<string>): void {
+  for (const id of projects.get(projectId)?.keys() ?? []) {
+    if (!retained.has(id)) deleteAssetBlob(projectId, id)
   }
 }
 
-export function revokeAllObjectURLs() {
-  for (const url of urlCache.values()) URL.revokeObjectURL(url)
-  urlCache.clear()
+export function clearProject(projectId: string): void {
+  for (const id of projects.get(projectId)?.keys() ?? []) revokeAssetObjectURL(projectId, id)
+  projects.delete(projectId)
+}
+
+export function clearAllData(): void {
+  revokeAllObjectURLs()
+  projects.clear()
+}
+
+/** 復元の検証が終わってから同期的に切り替え、旧セッションの参照を解放する。 */
+export function replaceSessionAssets(projectId: string, blobs: ReadonlyMap<string, Blob>): void {
+  clearAllData()
+  for (const [id, blob] of blobs) saveAssetBlob(projectId, id, blob)
+}
+
+export async function getAssetObjectURL(projectId: string, assetId: string): Promise<string | null> {
+  const asset = projects.get(projectId)?.get(assetId)
+  if (!asset) return null
+  // await を挟まないので、同時リクエストでも URL は一つだけ生成される。
+  return asset.url ??= URL.createObjectURL(asset.blob)
+}
+
+export function revokeAssetObjectURL(projectId: string, assetId: string): void {
+  const asset = projects.get(projectId)?.get(assetId)
+  if (asset?.url) {
+    URL.revokeObjectURL(asset.url)
+    delete asset.url
+  }
+}
+
+export function revokeAllObjectURLs(): void {
+  for (const [projectId, assets] of projects) {
+    for (const id of assets.keys()) revokeAssetObjectURL(projectId, id)
+  }
 }

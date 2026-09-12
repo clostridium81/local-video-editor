@@ -100,7 +100,7 @@ console.log('transitions:')
 console.log('history:')
 {
   const h = new HistoryManager(10, 50)
-  const mk = (n: number) => ({ meta: { name: `s${n}` } } as unknown as ProjectState)
+  const mk = (n: number) => ({ meta: { name: `s${n}` }, assets: {} } as unknown as ProjectState)
 
   check('初期 canUndo=false', !h.canUndo())
   h.record(mk(1))

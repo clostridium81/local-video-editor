@@ -167,6 +167,7 @@ export class PreviewEngine {
   }
 
   setState(state: ProjectState) {
+    if (this.disposed) return
     this.state = state
     this.resizeCanvas()
     this.pruneNodes()
@@ -191,6 +192,12 @@ export class PreviewEngine {
 
   private pruneNodes() {
     const liveIds = new Set(this.state.clips.map(c => c.id))
+    for (const [id, img] of this.imageCache) {
+      if (!this.state.assets[id]) {
+        img.removeAttribute('src')
+        this.imageCache.delete(id)
+      }
+    }
     for (const [id, node] of this.videoNodes) {
       if (!liveIds.has(id)) {
         disposeMediaNode(node)
@@ -206,7 +213,7 @@ export class PreviewEngine {
   }
 
   play() {
-    if (this.playing) return
+    if (this.playing || this.disposed) return
     this.playing = true
     this.lastWallClock = performance.now()
     // ユーザー操作起点のうちに AudioContext を生成 & resume しておく。
@@ -300,6 +307,7 @@ export class PreviewEngine {
   }
 
   private async renderAt(t: number, driveMedia: boolean) {
+    if (this.disposed) return
     const { ctx } = this
     const { width, height, backgroundColor } = this.state.meta
 
@@ -330,6 +338,7 @@ export class PreviewEngine {
     }
 
     for (const clip of activeClips) {
+      if (this.disposed) return
       const track = this.state.tracks.find(tr => tr.id === clip.trackId)
       if (track?.kind === 'audio') continue
       await this.drawClip(clip, t)
@@ -482,7 +491,9 @@ export class PreviewEngine {
     let node = this.videoNodes.get(clip.id)
     if (node) return node
     const url = await getAssetObjectURL(this.state.meta.id, clip.assetId)
-    if (!url) return null
+    if (!url || this.disposed || !this.state.clips.some(c => c.id === clip.id)) return null
+    node = this.videoNodes.get(clip.id)
+    if (node) return node
     const el = document.createElement('video')
     // crossOrigin は付けない: 素材は blob: (same-origin) なので canvas は
     // tainted にならず、逆に crossOrigin='anonymous' を付けると一部ブラウザで
@@ -496,6 +507,7 @@ export class PreviewEngine {
     node = { el, loaded: false, chain: this.attachAudioChain(el) }
     this.videoNodes.set(clip.id, node)
     await waitEvent(el, 'loadeddata').catch(() => {})
+    if (this.disposed || this.videoNodes.get(clip.id) !== node) return null
     node.loaded = true
     return node
   }
@@ -504,7 +516,9 @@ export class PreviewEngine {
     let node = this.audioNodes.get(clip.id)
     if (node) return node
     const url = await getAssetObjectURL(this.state.meta.id, clip.assetId)
-    if (!url) return null
+    if (!url || this.disposed || !this.state.clips.some(c => c.id === clip.id)) return null
+    node = this.audioNodes.get(clip.id)
+    if (node) return node
     // 動画素材を音声トラックに置いた場合 (音声だけ使う) は <video> を音声源にする。
     // <audio> でも多くのブラウザは mp4 の音声を再生できるが、動画コンテナは
     // <video> の方が確実にデコードされるため要素を使い分ける
@@ -521,6 +535,7 @@ export class PreviewEngine {
     node = { el, loaded: false, chain: this.attachAudioChain(el) }
     this.audioNodes.set(clip.id, node)
     await waitEvent(el, 'loadeddata').catch(() => {})
+    if (this.disposed || this.audioNodes.get(clip.id) !== node) return null
     node.loaded = true
     return node
   }
@@ -529,12 +544,12 @@ export class PreviewEngine {
     const cached = this.imageCache.get(assetId)
     if (cached && cached.complete) return cached
     const url = await getAssetObjectURL(this.state.meta.id, assetId)
-    if (!url) return null
+    if (!url || this.disposed || !this.state.assets[assetId]) return null
     const img = new Image()
     img.src = url
     this.imageCache.set(assetId, img)
     await waitEvent(img, 'load').catch(() => {})
-    return img
+    return this.disposed || this.imageCache.get(assetId) !== img ? null : img
   }
 
   private async drawClip(clip: Clip, t: number) {
@@ -767,7 +782,12 @@ export class PreviewEngine {
     ctx.restore()
   }
 
+  private disposed = false
+
   dispose() {
+    this.disposed = true
+    this.onFrame = undefined
+    this.onError = undefined
     this.pause()
     // 自分がアクティブエンジンとして登録されている場合のみ解除する
     // (新しいエンジンが先に登録された後で旧エンジンが破棄されても消さない)
@@ -776,6 +796,7 @@ export class PreviewEngine {
     this.videoNodes.clear()
     for (const n of this.audioNodes.values()) disposeMediaNode(n)
     this.audioNodes.clear()
+    for (const img of this.imageCache.values()) img.removeAttribute('src')
     this.imageCache.clear()
     this.audioCtx?.close().catch(() => {})
     this.audioCtx = null

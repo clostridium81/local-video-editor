@@ -1,4 +1,6 @@
 Local Video Editor - 引き継ぎ作業書（Phase 2以降）
+
+> 2026-09-08 更新: 素材と編集内容の自動保存は行わず、素材はセッション内の File/Blob 参照で管理する。IndexedDB の読み書きと persist 要求は廃止し、旧 DB の削除処理だけを残す。保存・復元は従来互換の ZIP v1。素材の追加/削除も Undo/Redo 対象。以下は過去の計画を含むため、現在の保存仕様は README.md と docs/session-storage-migration.md を優先する。
 :clapper: Local Video Editor 引き継ぎ作業書
 
 このキャンバスは、ブラウザ完結型動画編集アプリ local-video-editor の Phase 1 MVP 完成後、Claude Code で継続開発するための引き継ぎ書です。
@@ -8,7 +10,7 @@ Local Video Editor - 引き継ぎ作業書（Phase 2以降）
 無料・年齢制限なしで、Google Vids 相当の機能を持つ動画編集アプリ。完全ブラウザローカルで動作し、サーバーに素材が送信されない。
 
 * 初回ロード後はオフラインで完動
-* 素材・編集状態は IndexedDB に保存
+* 素材・編集状態はタブのセッション中だけ保持。保存は手動 ZIP のみ
 * バックアップは素材ごとまとめた ZIP をローカル PC にダウンロード
 * 同 ZIP を再ロードすると完全復元
 
@@ -23,7 +25,7 @@ Local Video Editor - 引き継ぎ作業書（Phase 2以降）
 
 設計判断は次のとおり。これを変えずに拡張することを強く推奨。
 
-* Asset（素材）と Clip（配置）は分離。IndexedDB に Asset を 1 つ、タイムラインに同じ Asset を参照する Clip を複数置ける。
+* Asset（素材）と Clip（配置）は分離。セッション素材ストアに File/Blob を 1 つ、タイムラインに同じ Asset を参照する Clip を複数置ける。
 * **時刻はすべて秒単位の number**。フレーム変換は上位層でのみ行う。
 * ProjectState は常に JSON シリアライズ可能。Blob / ObjectURL は絶対にストアに混入させない。これがバックアップ ZIP の核心。
 * Canvas 合成は 2D Contextで開始、PreviewEngine クラスに抽象化済。将来 WebGL/WebGPU に差し替え可能。
@@ -34,7 +36,7 @@ Local Video Editor - 引き継ぎ作業書（Phase 2以降）
 :file_folder: ファイル構成（再掲）
 
 * src/types/project.ts 状態モデル
-* src/persistence/assetStore.ts IndexedDB の Blob 保存
+* src/persistence/assetStore.ts セッション内の File/Blob と Object URL 管理
 * src/persistence/mediaMeta.ts メタデータ抽出
 * src/persistence/backup.ts バックアップ ZIP の入出力
 * src/stores/projectStore.ts Pinia プロジェクトストア
@@ -118,4 +120,3 @@ Phase 2 の A-1「アンドゥ / リドゥ」から着手してほしい。
 * Phase 2-D MP4 エクスポート
 * Phase 2-D WebM エクスポート
 * Phase 2-D 進捗 UI
-
