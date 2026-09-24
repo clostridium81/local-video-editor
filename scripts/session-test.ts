@@ -344,5 +344,66 @@ await test('依存関係から idb を除去している', () => {
   }
 })
 
+await test('フリーズフレーム: 分割・静止画挿入・後続シフトを 1 回の Undo で戻せる', async () => {
+  await reset()
+  const video = (await store.addAssetFromFile(new File(['v'], 'clip.mp4', { type: 'video/mp4' })))!
+  const clip = store.addClipFromAsset(video.id, { start: 0 })!
+  store.updateClip(clip.id, { duration: 6, scale: 1.5, crop: { left: 0.1, top: 0, right: 0.1, bottom: 0 } } as any)
+  store.addTextClip({ start: 4 })
+  const before = store.serialize()
+  const still = (await store.insertFreezeFrame(clip.id, 2, new File(['png'], 'f.png', { type: 'image/png' }), 1.5))!
+  assert.ok(still)
+  const clips = store.state.clips
+  const videos = clips.filter(c => c.kind === 'video').sort((a, b) => a.start - b.start)
+  assert.equal(videos.length, 2)
+  assert.equal(videos[0].duration, 2)
+  assert.equal(videos[1].start, 3.5)
+  assert.equal(videos[1].sourceIn, 2)
+  assert.equal(still.start, 2)
+  assert.equal(still.duration, 1.5)
+  assert.equal(still.scale, 1.5)
+  assert.deepEqual(still.crop, { left: 0.1, top: 0, right: 0.1, bottom: 0 })
+  assert.equal(clips.find(c => c.kind === 'text')!.start, 5.5)
+  assert.equal(store.getAsset(still.assetId)?.kind, 'image')
+  assert.equal(await (await assets.loadAssetBlob(store.meta.id, still.assetId))!.text(), 'png')
+  store.undo()
+  await nextTick()
+  assert.deepEqual(JSON.parse(JSON.stringify(store.state.clips)), before.clips)
+  assert.deepEqual(Object.keys(store.assets), Object.keys(before.assets))
+})
+
+await test('字幕の読み込みは「字幕」トラックにテキストを並べ 1 回の Undo で戻る', async () => {
+  await reset()
+  const tracksBefore = store.state.tracks.length
+  const n = store.importSubtitles([
+    { start: 1, end: 2, text: 'いち' },
+    { start: 3, end: 5, text: 'に\nさん' },
+    { start: 6, end: 6, text: '長さ0は除外' },
+    { start: 7, end: 8, text: '   ' }
+  ])
+  assert.equal(n, 2)
+  const track = store.state.tracks.find(t => t.name === '字幕')!
+  assert.ok(track)
+  const topVideo = Math.max(...store.state.tracks.filter(t => t.kind === 'video' && t.id !== track.id).map(t => t.order))
+  assert.ok(track.order > topVideo, '字幕トラックは一番手前')
+  const texts = store.state.clips.filter(c => c.trackId === track.id)
+  assert.deepEqual(texts.map(c => [c.start, c.duration, (c as any).text]), [[1, 1, 'いち'], [3, 2, 'に\nさん']])
+  store.undo()
+  assert.equal(store.state.tracks.length, tracksBefore)
+  assert.equal(store.state.clips.length, 0)
+  assert.equal(store.importSubtitles([]), 0)
+})
+
+await test('キャンバスサイズ変更は偶数に丸め、Undo でき、バックアップに残る', async () => {
+  await reset()
+  store.addTextClip()
+  store.setCanvasSize(1080, 1921)
+  assert.deepEqual([store.meta.width, store.meta.height], [1080, 1922])
+  const result = await importBackup(zipFile(await createBackupBlob(store.serialize())))
+  assert.deepEqual([result.project.meta.width, result.project.meta.height], [1080, 1922])
+  store.undo()
+  assert.deepEqual([store.meta.width, store.meta.height], [1920, 1080])
+})
+
 await reset()
 console.log(`\n${passed} session regression tests passed.`)

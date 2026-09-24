@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, ref } from 'vue'
 import { useProjectStore } from '../stores/projectStore'
 import { useSelection } from '../composables/useSelection'
 import type {
@@ -23,12 +23,18 @@ import type {
   TextDecor,
   TextAnim,
   TextAnimType,
-  AudioEQ
+  AudioEQ,
+  Crop,
+  Mask,
+  MaskShape
 } from '../types/project'
 import { findKeyframeAt, neighborKeyframes } from '../engine/keyframes'
 import { EFFECT_PRESETS } from '../engine/effectPresets'
 import { useLocale } from '../composables/useLocale'
 import EffectSlider from './EffectSlider.vue'
+import { mapClipTimeToSource } from '../engine/frameTiming'
+import { captureVideoFrame } from '../engine/frameCapture'
+import { toast } from '../composables/useToast'
 
 const { t } = useLocale()
 
@@ -341,6 +347,130 @@ function linkSelection() {
 function unlinkSelection() {
   const ids = selection.selectedClipIds.value
   if (ids.length > 0) store.unlinkClips(ids)
+}
+
+// ---------- トランジションの種類 ----------
+
+interface TransitionOption {
+  type: TransitionType
+  inLabel: [string, string] // [やさしい, ふつう]
+  outLabel: [string, string]
+}
+
+const TRANSITION_OPTIONS: TransitionOption[] = [
+  { type: 'slide-left', inLabel: ['右から入る', 'スライド (右から)'], outLabel: ['左へ出る', 'スライド (左へ)'] },
+  { type: 'slide-right', inLabel: ['左から入る', 'スライド (左から)'], outLabel: ['右へ出る', 'スライド (右へ)'] },
+  { type: 'slide-up', inLabel: ['下から入る', 'スライド (下から)'], outLabel: ['上へ出る', 'スライド (上へ)'] },
+  { type: 'slide-down', inLabel: ['上から入る', 'スライド (上から)'], outLabel: ['下へ出る', 'スライド (下へ)'] },
+  { type: 'zoom', inLabel: ['ズームイン (小→大)', 'ズームイン'], outLabel: ['ズームアウト (大→小)', 'ズームアウト'] },
+  { type: 'zoom-out', inLabel: ['大きい状態から戻る', 'ズーム (拡大から)'], outLabel: ['大きくなって消える', 'ズーム (拡大へ)'] },
+  { type: 'spin', inLabel: ['回りながら出る', 'スピン'], outLabel: ['回りながら消える', 'スピン'] },
+  { type: 'blur', inLabel: ['ぼかしから出る', 'ブラー'], outLabel: ['ぼけて消える', 'ブラー'] },
+  { type: 'flash', inLabel: ['白く光ってから出る', 'フラッシュ'], outLabel: ['白く光って終わる', 'フラッシュ'] },
+  { type: 'wipe', inLabel: ['ワイプ (左から拭う)', 'ワイプ (左→右)'], outLabel: ['ワイプ (左へ拭う)', 'ワイプ (右→左)'] },
+  { type: 'wipe-rtl', inLabel: ['ワイプ (右から拭う)', 'ワイプ (右→左)'], outLabel: ['ワイプ (右へ拭う)', 'ワイプ (左→右)'] },
+  { type: 'wipe-up', inLabel: ['ワイプ (下から拭う)', 'ワイプ (下→上)'], outLabel: ['ワイプ (下へ拭う)', 'ワイプ (上→下)'] },
+  { type: 'wipe-down', inLabel: ['ワイプ (上から拭う)', 'ワイプ (上→下)'], outLabel: ['ワイプ (上へ拭う)', 'ワイプ (下→上)'] },
+  { type: 'split', inLabel: ['まん中から左右に開く', 'スプリット (開く)'], outLabel: ['左右から閉じる', 'スプリット (閉じる)'] },
+  { type: 'iris', inLabel: ['まん中から丸く開く', 'アイリス (開く)'], outLabel: ['丸く閉じる', 'アイリス (閉じる)'] }
+]
+
+// ---------- クロップ ----------
+
+function updateCrop(patch: Partial<Crop>) {
+  const c = videoOrImageClip.value
+  if (!c) return
+  const prev = c.crop ?? { left: 0, top: 0, right: 0, bottom: 0 }
+  const next = { ...prev, ...patch }
+  const empty = next.left === 0 && next.top === 0 && next.right === 0 && next.bottom === 0
+  store.setCrop(c.id, empty ? undefined : next)
+}
+function resetCrop() {
+  const c = videoOrImageClip.value
+  if (c) store.setCrop(c.id, undefined)
+}
+
+// ---------- マスク ----------
+
+const MASK_SHAPES: Array<{ value: MaskShape | ''; easy: string; normal: string }> = [
+  { value: '', easy: 'なし', normal: 'なし' },
+  { value: 'rect', easy: '四角', normal: '矩形' },
+  { value: 'ellipse', easy: '円', normal: '楕円' },
+  { value: 'linear', easy: '線 (片側だけ残す)', normal: '線形' }
+]
+
+function setMaskShape(shape: MaskShape | '') {
+  const c = videoOrImageClip.value
+  if (!c) return
+  if (!shape) {
+    store.setMask(c.id, undefined)
+    return
+  }
+  const prev: Mask = c.mask ?? {
+    shape,
+    x: 0.5,
+    y: 0.5,
+    width: 0.6,
+    height: 0.6,
+    rotation: 0,
+    feather: 0.1,
+    invert: false
+  }
+  store.setMask(c.id, { ...prev, shape })
+}
+function updateMask(patch: Partial<Mask>) {
+  const c = videoOrImageClip.value
+  if (!c?.mask) return
+  store.setMask(c.id, { ...c.mask, ...patch })
+}
+
+// ---------- 音声フェード ----------
+
+function updateAudioFade(side: 'in' | 'out', v: number) {
+  const c = audioLikeClip.value
+  if (!c) return
+  const prev = c.audioFade ?? { in: 0, out: 0 }
+  const half = c.duration / 2
+  const next = { ...prev, [side]: Math.max(0, Math.min(half, v)) }
+  store.updateClip(
+    c.id,
+    { audioFade: next.in > 0 || next.out > 0 ? next : undefined } as any,
+    `afade:${c.id}`
+  )
+}
+
+// ---------- フリーズフレーム ----------
+
+const freezeHold = ref(2)
+const freezing = ref(false)
+
+async function freezeFrame() {
+  const c = selectedClip.value
+  if (!c || c.kind !== 'video' || freezing.value) return
+  const at = store.state.timeline.playhead
+  if (at < c.start || at > c.start + c.duration) {
+    toast.warn(t('再生位置をこのクリップの上に動かしてください', '再生ヘッドをクリップ内に移動してください'))
+    return
+  }
+  freezing.value = true
+  try {
+    const url = await store.getAssetURL(c.assetId)
+    if (!url) throw new Error('素材が見つかりません')
+    const blob = await captureVideoFrame(url, mapClipTimeToSource(c, at))
+    const asset = store.getAsset(c.assetId)
+    const base = (asset?.name ?? 'frame').replace(/\.[^.]+$/, '')
+    const file = new File([blob], `${base}_freeze_${at.toFixed(2)}s.png`, { type: 'image/png' })
+    const still = await store.insertFreezeFrame(c.id, at, file, Math.max(0.1, freezeHold.value))
+    if (still) {
+      selection.selectClip(still.id)
+      toast.success(t('止まった画面を入れました', 'フリーズフレームを挿入しました'))
+    }
+  } catch (e: any) {
+    console.error(e)
+    toast.error(t('止まった画面を作れませんでした: ', 'フリーズフレームの作成に失敗しました: ') + (e?.message ?? ''))
+  } finally {
+    freezing.value = false
+  }
 }
 
 const BLEND_MODES: BlendMode[] = [
@@ -749,6 +879,27 @@ function kindNameJa(kind: string): string {
           />
           <span>おとを けす</span>
         </label>
+        <div class="sub-title">{{ t('音のフェード (だんだん大きく/小さく)', 'オーディオフェード') }}</div>
+        <div class="grid-2">
+          <EffectSlider
+            :label="t('はじめ (秒)', 'フェードイン (秒)')"
+            :value="selectedClip.audioFade?.in ?? 0"
+            :min="0" :max="Math.min(10, selectedClip.duration / 2)" :step="0.05"
+            @change="(v) => updateAudioFade('in', v)"
+          />
+          <EffectSlider
+            :label="t('おわり (秒)', 'フェードアウト (秒)')"
+            :value="selectedClip.audioFade?.out ?? 0"
+            :min="0" :max="Math.min(10, selectedClip.duration / 2)" :step="0.05"
+            @change="(v) => updateAudioFade('out', v)"
+          />
+        </div>
+        <div v-if="selectedClip.kind === 'video'" class="section-hint">
+          {{ t(
+            '※ 映像のトランジションとは別に、音だけをフェードします',
+            '※ 映像のトランジションとは独立して音量だけに掛かります'
+          ) }}
+        </div>
       </section>
 
       <!-- プリセット (ワンタッチ) -->
@@ -819,9 +970,12 @@ function kindNameJa(kind: string): string {
       </section>
 
       <!-- トランジション -->
-      <!-- 音声クリップは映像用の効果 (スライド/ズーム/ワイプ) が意味を持たないため、
-           音量フェード専用のメニューを表示する -->
-      <section class="section">
+      <!-- 音声クリップは「音声」セクションのフェードを使う。
+           旧版で設定した音声クリップのフェード (transition) が残っている場合だけ表示して外せるようにする -->
+      <section
+        v-if="selectedClip.kind !== 'audio' || selectedClip.transitionIn || selectedClip.transitionOut"
+        class="section"
+      >
         <div class="section-head">
           {{ selectedClip.kind === 'audio'
             ? t('フェード (音量)', 'オーディオフェード')
@@ -842,12 +996,9 @@ function kindNameJa(kind: string): string {
               <option value="">なし</option>
               <option value="fade">{{ selectedClip.kind === 'audio' ? 'フェードイン (音が徐々に大きく)' : 'フェードイン (じわっと出る)' }}</option>
               <template v-if="selectedClip.kind !== 'audio'">
-                <option value="slide-left">右から入る</option>
-                <option value="slide-right">左から入る</option>
-                <option value="slide-up">下から入る</option>
-                <option value="slide-down">上から入る</option>
-                <option value="zoom">ズームイン (大きくなる)</option>
-                <option value="wipe">ワイプ (拭って出る)</option>
+                <option v-for="o in TRANSITION_OPTIONS" :key="o.type" :value="o.type">
+                  {{ t(o.inLabel[0], o.inLabel[1]) }}
+                </option>
               </template>
             </select>
           </label>
@@ -885,12 +1036,9 @@ function kindNameJa(kind: string): string {
               <option value="">なし</option>
               <option value="fade">{{ selectedClip.kind === 'audio' ? 'フェードアウト (音が徐々に小さく)' : 'フェードアウト (じわっと消える)' }}</option>
               <template v-if="selectedClip.kind !== 'audio'">
-                <option value="slide-left">左へ出る</option>
-                <option value="slide-right">右へ出る</option>
-                <option value="slide-up">上へ出る</option>
-                <option value="slide-down">下へ出る</option>
-                <option value="zoom">ズームアウト (小さくなる)</option>
-                <option value="wipe">ワイプ (拭って消える)</option>
+                <option v-for="o in TRANSITION_OPTIONS" :key="o.type" :value="o.type">
+                  {{ t(o.outLabel[0], o.outLabel[1]) }}
+                </option>
               </template>
             </select>
           </label>
@@ -934,6 +1082,31 @@ function kindNameJa(kind: string): string {
             '※ 速度変更でクリップ長は変わらず、消費される素材範囲が変わります'
           ) }}
         </div>
+        <template v-if="selectedClip.kind === 'video'">
+          <div class="sub-title">{{ t('画面を止める (フリーズ)', 'フリーズフレーム') }}</div>
+          <div class="row gap-4">
+            <label class="field freeze-hold">
+              <span>{{ t('止める長さ (秒)', '長さ (秒)') }}</span>
+              <input
+                type="number"
+                min="0.1" step="0.5"
+                :value="freezeHold"
+                @change="(e) => freezeHold = Math.max(0.1, Number((e.target as HTMLInputElement).value) || 2)"
+              />
+            </label>
+            <button
+              class="ghost freeze-btn"
+              :disabled="!playheadInClip || freezing"
+              @click="freezeFrame"
+            >{{ freezing ? t('作成中…', '作成中…') : t('今の画面で止める', '再生位置で挿入') }}</button>
+          </div>
+          <div class="section-hint">
+            {{ t(
+              '※ 再生位置の画面を静止画にして間に入れます。後ろのクリップはその分うしろにずれます',
+              '※ 再生ヘッド位置のフレームを静止画として挿入し、以降のクリップを後ろへずらします'
+            ) }}
+          </div>
+        </template>
       </section>
 
       <section v-if="hasEffects(selectedClip) || selectedClip.kind === 'shape' || selectedClip.kind === 'text'" class="section">
@@ -947,6 +1120,67 @@ function kindNameJa(kind: string): string {
             <option v-for="m in BLEND_MODES" :key="m" :value="m">{{ blendLabelJa(m) }}</option>
           </select>
         </label>
+      </section>
+
+      <!-- クロップ (切り抜き) -->
+      <section v-if="videoOrImageClip" class="section">
+        <div class="section-head">
+          <span>{{ t('切り抜き (クロップ)', 'クロップ') }}</span>
+          <button class="ghost tiny" @click="resetCrop">{{ t('リセット', 'リセット') }}</button>
+        </div>
+        <div class="grid-2">
+          <EffectSlider :label="t('左', '左')" :value="videoOrImageClip.crop?.left ?? 0" :min="0" :max="0.45" :step="0.005"
+            @change="(v) => updateCrop({ left: v })" />
+          <EffectSlider :label="t('右', '右')" :value="videoOrImageClip.crop?.right ?? 0" :min="0" :max="0.45" :step="0.005"
+            @change="(v) => updateCrop({ right: v })" />
+          <EffectSlider :label="t('上', '上')" :value="videoOrImageClip.crop?.top ?? 0" :min="0" :max="0.45" :step="0.005"
+            @change="(v) => updateCrop({ top: v })" />
+          <EffectSlider :label="t('下', '下')" :value="videoOrImageClip.crop?.bottom ?? 0" :min="0" :max="0.45" :step="0.005"
+            @change="(v) => updateCrop({ bottom: v })" />
+        </div>
+        <div class="section-hint">
+          {{ t('※ 端から切り落とす割合です (0.1 = 10%)', '※ 各辺から切り落とす割合 (0.1 = 10%)') }}
+        </div>
+      </section>
+
+      <!-- マスク -->
+      <section v-if="videoOrImageClip" class="section">
+        <div class="section-head">{{ t('マスク (形で切り抜く)', 'マスク') }}</div>
+        <label class="field">
+          <span>{{ t('形', '形状') }}</span>
+          <select
+            :value="videoOrImageClip.mask?.shape ?? ''"
+            @change="(e) => setMaskShape((e.target as HTMLSelectElement).value as MaskShape | '')"
+          >
+            <option v-for="m in MASK_SHAPES" :key="m.value" :value="m.value">{{ t(m.easy, m.normal) }}</option>
+          </select>
+        </label>
+        <template v-if="videoOrImageClip.mask">
+          <div class="grid-2">
+            <EffectSlider :label="t('横位置', 'X')" :value="videoOrImageClip.mask.x" :min="0" :max="1" :step="0.01"
+              @change="(v) => updateMask({ x: v })" />
+            <EffectSlider :label="t('縦位置', 'Y')" :value="videoOrImageClip.mask.y" :min="0" :max="1" :step="0.01"
+              @change="(v) => updateMask({ y: v })" />
+            <template v-if="videoOrImageClip.mask.shape !== 'linear'">
+              <EffectSlider :label="t('横幅', '幅')" :value="videoOrImageClip.mask.width" :min="0.02" :max="1.5" :step="0.01"
+                @change="(v) => updateMask({ width: v })" />
+              <EffectSlider :label="t('高さ', '高さ')" :value="videoOrImageClip.mask.height" :min="0.02" :max="1.5" :step="0.01"
+                @change="(v) => updateMask({ height: v })" />
+            </template>
+            <EffectSlider :label="t('回転 (度)', '回転')" :value="videoOrImageClip.mask.rotation" :min="-180" :max="180" :step="1"
+              @change="(v) => updateMask({ rotation: v })" />
+            <EffectSlider :label="t('ふちのぼかし', 'フェザー')" :value="videoOrImageClip.mask.feather" :min="0" :max="1" :step="0.01"
+              @change="(v) => updateMask({ feather: v })" />
+          </div>
+          <label class="toggle">
+            <input
+              type="checkbox"
+              :checked="videoOrImageClip.mask.invert"
+              @change="(e) => updateMask({ invert: (e.target as HTMLInputElement).checked })"
+            />
+            <span>{{ t('内と外を反対にする', '反転') }}</span>
+          </label>
+        </template>
       </section>
 
       <!-- カラーグレーディング -->
@@ -1364,13 +1598,14 @@ function kindNameJa(kind: string): string {
 
 .grid-2 {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  /* minmax(0, 1fr): 中身 (input / range) の最小幅で列が押し広げられてはみ出すのを防ぐ */
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
   gap: 8px;
   margin-bottom: 8px;
 }
 .grid-3 {
   display: grid;
-  grid-template-columns: 1fr 1fr 1fr;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) minmax(0, 1fr);
   gap: 6px;
   margin-bottom: 6px;
 }
@@ -1380,6 +1615,12 @@ function kindNameJa(kind: string): string {
   flex-direction: column;
   gap: 4px;
   font-size: 11px;
+  min-width: 0;
+}
+.field input:not([type="checkbox"]),
+.field select {
+  width: 100%;
+  min-width: 0;
 }
 .field > span {
   color: var(--fg-2);
@@ -1477,6 +1718,15 @@ button.tiny {
   color: var(--fg-3);
   line-height: 1.5;
   margin-top: 6px;
+}
+
+.freeze-hold {
+  width: 90px;
+  flex-shrink: 0;
+}
+.freeze-btn {
+  flex: 1;
+  align-self: flex-end;
 }
 
 .preset-grid {

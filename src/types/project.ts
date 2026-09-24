@@ -60,6 +60,16 @@ export type TransitionType =
   | 'slide-down'
   | 'zoom'
   | 'wipe'
+  // v0.6 追加
+  | 'wipe-rtl' // 右から拭う
+  | 'wipe-up' // 下から拭う
+  | 'wipe-down' // 上から拭う
+  | 'split' // 中央から左右に開く
+  | 'iris' // 中央から円形に開く
+  | 'zoom-out' // 大きい状態から定位置へ
+  | 'spin' // 回転しながら
+  | 'blur' // ぼかしから
+  | 'flash' // 白く飛んだ状態から
 
 export interface Transition {
   type: TransitionType
@@ -121,6 +131,43 @@ export interface ChromaKey {
   threshold: number // 0..1 (色距離の許容範囲)
   softness: number // 0..1 (エッジの柔らかさ)
   spillSuppress: number // 0..1 (被写体にのっかった色の除去)
+}
+
+// ---------- クロップ (切り抜き) ----------
+// 素材の各辺から切り落とす割合 (0..1)。left + right / top + bottom は 1 未満。
+// 表示サイズは切り抜き後の縦横比でキャンバスに contain フィットする。
+
+export interface Crop {
+  left: number
+  top: number
+  right: number
+  bottom: number
+}
+
+// ---------- マスク ----------
+// クリップの表示領域 (切り抜き・拡大後の矩形) を基準にした正規化座標。
+// x / y は中心 (0..1)、width / height は矩形に対する割合。
+// linear は中心を通る直線で片側を残す (rotation で向きを変える)。
+
+export type MaskShape = 'rect' | 'ellipse' | 'linear'
+
+export interface Mask {
+  shape: MaskShape
+  x: number
+  y: number
+  width: number
+  height: number
+  rotation: number // 度
+  feather: number // 0..1 (境界のぼかし、クリップ短辺に対する割合)
+  invert: boolean
+}
+
+// ---------- 音声フェード ----------
+// 映像のトランジションとは独立した音量のフェード (秒)
+
+export interface AudioFade {
+  in: number
+  out: number
 }
 
 // ---------- ブレンドモード ----------
@@ -216,6 +263,8 @@ export interface BaseClip {
   speed?: number
   // ブレンドモード (映像のみ有効)
   blendMode?: BlendMode
+  // 音量フェード (video / audio クリップのみ有効)
+  audioFade?: AudioFade
   // 他のクリップと連動 (例: 動画 + その音声)
   linkGroup?: string
 }
@@ -234,6 +283,8 @@ export interface VideoClip extends BaseClip {
   colorGrade?: ColorGrade
   chromaKey?: ChromaKey
   pixelFx?: PixelEffects
+  crop?: Crop
+  mask?: Mask
   eq?: AudioEQ
 }
 
@@ -248,6 +299,8 @@ export interface ImageClip extends BaseClip {
   colorGrade?: ColorGrade
   chromaKey?: ChromaKey
   pixelFx?: PixelEffects
+  crop?: Crop
+  mask?: Mask
 }
 
 export interface AudioClip extends BaseClip {

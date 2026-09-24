@@ -4,6 +4,8 @@ import { useProjectStore } from '../stores/projectStore'
 import type { Asset } from '../types/project'
 import { toast } from '../composables/useToast'
 import { useLocale } from '../composables/useLocale'
+import { parseSubtitles, textClipsToCues, toSrt } from '../engine/subtitles'
+import { downloadBlob } from '../engine/exportEngine'
 
 const locale = useLocale()
 const { t } = locale
@@ -72,7 +74,54 @@ async function onFileChange(e: Event) {
   input.value = ''
 }
 
+// ---------- 字幕 (SRT / VTT) ----------
+
+const subtitleInputRef = ref<HTMLInputElement>()
+
+function isSubtitleFile(f: File): boolean {
+  return /\.(srt|vtt)$/i.test(f.name)
+}
+
+async function importSubtitleFile(f: File) {
+  const cues = parseSubtitles(await f.text())
+  if (cues.length === 0) {
+    toast.warn(t(`「${f.name}」に 字幕が 見つかりませんでした`, `字幕を読み取れませんでした: ${f.name}`))
+    return
+  }
+  const n = store.importSubtitles(cues)
+  toast.success(t(`字幕を ${n} 個 追加しました (「字幕」トラック)`, `字幕 ${n} 件を「字幕」トラックに追加しました`))
+}
+
+async function onSubtitleFileChange(e: Event) {
+  const input = e.target as HTMLInputElement
+  const files = Array.from(input.files ?? [])
+  input.value = ''
+  for (const f of files) await importSubtitleFile(f).catch(err => {
+    console.error(err)
+    toast.error(t('字幕を読み込めませんでした', '字幕の読み込みに失敗しました'))
+  })
+}
+
+async function onExportSubtitles() {
+  const cues = textClipsToCues(store.state.clips)
+  if (cues.length === 0) {
+    toast.warn(t('文字のクリップが ありません', 'テキストクリップがありません'))
+    return
+  }
+  const safeName = store.meta.name.replace(/[^\p{L}\p{N}._-]+/gu, '_').slice(0, 64) || 'project'
+  await downloadBlob(new Blob([toSrt(cues)], { type: 'application/x-subrip' }), `${safeName}.srt`)
+  toast.success(t(`字幕を ${cues.length} 個 書き出しました`, `字幕 ${cues.length} 件を SRT に書き出しました`))
+}
+
 async function uploadFiles(files: File[]) {
+  // 字幕ファイルは素材ではなくテキストクリップとして取り込む
+  const subs = files.filter(isSubtitleFile)
+  files = files.filter(f => !isSubtitleFile(f))
+  for (const f of subs) await importSubtitleFile(f).catch(err => {
+    console.error(err)
+    toast.error(t('字幕を読み込めませんでした', '字幕の読み込みに失敗しました'))
+  })
+  if (files.length === 0) return
   const session = store.sessionVersion
   uploading.value = true
   let ok = 0
@@ -269,6 +318,20 @@ function assetHint(a: Asset): string {
     </div>
   </div>
 
+  <div class="subtitle-row">
+    <span class="subtitle-label">{{ t('字幕', '字幕') }}</span>
+    <button
+      class="ghost tiny"
+      :title="t('SRT / VTT の字幕ファイルを 文字のクリップとして 読み込みます', 'SRT / VTT をテキストクリップとして読み込み')"
+      @click="subtitleInputRef?.click()"
+    >{{ t('読み込む', '読み込み') }}</button>
+    <button
+      class="ghost tiny"
+      :title="t('文字のクリップを 字幕ファイル (SRT) にします', 'テキストクリップを SRT に書き出し')"
+      @click="onExportSubtitles"
+    >{{ t('SRT で書き出す', 'SRT 書き出し') }}</button>
+  </div>
+
   <div class="session-info">
     <div>{{ t('そざいの ごうけい', '素材ファイル合計') }}: {{ formatSize(totalAssetBytes) }}</div>
     <div>{{ t('とじると きえます。つづきは ZIP に ほぞんしてね。', '素材・編集内容は自動保存されません。続けるには ZIP バックアップを保存してください。') }}</div>
@@ -278,13 +341,38 @@ function assetHint(a: Asset): string {
     ref="fileInputRef"
     type="file"
     multiple
-    accept="video/*,image/*,audio/*"
+    accept="video/*,image/*,audio/*,.srt,.vtt"
     style="display: none"
     @change="onFileChange"
+  />
+  <input
+    ref="subtitleInputRef"
+    type="file"
+    multiple
+    accept=".srt,.vtt"
+    style="display: none"
+    @change="onSubtitleFileChange"
   />
 </template>
 
 <style scoped>
+.subtitle-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  border-top: 1px solid var(--line-weak);
+  font-size: 11px;
+}
+.subtitle-label {
+  color: var(--fg-2);
+  margin-right: auto;
+}
+.subtitle-row button.tiny {
+  padding: 2px 8px;
+  font-size: 10px;
+}
+
 .drop-zone {
   flex: 1;
   position: relative;

@@ -5,6 +5,7 @@ import { useSelection } from '../composables/useSelection'
 import { useLocale } from '../composables/useLocale'
 import { PreviewEngine } from '../engine/previewEngine'
 import { sampleKeyframes } from '../engine/keyframes'
+import { pxUnit, visualDrawSize } from '../engine/renderer'
 import { toast } from '../composables/useToast'
 import type { Clip, VideoClip, ImageClip, TextClip, ShapeClip } from '../types/project'
 
@@ -70,6 +71,28 @@ const guideStroke = computed(
 
 // ---------- ドラッグ中の中央吸着ガイド ----------
 const alignSnap = ref({ x: false, y: false })
+
+// ---------- 画面の縦横比 (キャンバスサイズ) ----------
+
+const CANVAS_PRESETS = [
+  { w: 1920, h: 1080, easy: '横長 16:9 (YouTube など)', normal: '16:9 横 (1920×1080)' },
+  { w: 1080, h: 1920, easy: '縦長 9:16 (ショート動画)', normal: '9:16 縦 (1080×1920)' },
+  { w: 1080, h: 1080, easy: '正方形 1:1', normal: '1:1 正方形 (1080×1080)' },
+  { w: 1080, h: 1350, easy: 'やや縦長 4:5 (SNS 投稿)', normal: '4:5 縦 (1080×1350)' },
+  { w: 1440, h: 1080, easy: '4:3 (昔のテレビ)', normal: '4:3 (1440×1080)' },
+  { w: 2560, h: 1080, easy: '横に広い 21:9 (映画風)', normal: '21:9 (2560×1080)' }
+]
+
+const canvasSizeKey = computed(() => `${store.meta.width}x${store.meta.height}`)
+const isCustomCanvas = computed(
+  () => !CANVAS_PRESETS.some(p => `${p.w}x${p.h}` === canvasSizeKey.value)
+)
+
+function onCanvasSizeChange(e: Event) {
+  const [w, h] = (e.target as HTMLSelectElement).value.split('x').map(Number)
+  if (!w || !h) return
+  store.setCanvasSize(w, h)
+}
 
 function onTogglePlayEvent() {
   togglePlay()
@@ -247,31 +270,35 @@ function clipBoxOf(c: Clip): BoxInfo | null {
     const ref = Math.min(cw, ch)
     boxW = ref * c.width * scale
     boxH = ref * c.height * scale
+  } else if (c.kind === 'text') {
+    // engine と同じく 1080p 基準の fontSize を pxUnit 倍し、行ごとの幅を実測する
+    const unit = pxUnit(cw, ch)
+    const lines = c.text.split(/\r?\n/)
+    const lineH = c.fontSize * (c.decor?.lineHeight ?? 1.3)
+    const spacing = c.decor?.letterSpacing ?? 0
+    const maxW = Math.max(
+      ...lines.map(l => measureTextWidth(c, l) + spacing * Math.max(0, Array.from(l).length - 1))
+    )
+    boxW = Math.max(c.fontSize, maxW) * unit * scale
+    boxH = lineH * lines.length * unit * scale
   } else {
-    let natW = cw
-    let natH = ch
-    if (c.kind === 'video') {
-      const asset = store.getAsset(c.assetId)
-      natW = asset?.width ?? cw
-      natH = asset?.height ?? ch
-    } else if (c.kind === 'image') {
-      const asset = store.getAsset(c.assetId)
-      natW = asset?.width ?? cw
-      natH = asset?.height ?? ch
-    } else if (c.kind === 'text') {
-      // 厳密にはフォントメトリクスが必要だが、概算で fontSize*文字数 と高さ
-      natW = Math.max(120, c.fontSize * Math.max(1, c.text.length))
-      natH = c.fontSize * 1.3
-    }
-    // 画像/映像/テキスト: engine の drawTransformed と同じ contain フィット
-    const fit = Math.min(cw / natW, ch / natH)
-    boxW = natW * fit * scale
-    boxH = natH * fit * scale
+    const asset = store.getAsset(c.assetId)
+    const size = visualDrawSize(asset?.width ?? cw, asset?.height ?? ch, c.crop, cw, ch, scale)
+    boxW = size.w
+    boxH = size.h
   }
 
   const cx = cw * x
   const cy = ch * y
   return { cx, cy, w: boxW, h: boxH, rotation }
+}
+
+let measureCtx: CanvasRenderingContext2D | null = null
+function measureTextWidth(c: TextClip, text: string): number {
+  if (!measureCtx) measureCtx = document.createElement('canvas').getContext('2d')
+  if (!measureCtx) return c.fontSize * Array.from(text).length
+  measureCtx.font = `${c.italic ? 'italic' : 'normal'} ${c.bold ? '700' : '400'} ${c.fontSize}px ${c.fontFamily}`
+  return measureCtx.measureText(text).width
 }
 
 /**
@@ -631,9 +658,20 @@ function onBodyPointerDown(e: PointerEvent) {
         :title="t('セーフエリア (画面の安全な範囲) を表示します', 'セーフエリア表示 (90% / 80%)')"
         @click="showSafe = !showSafe"
       >▣</button>
-      <div class="resolution muted mono">
-        {{ store.meta.width }} × {{ store.meta.height }} · {{ store.meta.fps }}fps
-      </div>
+      <select
+        class="zoom-select canvas-select"
+        :value="canvasSizeKey"
+        :title="t('画面の形 (縦長・横長など) を変えられます', '画面サイズ (縦横比)')"
+        @change="onCanvasSizeChange"
+      >
+        <option v-if="isCustomCanvas" :value="canvasSizeKey">
+          {{ store.meta.width }}×{{ store.meta.height }}
+        </option>
+        <option v-for="p in CANVAS_PRESETS" :key="p.w + 'x' + p.h" :value="p.w + 'x' + p.h">
+          {{ t(p.easy, p.normal) }}
+        </option>
+      </select>
+      <div class="resolution muted mono">{{ store.meta.fps }}fps</div>
     </div>
   </div>
 </template>
