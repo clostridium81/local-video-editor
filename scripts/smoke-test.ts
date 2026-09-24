@@ -19,6 +19,18 @@ import {
   selectSourceKind
 } from '../src/engine/frameTiming'
 import { ExportProfiler } from '../src/engine/exportProfiler'
+import { sampleAudioFade } from '../src/engine/transitions'
+import {
+  computeEffective,
+  cropRect,
+  normalizeCrop,
+  visualDrawSize,
+  pxUnit,
+  drawClip,
+  LayerBuffer
+} from '../src/engine/renderer'
+import { parseSubtitles, toSrt, toVtt, textClipsToCues } from '../src/engine/subtitles'
+import { avcCodecFor } from '../src/engine/capabilities'
 import type { Clip, Keyframe, ProjectState, PixelEffects } from '../src/types/project'
 
 let failures = 0
@@ -391,6 +403,166 @@ console.log('backup signature:')
     const s = makeState(); s.assets['a'] = { id: 'a', kind: 'image', name: 'x', mimeType: 'image/png', size: 1, createdAt: 1 }
     check('素材ありは非空', !isEmptyProject(s))
   }
+}
+
+
+// ---------- v0.6: 追加トランジション ----------
+console.log('transitions (v0.6):')
+{
+  const mk = (tin: string, tout = 'fade') => ({
+    id: 'c', kind: 'video', trackId: 't', start: 0, duration: 4, opacity: 1,
+    transitionIn: { type: tin, duration: 1 }, transitionOut: { type: tout, duration: 1 }
+  } as unknown as Clip)
+
+  const iris = sampleTransition(mk('iris'), 0.5)
+  check('iris 50% → 円 r=0.5', iris.reveal?.kind === 'circle' && approx((iris.reveal as any).r, 0.5))
+  const wipeRtl = sampleTransition(mk('wipe-rtl'), 0.25)
+  check('wipe-rtl 25% → 右端 25% だけ表示',
+    wipeRtl.reveal?.kind === 'rect' && approx((wipeRtl.reveal as any).x0, 0.75) && approx((wipeRtl.reveal as any).x1, 1))
+  const split = sampleTransition(mk('split'), 0.5)
+  check('split 50% → 中央 0.25..0.75',
+    split.reveal?.kind === 'rect' && approx((split.reveal as any).x0, 0.25) && approx((split.reveal as any).x1, 0.75))
+  const wipe = sampleTransition(mk('wipe'), 0.5)
+  check('wipe (従来) 50% → 左半分', wipe.reveal?.kind === 'rect' && approx((wipe.reveal as any).x1, 0.5))
+  const spinIn = sampleTransition(mk('spin', 'spin'), 0.5)
+  const spinOut = sampleTransition(mk('spin', 'spin'), 3.5)
+  check('spin 入り/出で回転方向が逆', spinIn.rotation > 0 && spinOut.rotation < 0)
+  check('blur 入り開始時はぼかし最大', approx(sampleTransition(mk('blur'), 0).blur, 30))
+  check('flash 入り開始時は明るさ 5 倍', approx(sampleTransition(mk('flash'), 0).brightness, 5))
+  check('zoom-out 入り開始時は 1.6 倍', approx(sampleTransition(mk('zoom-out'), 0).scale, 1.6))
+  check('中間は reveal なし', sampleTransition(mk('iris'), 2).reveal === null)
+  const slideOut = sampleTransition(mk('fade', 'slide-right'), 3.5)
+  check('slide-right の出は右へ抜ける', approx(slideOut.offsetX, 0.5))
+}
+
+// ---------- v0.6: 音声フェード ----------
+console.log('audio fade:')
+{
+  const clip = { start: 10, duration: 4, opacity: 1, volume: 0.8, audioFade: { in: 1, out: 2 } } as unknown as Clip
+  check('フェードイン 50%', approx(sampleAudioFade(clip, 0.5), 0.5))
+  check('中間は 1', approx(sampleAudioFade(clip, 1.5), 1))
+  check('フェードアウト残り 1s → 0.5', approx(sampleAudioFade(clip, 3), 0.5))
+  check('末尾は 0', approx(sampleAudioFade(clip, 4), 0))
+  check('audioFade なしは常に 1', approx(sampleAudioFade({ duration: 4 } as Clip, 0), 1))
+  const { eff } = computeEffective(clip, 10.5)
+  check('computeEffective の音量に反映 (0.8 × 0.5)', approx(eff.volume, 0.4))
+  const withTrans = { ...clip, transitionIn: { type: 'fade', duration: 1 } } as unknown as Clip
+  check('トランジション fade と掛け合わせ (0.8 × 0.5 × 0.5)', approx(computeEffective(withTrans, 10.5).eff.volume, 0.2))
+}
+
+// ---------- v0.6: クロップ / 表示サイズ ----------
+console.log('crop geometry:')
+{
+  const r = cropRect({ left: 0.25, right: 0.25, top: 0, bottom: 0.5 }, 1920, 1080)
+  check('cropRect ピクセル矩形', approx(r.sx, 480) && approx(r.sw, 960) && approx(r.sy, 0) && approx(r.sh, 540))
+  check('crop なしは全体', cropRect(undefined, 100, 50).sw === 100)
+  const n = normalizeCrop({ left: 0.7, right: 0.7, top: -1, bottom: NaN })
+  check('normalizeCrop: 対辺合計 ≤ 0.95 / 負・NaN は 0',
+    approx(n.left + n.right, 0.95) && n.top === 0 && n.bottom === 0)
+  // 16:9 の中央 9:16 を切り抜いて 9:16 キャンバスに置くと全面を覆う
+  const side = (1 - (1080 * 9) / 16 / 1920) / 2
+  const size = visualDrawSize(1920, 1080, { left: side, right: side, top: 0, bottom: 0 }, 1080, 1920, 1)
+  check('縦長キャンバスに中央切り抜きが全面フィット', approx(size.w, 1080, 1e-3) && approx(size.h, 1920, 1e-3))
+  const plain = visualDrawSize(1920, 1080, undefined, 1080, 1920, 2)
+  check('切り抜きなし 16:9 → 9:16 は幅合わせ × scale', approx(plain.w, 2160) && approx(plain.h, 1215))
+  check('pxUnit: 1080p=1 / 縦長=1 / 720p=0.667',
+    approx(pxUnit(1920, 1080), 1) && approx(pxUnit(1080, 1920), 1) && approx(pxUnit(1280, 720), 2 / 3))
+}
+
+// ---------- v0.6: 描画呼び出し (記録用 ctx) ----------
+console.log('renderer calls:')
+{
+  const calls: Array<{ fn: string; args: any[] }> = []
+  const makeCtx = () => new Proxy({} as any, {
+    get(target, key) {
+      if (key in target) return target[key]
+      if (key === 'getImageData') return (_x: number, _y: number, w: number, h: number) =>
+        ({ data: new Uint8ClampedArray(w * h * 4), width: w, height: h })
+      if (key === 'measureText') return (s: string) => ({ width: s.length * 10 })
+      return (...args: any[]) => { calls.push({ fn: String(key), args }) }
+    },
+    set(target, key, v) { target[key] = v; calls.push({ fn: `set:${String(key)}`, args: [v] }); return true }
+  })
+  ;(globalThis as any).document = {
+    createElement: () => ({ width: 1, height: 1, getContext: () => makeCtx() })
+  }
+  const ctx = makeCtx()
+  const target = { ctx, width: 1080, height: 1920, buffer: new LayerBuffer() }
+  const src = { src: { tag: 'video' } as any, width: 1920, height: 1080 }
+  const base = { id: 'v', kind: 'video', trackId: 't', assetId: 'a', start: 0, duration: 2, opacity: 1, x: 0.5, y: 0.5, scale: 1, rotation: 0 }
+
+  calls.length = 0
+  drawClip(target, { ...base, crop: { left: 0.25, right: 0.25, top: 0, bottom: 0 } } as Clip, 1, src)
+  const crop9 = calls.find(c => c.fn === 'drawImage')
+  check('クロップ時は元画像の部分矩形を描く (9 引数)', crop9?.args.length === 9 && approx(crop9.args[1], 480) && approx(crop9.args[3], 960))
+
+  calls.length = 0
+  drawClip(target, { ...base, mask: { shape: 'ellipse', x: 0.5, y: 0.5, width: 0.5, height: 0.5, rotation: 0, feather: 0, invert: true } } as Clip, 1, src)
+  check('マスクは destination-out (反転) で合成', calls.some(c => c.fn === 'set:globalCompositeOperation' && c.args[0] === 'destination-out'))
+  check('マスク楕円を描く', calls.some(c => c.fn === 'ellipse'))
+  const draws = calls.filter(c => c.fn === 'drawImage')
+  check('マスク時はバッファ経由で 2 回 drawImage', draws.length === 2 && draws[0].args[0] === src.src)
+
+  calls.length = 0
+  drawClip(target, { ...base, effects: { brightness: 1.5 }, transitionIn: { type: 'iris', duration: 1 } } as Clip, 0.5, src)
+  check('iris は円でクリップする', calls.some(c => c.fn === 'arc') && calls.some(c => c.fn === 'clip'))
+  check('レイヤー不要時はエフェクトのフィルタを直接掛ける',
+    calls.some(c => c.fn === 'set:filter' && String(c.args[0]).includes('brightness(1.5)')))
+
+  calls.length = 0
+  drawClip(target, { ...base, pixelFx: { vignette: 0.5 }, effects: { brightness: 1.5 } } as Clip, 1, src)
+  const filterSets = calls.filter(c => c.fn === 'set:filter').map(c => String(c.args[0]))
+  check('ピクセル処理時はエフェクトのフィルタを二重に掛けない',
+    filterSets.filter(f => f.includes('brightness(1.5)')).length === 1)
+
+  calls.length = 0
+  const text = {
+    id: 'tx', kind: 'text', trackId: 't', start: 0, duration: 2, opacity: 1, text: 'あいう\nえお',
+    fontFamily: 'sans-serif', fontSize: 60, color: '#fff', x: 0.5, y: 0.5, align: 'center', bold: false, italic: false
+  } as Clip
+  drawClip(target, text, 1, null)
+  const fills = calls.filter(c => c.fn === 'fillText')
+  check('改行で 2 行に分けて描く', fills.length === 2 && fills[0].args[0] === 'あいう' && fills[1].args[0] === 'えお')
+  check('2 行は行の中心を挟んで上下に並ぶ', approx(fills[0].args[2], -39) && approx(fills[1].args[2], 39))
+}
+
+// ---------- v0.6: 字幕 (SRT / VTT) ----------
+console.log('subtitles:')
+{
+  const srt = '﻿1\r\n00:00:01,000 --> 00:00:02,500\r\nこんにちは\r\n<i>世界</i>\r\n\r\n2\r\n00:01:00,05 --> 00:01:01,000\r\n二つ目\r\n\r\n3\r\n00:00:05,000 --> 00:00:04,000\r\n逆転は無視\r\n'
+  const cues = parseSubtitles(srt)
+  check('SRT 2 件 (時刻逆転は除外)', cues.length === 2)
+  check('SRT 時刻と複数行テキスト', approx(cues[0].start, 1) && approx(cues[0].end, 2.5) && cues[0].text === 'こんにちは\n世界')
+  check('ミリ秒 2 桁は右ゼロ埋め (,05 → 0.05)', approx(cues[1].start, 60.05))
+  const vtt = 'WEBVTT\n\nNOTE メモ\n\ncue-1\n01:02.500 --> 01:04.000 align:start\nVTT の字幕\n'
+  const v = parseSubtitles(vtt)
+  check('VTT: 時省略・識別子・設定を読み飛ばす', v.length === 1 && approx(v[0].start, 62.5) && v[0].text === 'VTT の字幕')
+  const round = parseSubtitles(toSrt(cues))
+  check('SRT 書き出し → 読み込みで一致', JSON.stringify(round) === JSON.stringify(cues))
+  check('SRT 書式', toSrt(cues).startsWith('1\n00:00:01,000 --> 00:00:02,500\nこんにちは\n世界\n\n2\n'))
+  check('VTT 書式', toVtt(cues).startsWith('WEBVTT\n\n00:00:01.000 --> 00:00:02.500\n'))
+  const clips = [
+    { id: 'a', kind: 'text', trackId: 't1', start: 5, duration: 2, text: ' B ' },
+    { id: 'b', kind: 'text', trackId: 't1', start: 1, duration: 2, text: 'A' },
+    { id: 'c', kind: 'text', trackId: 't2', start: 3, duration: 1, text: '' },
+    { id: 'd', kind: 'shape', trackId: 't1', start: 0, duration: 9 }
+  ] as unknown as Clip[]
+  const out = textClipsToCues(clips)
+  check('テキストクリップ → 字幕 (空文字・図形は除外, 時刻順, trim)',
+    out.length === 2 && out[0].text === 'A' && out[1].text === 'B')
+  const ranged = textClipsToCues(clips, { rangeStart: 2, rangeEnd: 6 })
+  check('範囲指定で時刻を詰めて切り詰める',
+    approx(ranged[0].start, 0) && approx(ranged[0].end, 1) && approx(ranged[1].start, 3) && approx(ranged[1].end, 4))
+}
+
+// ---------- v0.6: H.264 Level 選択 ----------
+console.log('avc level:')
+{
+  check('1080p30 → Level 4.0', avcCodecFor(1920, 1080, 30) === 'avc1.640028')
+  check('1080p60 → Level 4.2', avcCodecFor(1920, 1080, 60) === 'avc1.64002A')
+  check('縦 1080×1920 30fps → Level 4.0 (8160MB ≤ 8192)', avcCodecFor(1080, 1920, 30) === 'avc1.640028')
+  check('21:9 2560×1080 → Level 5.0', avcCodecFor(2560, 1080, 30) === 'avc1.640032')
+  check('4K60 → Level 5.2', avcCodecFor(3840, 2160, 60) === 'avc1.640034')
 }
 
 console.log(failures === 0 ? '\nALL PASS' : `\n${failures} FAILURES`)

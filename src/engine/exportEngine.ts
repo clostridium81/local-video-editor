@@ -1,24 +1,13 @@
 import type {
   ProjectState,
-  Clip,
   VideoClip,
   AudioClip,
-  ImageClip,
-  TextClip,
-  ShapeClip
+  ImageClip
 } from '../types/project'
 import { getAssetObjectURL, loadAssetBlob } from '../persistence/assetStore'
-import { sampleKeyframes } from './keyframes'
-import { sampleTransition } from './transitions'
+import { computeEffective, drawClip, LayerBuffer, type VisualSource } from './renderer'
 import {
-  buildFilterString,
-  blendToCanvas,
-  applyColorGrade,
-  applyChromaKey
-} from './previewEngine'
-import { applyPixelEffects, hasPixelEffects } from './pixelEffects'
-import {
-  AVC_CODECS,
+  avcCodecFor,
   AAC_CODEC,
   VP9_CODEC,
   OPUS_CODEC,
@@ -114,36 +103,7 @@ interface RenderContext {
   images: Map<string, HTMLImageElement> // assetId -> img
   canvas: OffscreenCanvas | HTMLCanvasElement
   ctx: OffscreenCanvasRenderingContext2D | CanvasRenderingContext2D
-}
-
-function computeEffective(clip: Clip, t: number) {
-  // キーフレーム/テキストアニメはタイムライン経過秒 (speed 非依存) で評価。
-  // previewEngine.computeEffective および renderAudioMix の音量エンベロープと同軸。
-  const local = t - clip.start
-  const base: any = {
-    x: (clip as any).x ?? 0.5,
-    y: (clip as any).y ?? 0.5,
-    scale: (clip as any).scale ?? 1,
-    rotation: (clip as any).rotation ?? 0,
-    opacity: clip.opacity ?? 1,
-    volume: clip.volume ?? 1
-  }
-  const kfs = clip.keyframes
-  if (kfs) {
-    base.x = sampleKeyframes(kfs.x, local, base.x)
-    base.y = sampleKeyframes(kfs.y, local, base.y)
-    base.scale = sampleKeyframes(kfs.scale, local, base.scale)
-    base.rotation = sampleKeyframes(kfs.rotation, local, base.rotation)
-    base.opacity = sampleKeyframes(kfs.opacity, local, base.opacity)
-    base.volume = sampleKeyframes(kfs.volume, local, base.volume)
-  }
-  const trans = sampleTransition(clip, t)
-  base.x += trans.offsetX
-  base.y += trans.offsetY
-  base.scale *= trans.scale
-  base.opacity *= trans.alpha
-  base.volume *= trans.volume
-  return { eff: base, trans, localT: local }
+  buffer: LayerBuffer
 }
 
 function drawFrame(rc: RenderContext, t: number) {
@@ -165,378 +125,23 @@ function drawFrame(rc: RenderContext, t: number) {
     .filter(c => t >= c.start && t < c.start + c.duration)
     .sort((a, b) => (trackOrderMap.get(a.trackId) ?? 0) - (trackOrderMap.get(b.trackId) ?? 0))
 
+  const target = { ctx, width, height, buffer: rc.buffer }
   for (const clip of activeClips) {
     const track = state.tracks.find(tr => tr.id === clip.trackId)
     if (track?.kind === 'audio') continue
 
-    const { eff, trans, localT } = computeEffective(clip, t)
-    const blendMode = clip.blendMode ?? 'normal'
-
-    ctx.save()
-    if (blendMode !== 'normal') ctx.globalCompositeOperation = blendToCanvas(blendMode)
-
+    let source: VisualSource | null = null
     if (clip.kind === 'video') {
       const ref = rc.currentFrames.get(clip.id)
-      if (!ref) {
-        ctx.restore()
-        continue
-      }
-      drawVisualSource(
-        ctx,
-        rc,
-        ref.image,
-        ref.width,
-        ref.height,
-        eff,
-        (clip as VideoClip).effects,
-        (clip as VideoClip).colorGrade,
-        (clip as VideoClip).chromaKey,
-        (clip as VideoClip).pixelFx,
-        trans,
-        width,
-        height
-      )
+      if (!ref) continue
+      source = { src: ref.image, width: ref.width, height: ref.height }
     } else if (clip.kind === 'image') {
       const img = rc.images.get((clip as ImageClip).assetId)
-      if (!img) {
-        ctx.restore()
-        continue
-      }
-      drawVisualSource(
-        ctx,
-        rc,
-        img,
-        img.naturalWidth,
-        img.naturalHeight,
-        eff,
-        (clip as ImageClip).effects,
-        (clip as ImageClip).colorGrade,
-        (clip as ImageClip).chromaKey,
-        (clip as ImageClip).pixelFx,
-        trans,
-        width,
-        height
-      )
-    } else if (clip.kind === 'text') {
-      drawText(ctx, clip as TextClip, eff, trans, width, height, localT)
-    } else if (clip.kind === 'shape') {
-      drawShape(ctx, clip as ShapeClip, eff, trans, width, height)
+      if (!img) continue
+      source = { src: img, width: img.naturalWidth, height: img.naturalHeight }
     }
-    ctx.restore()
+    drawClip(target, clip, t, source)
   }
-}
-
-function drawVisualSource(
-  ctx: any,
-  rc: RenderContext,
-  src: CanvasImageSource,
-  srcW: number,
-  srcH: number,
-  eff: any,
-  effects: any,
-  grade: any,
-  chroma: any,
-  pixelFx: any,
-  trans: any,
-  width: number,
-  height: number
-) {
-  if (!srcW || !srcH) return
-  const needsPixelPass = !!(
-    (grade && (grade.lift || grade.gamma || grade.gain || grade.temperature || grade.tint)) ||
-    chroma?.enabled ||
-    hasPixelEffects(pixelFx)
-  )
-  const fit = Math.min(width / srcW, height / srcH)
-  const drawW = srcW * fit * eff.scale
-  const drawH = srcH * fit * eff.scale
-  const cx = width * eff.x
-  const cy = height * eff.y
-
-  ctx.save()
-  ctx.globalAlpha = Math.max(0, Math.min(1, eff.opacity))
-  if (effects) {
-    const f = buildFilterString(effects)
-    if (f) ctx.filter = f
-  }
-  if (trans.isWipe) {
-    ctx.beginPath()
-    ctx.rect(0, 0, width * trans.wipeProgress, height)
-    ctx.clip()
-  }
-  ctx.translate(cx, cy)
-  if (eff.rotation) ctx.rotate((eff.rotation * Math.PI) / 180)
-
-  if (!needsPixelPass) {
-    ctx.drawImage(src, -drawW / 2, -drawH / 2, drawW, drawH)
-  } else {
-    const pbufW = Math.max(1, Math.round(Math.abs(drawW)))
-    const pbufH = Math.max(1, Math.round(Math.abs(drawH)))
-    const pbuf = getPixelBuf(rc, pbufW, pbufH)
-    const pctx = pbuf.ctx
-    pctx.save()
-    pctx.filter = effects ? buildFilterString(effects) : 'none'
-    pctx.globalCompositeOperation = 'source-over'
-    pctx.globalAlpha = 1
-    pctx.clearRect(0, 0, pbufW, pbufH)
-    pctx.drawImage(src, 0, 0, pbufW, pbufH)
-    pctx.restore()
-    try {
-      const img = pctx.getImageData(0, 0, pbufW, pbufH)
-      if (chroma?.enabled) applyChromaKey(img, chroma)
-      if (grade) applyColorGrade(img, grade)
-      if (hasPixelEffects(pixelFx)) applyPixelEffects(img, pixelFx)
-      pctx.putImageData(img, 0, 0)
-    } catch {
-      // ignore
-    }
-    ctx.drawImage(pbuf.canvas, -drawW / 2, -drawH / 2, drawW, drawH)
-  }
-  ctx.restore()
-}
-
-interface PixelBuf {
-  canvas: HTMLCanvasElement
-  ctx: CanvasRenderingContext2D
-}
-function getPixelBuf(rc: RenderContext, w: number, h: number): PixelBuf {
-  if (!(rc as any)._pbuf) {
-    const c = document.createElement('canvas')
-    const cx = c.getContext('2d', { willReadFrequently: true })!
-    ;(rc as any)._pbuf = { canvas: c, ctx: cx }
-  }
-  const pb = (rc as any)._pbuf as PixelBuf
-  if (pb.canvas.width !== w) pb.canvas.width = w
-  if (pb.canvas.height !== h) pb.canvas.height = h
-  return pb
-}
-
-function drawShape(
-  ctx: any,
-  clip: ShapeClip,
-  eff: any,
-  trans: any,
-  width: number,
-  height: number
-) {
-  ctx.save()
-  ctx.globalAlpha = Math.max(0, Math.min(1, eff.opacity))
-  if (clip.effects) {
-    const f = buildFilterString(clip.effects)
-    if (f) ctx.filter = f
-  }
-  if (trans.isWipe) {
-    ctx.beginPath()
-    ctx.rect(0, 0, width * trans.wipeProgress, height)
-    ctx.clip()
-  }
-  const cx = width * eff.x
-  const cy = height * eff.y
-  // previewEngine と同じ: 短辺基準で図形を正規化する
-  const ref = Math.min(width, height)
-  const w = ref * clip.width * eff.scale
-  const h = ref * clip.height * eff.scale
-  ctx.translate(cx, cy)
-  if (eff.rotation) ctx.rotate((eff.rotation * Math.PI) / 180)
-  ctx.fillStyle = clip.style.fill ?? 'transparent'
-  ctx.strokeStyle = clip.style.stroke ?? 'transparent'
-  ctx.lineWidth = clip.style.strokeWidth ?? 0
-  shapePath(ctx, clip, w, h)
-  if (clip.style.fill) ctx.fill()
-  if (clip.style.stroke && (clip.style.strokeWidth ?? 0) > 0) ctx.stroke()
-  ctx.restore()
-}
-
-function shapePath(ctx: any, clip: ShapeClip, w: number, h: number) {
-  ctx.beginPath()
-  const { shape, style } = clip
-  if (shape === 'rect') {
-    const r = style.cornerRadius ?? 0
-    if (r > 0 && typeof ctx.roundRect === 'function') {
-      ctx.roundRect(-w / 2, -h / 2, w, h, Math.min(r, Math.min(w, h) / 2))
-    } else {
-      ctx.rect(-w / 2, -h / 2, w, h)
-    }
-  } else if (shape === 'ellipse') {
-    ctx.ellipse(0, 0, Math.abs(w / 2), Math.abs(h / 2), 0, 0, Math.PI * 2)
-  } else if (shape === 'line') {
-    ctx.moveTo(-w / 2, 0)
-    ctx.lineTo(w / 2, 0)
-  } else if (shape === 'triangle') {
-    ctx.moveTo(0, -h / 2)
-    ctx.lineTo(-w / 2, h / 2)
-    ctx.lineTo(w / 2, h / 2)
-    ctx.closePath()
-  } else if (shape === 'arrow') {
-    const head = Math.min(w * 0.3, h)
-    ctx.moveTo(-w / 2, -h / 6)
-    ctx.lineTo(w / 2 - head, -h / 6)
-    ctx.lineTo(w / 2 - head, -h / 2)
-    ctx.lineTo(w / 2, 0)
-    ctx.lineTo(w / 2 - head, h / 2)
-    ctx.lineTo(w / 2 - head, h / 6)
-    ctx.lineTo(-w / 2, h / 6)
-    ctx.closePath()
-  } else if (shape === 'star') {
-    const n = 5
-    const inner = Math.min(w, h) / 4
-    const outer = Math.min(w, h) / 2
-    for (let i = 0; i < n * 2; i++) {
-      const r = i % 2 === 0 ? outer : inner
-      const a = (Math.PI / n) * i - Math.PI / 2
-      const px = Math.cos(a) * r
-      const py = Math.sin(a) * r
-      if (i === 0) ctx.moveTo(px, py)
-      else ctx.lineTo(px, py)
-    }
-    ctx.closePath()
-  }
-}
-
-function drawText(
-  ctx: any,
-  clip: TextClip,
-  eff: any,
-  trans: any,
-  width: number,
-  height: number,
-  localT: number
-) {
-  ctx.save()
-  ctx.globalAlpha = Math.max(0, Math.min(1, eff.opacity))
-  const weight = clip.bold ? '700' : '400'
-  const style = clip.italic ? 'italic' : 'normal'
-  ctx.font = `${style} ${weight} ${clip.fontSize}px ${clip.fontFamily}`
-  ctx.textBaseline = 'middle'
-  ctx.textAlign = clip.align
-  const cx = width * eff.x
-  const cy = height * eff.y
-  if (trans.isWipe) {
-    ctx.beginPath()
-    ctx.rect(0, 0, width * trans.wipeProgress, height)
-    ctx.clip()
-  }
-  ctx.translate(cx, cy)
-  if (eff.rotation) ctx.rotate((eff.rotation * Math.PI) / 180)
-  if (eff.scale !== 1) ctx.scale(eff.scale, eff.scale)
-
-  const decor = clip.decor
-  const letterSpacing = decor?.letterSpacing ?? 0
-  const anim = clip.anim
-  const animProgress = anim && anim.duration > 0
-    ? Math.max(0, Math.min(1, localT / anim.duration))
-    : 1
-
-  if (clip.backgroundColor) {
-    const m = ctx.measureText(clip.text)
-    const w = m.width + letterSpacing * Math.max(0, clip.text.length - 1)
-    const h = clip.fontSize * (decor?.lineHeight ?? 1.3)
-    ctx.fillStyle = clip.backgroundColor
-    const bx = clip.align === 'center' ? -w / 2 : clip.align === 'right' ? -w : 0
-    ctx.fillRect(bx - 16, -h / 2, w + 32, h)
-  }
-
-  if (decor?.shadow) {
-    ctx.save()
-    ctx.shadowColor = decor.shadow.color
-    ctx.shadowBlur = decor.shadow.blur
-    ctx.shadowOffsetX = decor.shadow.offsetX
-    ctx.shadowOffsetY = decor.shadow.offsetY
-    drawTextAnim(ctx, clip, animProgress, letterSpacing, false)
-    ctx.restore()
-  }
-  if (decor?.outline && decor.outline.width > 0) {
-    ctx.save()
-    ctx.strokeStyle = decor.outline.color
-    ctx.lineWidth = decor.outline.width
-    ctx.lineJoin = 'round'
-    drawTextAnim(ctx, clip, animProgress, letterSpacing, true)
-    ctx.restore()
-  }
-  ctx.fillStyle = clip.color
-  drawTextAnim(ctx, clip, animProgress, letterSpacing, false)
-  ctx.restore()
-}
-
-function drawTextAnim(
-  ctx: any,
-  clip: TextClip,
-  progress: number,
-  letterSpacing: number,
-  strokeOnly: boolean
-) {
-  const type = clip.anim?.type ?? 'none'
-  const text = clip.text
-  if (type === 'none' && letterSpacing === 0) {
-    if (strokeOnly) ctx.strokeText(text, 0, 0)
-    else ctx.fillText(text, 0, 0)
-    return
-  }
-  const chars = Array.from(text)
-  const widths = chars.map((ch: string) => ctx.measureText(ch).width)
-  const totalW = widths.reduce((a: number, b: number) => a + b, 0) + letterSpacing * Math.max(0, chars.length - 1)
-  let startX = 0
-  if (clip.align === 'center') startX = -totalW / 2
-  else if (clip.align === 'right') startX = -totalW
-  const prevAlign = ctx.textAlign
-  ctx.textAlign = 'left'
-  for (let i = 0; i < chars.length; i++) {
-    const cp = charProgress(type, progress, i, chars.length)
-    if (cp <= 0) {
-      startX += widths[i] + letterSpacing
-      continue
-    }
-    ctx.save()
-    switch (type) {
-      case 'fade-words':
-        ctx.globalAlpha = ctx.globalAlpha * cp
-        break
-      case 'slide-chars':
-        ctx.translate(0, (1 - cp) * 40)
-        ctx.globalAlpha = ctx.globalAlpha * cp
-        break
-      case 'bounce':
-        ctx.translate(0, (1 - cp) * -30 * Math.sin(cp * Math.PI))
-        break
-      case 'scale-pop': {
-        const s = 0.6 + cp * 0.4
-        ctx.scale(s, s)
-        ctx.globalAlpha = ctx.globalAlpha * cp
-        break
-      }
-      case 'wave':
-        ctx.translate(0, Math.sin(progress * Math.PI * 2 + i * 0.4) * 10)
-        break
-    }
-    if (strokeOnly) ctx.strokeText(chars[i], startX, 0)
-    else ctx.fillText(chars[i], startX, 0)
-    ctx.restore()
-    startX += widths[i] + letterSpacing
-  }
-  ctx.textAlign = prevAlign
-}
-
-function charProgress(type: string, progress: number, idx: number, total: number): number {
-  if (type === 'typewriter') return progress >= (idx + 1) / total ? 1 : 0
-  if (type === 'fade-words' || type === 'slide-chars' || type === 'scale-pop') {
-    const spread = 0.7
-    const perChar = spread / Math.max(1, total)
-    const start = perChar * idx
-    const end = start + (1 - spread)
-    if (progress <= start) return 0
-    if (progress >= end) return 1
-    return (progress - start) / (end - start)
-  }
-  if (type === 'bounce') {
-    const spread = 0.5
-    const perChar = spread / Math.max(1, total)
-    const start = perChar * idx
-    const end = Math.min(1, start + 0.5)
-    if (progress <= start) return 0
-    if (progress >= end) return 1
-    return (progress - start) / (end - start)
-  }
-  return 1
 }
 
 // ---------- 音声ミックス (OfflineAudioContext) ----------
@@ -619,35 +224,33 @@ async function renderAudioMix(
     src.playbackRate.value = speed
 
     const gain = oc.createGain()
-    const vol = Math.max(0, Math.min(2, c.volume ?? 1))
-    gain.gain.value = vol
-
-    const keyframes = c.keyframes?.volume
-    const transIn = c.transitionIn
-    const transOut = c.transitionOut
 
     // 出力 OfflineAudioContext の時間軸 = (絶対時刻 - rangeOffset)。
     // src.start も rangeOffset を引いた相対時刻で予約しているので、gain も
     // 同じ時間軸でないと、範囲指定エクスポート時にエンベロープが音源とずれる。
     // 0 未満になる時刻は AudioParam が受け付けないため 0 にクランプする。
     const toOutT = (absT: number) => Math.max(0, absT - rangeOffset)
+    // 音量エンベロープ = 音量 (キーフレーム) × トランジションの fade × 音声フェード。
+    // プレビューと同じ computeEffective() で評価する
+    const env = (lt: number) =>
+      Math.max(0, Math.min(2, computeEffective(c, c.start + lt).eff.volume))
+    const hasEnvelope =
+      (c.keyframes?.volume?.length ?? 0) > 0 ||
+      c.transitionIn?.type === 'fade' ||
+      c.transitionOut?.type === 'fade' ||
+      (c.audioFade?.in ?? 0) > 0 ||
+      (c.audioFade?.out ?? 0) > 0
 
-    if (keyframes && keyframes.length > 0) {
-      gain.gain.setValueAtTime(vol, toOutT(c.start))
-      const stepSec = 0.05
-      for (let lt = 0; lt <= c.duration; lt += stepSec) {
-        const v = sampleKeyframes(keyframes, lt, vol)
-        gain.gain.linearRampToValueAtTime(v, toOutT(c.start + lt))
+    if (hasEnvelope) {
+      const stepSec = 0.02
+      const lt0 = Math.max(0, rangeOffset - c.start)
+      gain.gain.setValueAtTime(env(lt0), toOutT(c.start + lt0))
+      for (let lt = lt0 + stepSec; lt < c.duration; lt += stepSec) {
+        gain.gain.linearRampToValueAtTime(env(lt), toOutT(c.start + lt))
       }
-    }
-    if (transIn && transIn.type === 'fade' && transIn.duration > 0) {
-      gain.gain.setValueAtTime(0, toOutT(c.start))
-      gain.gain.linearRampToValueAtTime(vol, toOutT(c.start + transIn.duration))
-    }
-    if (transOut && transOut.type === 'fade' && transOut.duration > 0) {
-      const outStart = c.start + c.duration - transOut.duration
-      gain.gain.setValueAtTime(vol, toOutT(outStart))
-      gain.gain.linearRampToValueAtTime(0, toOutT(c.start + c.duration))
+      gain.gain.linearRampToValueAtTime(env(c.duration), toOutT(c.start + c.duration))
+    } else {
+      gain.gain.value = env(0)
     }
 
     // EQ 3-band (optional)
@@ -867,9 +470,8 @@ export async function exportProject(
 
   if (format === 'mp4') {
     const { Muxer, ArrayBufferTarget } = await import('mp4-muxer')
-    // H.264 Level 4.0 は 1080p30 まで。60fps や 1080p 超は Level 4.2 を使う
-    videoCodecStr =
-      fps > 30 || height > 1080 ? AVC_CODECS.high_1080p60 : AVC_CODECS.high_1080p
+    // 解像度・fps に見合う Level を選ぶ (縦長や 21:9 は 1080p30 の Level 4.0 を超える)
+    videoCodecStr = avcCodecFor(width, height, fps)
     audioCodecStr = AAC_CODEC
     muxer = new (Muxer as any)({
       target: new ArrayBufferTarget(),
@@ -922,7 +524,8 @@ export async function exportProject(
     canvas: (globalThis as any).OffscreenCanvas
       ? new OffscreenCanvas(width, height)
       : Object.assign(document.createElement('canvas'), { width, height }),
-    ctx: null as any
+    ctx: null as any,
+    buffer: new LayerBuffer()
   }
   rc.ctx = (rc.canvas as any).getContext('2d') as any
 
@@ -1134,7 +737,8 @@ async function exportGIF(state: ProjectState, opts: ExportOptions): Promise<Expo
     canvas: (globalThis as any).OffscreenCanvas
       ? new OffscreenCanvas(width, height)
       : Object.assign(document.createElement('canvas'), { width, height }),
-    ctx: null as any
+    ctx: null as any,
+    buffer: new LayerBuffer()
   }
   rc.ctx = (rc.canvas as any).getContext('2d', { willReadFrequently: true }) as any
 

@@ -8,7 +8,7 @@ const { t } = useLocale()
 import {
   canEncodeVideo,
   canEncodeAudio,
-  AVC_CODECS,
+  avcCodecFor,
   AAC_CODEC,
   VP9_CODEC,
   OPUS_CODEC,
@@ -41,13 +41,27 @@ const startTime = ref(0)
 const mp4Supported = ref(true)
 const webmSupported = ref(true)
 
+// 1080p / 720p / 480p は「短辺のピクセル数」。作品の縦横比を保ったまま
+// 長辺を決める (縦長 9:16 の 1080p → 1080×1920)。エンコーダの都合で偶数に丸める
+function sizeForShortSide(short: number) {
+  const w = store.state.meta.width
+  const h = store.state.meta.height
+  const even = (v: number) => Math.max(2, Math.round(v / 2) * 2)
+  if (w >= h) return { width: even((short * w) / h), height: even(short) }
+  return { width: even(short), height: even((short * h) / w) }
+}
+
+const sizeOptions = computed(() => ({
+  '1080p': sizeForShortSide(1080),
+  '720p': sizeForShortSide(720),
+  '480p': sizeForShortSide(480)
+}))
+
 const resolution = computed(() => {
   if (resolutionPreset.value === 'project') {
     return { width: store.state.meta.width, height: store.state.meta.height }
   }
-  if (resolutionPreset.value === '1080p') return { width: 1920, height: 1080 }
-  if (resolutionPreset.value === '720p') return { width: 1280, height: 720 }
-  return { width: 854, height: 480 }
+  return sizeOptions.value[resolutionPreset.value]
 })
 
 const resolvedBitrate = computed(() => {
@@ -172,7 +186,7 @@ onMounted(async () => {
   const h = store.state.meta.height
   const f = store.state.meta.fps
   mp4Supported.value = await canEncodeVideo({
-    codec: AVC_CODECS.high_1080p,
+    codec: avcCodecFor(w, h, f),
     width: w,
     height: h,
     framerate: f,
@@ -361,9 +375,9 @@ function fmtPhaseMessage(m: string): string {
               <option value="project">
                 作品と同じ ({{ store.state.meta.width }}×{{ store.state.meta.height }})
               </option>
-              <option value="1080p">1920 × 1080 (大)</option>
-              <option value="720p">1280 × 720 (中)</option>
-              <option value="480p">854 × 480 (小)</option>
+              <option value="1080p">{{ sizeOptions['1080p'].width }} × {{ sizeOptions['1080p'].height }} (大)</option>
+              <option value="720p">{{ sizeOptions['720p'].width }} × {{ sizeOptions['720p'].height }} (中)</option>
+              <option value="480p">{{ sizeOptions['480p'].width }} × {{ sizeOptions['480p'].height }} (小)</option>
             </select>
           </label>
           <label class="field">

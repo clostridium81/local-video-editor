@@ -23,8 +23,11 @@ import type {
   TextAnim,
   TextDecor,
   BlendMode,
-  AudioEQ
+  AudioEQ,
+  Crop,
+  Mask
 } from '../types/project'
+import type { SubtitleCue } from '../engine/subtitles'
 import { getPreset } from '../engine/effectPresets'
 import {
   saveAssetBlob,
@@ -185,6 +188,19 @@ export const useProjectStore = defineStore('project', () => {
 
   async function addAssetFromFile(file: File, expectedSession = sessionVersion.value): Promise<Asset | null> {
     if (expectedSession !== sessionVersion.value) return null
+    const prepared = await prepareAsset(file, expectedSession)
+    if (!prepared) return null
+    recordHistory()
+    state.value.assets[prepared.id] = prepared
+    touch()
+    return prepared
+  }
+
+  /**
+   * File からメタデータを読み、素材本体をセッションに登録する (state には入れない)。
+   * 呼び出し側が recordHistory() の後で state.assets に追加する。
+   */
+  async function prepareAsset(file: File, expectedSession: number): Promise<Asset | null> {
     const kind = detectAssetKind(file)
     if (!kind) {
       toast.warn(`この形式のファイルは使えません: ${file.name}`)
@@ -211,9 +227,6 @@ export const useProjectStore = defineStore('project', () => {
       toast.error(`ファイルを追加できませんでした: ${file.name}`)
       return null
     }
-    recordHistory()
-    state.value.assets[assetId] = asset
-    touch()
     return asset
   }
 
@@ -515,10 +528,14 @@ export const useProjectStore = defineStore('project', () => {
    * 指定プロパティの現在の (キーフレーム適用後の) 有効値を返す。
    * UI の「現在値でキーフレームを追加」操作で使う。
    */
-  function currentEffectiveValue(clip: Clip, prop: KeyframeableProperty): number {
+  function currentEffectiveValue(
+    clip: Clip,
+    prop: KeyframeableProperty,
+    at = state.value.timeline.playhead
+  ): number {
     const base = (clip as any)[prop]
     if (typeof base !== 'number') return 0
-    const localT = state.value.timeline.playhead - clip.start
+    const localT = at - clip.start
     const kfs = clip.keyframes?.[prop]
     return sampleKeyframes(kfs, localT, base)
   }
@@ -932,6 +949,180 @@ export const useProjectStore = defineStore('project', () => {
     touch()
   }
 
+  // ---------- キャンバスサイズ (縦横比) ----------
+
+  /**
+   * 作品の画面サイズを変える。クリップの位置は 0..1 の正規化座標なので
+   * そのまま新しい画面に対応する (画像/映像は新しい画面に contain フィット)。
+   */
+  function setCanvasSize(width: number, height: number) {
+    const w = Math.max(16, Math.round(width / 2) * 2)
+    const h = Math.max(16, Math.round(height / 2) * 2)
+    if (w === state.value.meta.width && h === state.value.meta.height) return
+    updateProjectMeta({ width: w, height: h })
+  }
+
+  // ---------- クロップ / マスク ----------
+
+  function setCrop(clipId: string, crop: Crop | undefined) {
+    const idx = state.value.clips.findIndex(c => c.id === clipId)
+    if (idx < 0) return
+    const c = state.value.clips[idx]
+    if (c.kind !== 'video' && c.kind !== 'image') return
+    recordHistory(`crop:${clipId}`)
+    state.value.clips[idx] = { ...c, crop } as Clip
+    touch()
+  }
+
+  function setMask(clipId: string, mask: Mask | undefined) {
+    const idx = state.value.clips.findIndex(c => c.id === clipId)
+    if (idx < 0) return
+    const c = state.value.clips[idx]
+    if (c.kind !== 'video' && c.kind !== 'image') return
+    recordHistory(`mask:${clipId}`)
+    state.value.clips[idx] = { ...c, mask } as Clip
+    touch()
+  }
+
+  // ---------- フリーズフレーム ----------
+
+  /**
+   * 動画クリップの absoluteTime の画を静止画 (frameFile) として hold 秒挿入する。
+   * - 動画クリップを absoluteTime で分割し、間に静止画クリップを置く
+   * - absoluteTime 以降に始まるクリップ (全トラック) は hold 秒後ろへずらす
+   * - 静止画クリップは元クリップの配置・エフェクト・切り抜き・マスクを引き継ぐ
+   * 素材の追加も含めて 1 回の Undo で戻せる。
+   */
+  async function insertFreezeFrame(
+    clipId: string,
+    absoluteTime: number,
+    frameFile: File,
+    hold = 2
+  ): Promise<ImageClip | null> {
+    const session = sessionVersion.value
+    const src = state.value.clips.find(c => c.id === clipId)
+    if (!src || src.kind !== 'video') return null
+    if (absoluteTime < src.start || absoluteTime > src.start + src.duration) return null
+    const asset = await prepareAsset(frameFile, session)
+    if (!asset) return null
+    const cur = state.value.clips.find(c => c.id === clipId)
+    if (!cur || cur.kind !== 'video') return null
+
+    recordHistory()
+    state.value.assets[asset.id] = asset
+    const eps = 1e-6
+    const t = absoluteTime
+    const localSplit = t - cur.start
+
+    // 分割 (境界ぴったりなら分割しない)
+    let rightId: string | null = null
+    if (localSplit > 0.01 && localSplit < cur.duration - 0.01) {
+      rightId = splitWithoutHistory(cur.id, t)
+    } else if (localSplit <= 0.01) {
+      rightId = cur.id // 先頭で止める → クリップ全体を後ろへ
+    }
+
+    // t 以降に始まるクリップを後ろへ
+    state.value.clips = state.value.clips.map(c =>
+      c.start >= t - eps || c.id === rightId ? { ...c, start: c.start + hold } : c
+    )
+
+    const still: ImageClip = {
+      id: nanoid(),
+      kind: 'image',
+      trackId: cur.trackId,
+      assetId: asset.id,
+      start: t,
+      duration: hold,
+      opacity: currentEffectiveValue(cur, 'opacity', t),
+      x: currentEffectiveValue(cur, 'x', t),
+      y: currentEffectiveValue(cur, 'y', t),
+      scale: currentEffectiveValue(cur, 'scale', t),
+      rotation: currentEffectiveValue(cur, 'rotation', t),
+      blendMode: cur.blendMode,
+      effects: clone(cur.effects),
+      colorGrade: clone(cur.colorGrade),
+      chromaKey: clone(cur.chromaKey),
+      pixelFx: clone(cur.pixelFx),
+      crop: clone(cur.crop),
+      mask: clone(cur.mask)
+    }
+    state.value.clips.push(still)
+    const end = Math.max(...state.value.clips.map(c => c.start + c.duration))
+    extendDurationIfNeeded(end)
+    touch()
+    return still
+  }
+
+  /** splitClipAt の履歴を積まない版 (複合操作の内部用) */
+  function splitWithoutHistory(clipId: string, absoluteTime: number): string | null {
+    const idx = state.value.clips.findIndex(c => c.id === clipId)
+    if (idx < 0) return null
+    const c = state.value.clips[idx]
+    const localSplit = absoluteTime - c.start
+    const { left: leftKf, right: rightKf } = splitAllKeyframes(c.keyframes, localSplit)
+    const leftClip: Clip = { ...c, duration: localSplit, keyframes: leftKf, transitionOut: undefined }
+    const right = {
+      ...c,
+      id: nanoid(),
+      start: absoluteTime,
+      duration: c.duration - localSplit,
+      keyframes: rightKf,
+      transitionIn: undefined
+    } as Clip
+    if (right.kind === 'video' || right.kind === 'audio') {
+      right.sourceIn = (c.sourceIn ?? 0) + localSplit * (c.speed ?? 1)
+    }
+    state.value.clips.splice(idx, 1, leftClip, right)
+    return right.id
+  }
+
+  // ---------- 字幕 (SRT / VTT) ----------
+
+  /**
+   * 字幕を新しい「字幕」トラックにテキストクリップとして並べる。
+   * offset 秒ずらして配置する (通常は 0)。作成したクリップ数を返す。
+   */
+  function importSubtitles(cues: SubtitleCue[], offset = 0): number {
+    const valid = cues.filter(c => c.text.trim() && c.end > c.start)
+    if (valid.length === 0) return 0
+    recordHistory()
+    const topOrder = Math.max(0, ...state.value.tracks.filter(t => t.kind === 'video').map(t => t.order))
+    const track: Track = {
+      id: nanoid(),
+      kind: 'video',
+      name: '字幕',
+      muted: false,
+      locked: false,
+      order: topOrder + 1
+    }
+    state.value.tracks.push(track)
+    for (const cue of valid) {
+      const clip: TextClip = {
+        id: nanoid(),
+        kind: 'text',
+        trackId: track.id,
+        start: Math.max(0, cue.start + offset),
+        duration: cue.end - cue.start,
+        opacity: 1,
+        text: cue.text,
+        fontFamily: "'Noto Sans JP'",
+        fontSize: 56,
+        color: '#ffffff',
+        x: 0.5,
+        y: 0.86,
+        align: 'center',
+        bold: true,
+        italic: false,
+        decor: { outline: { color: '#000000', width: 8 } }
+      }
+      state.value.clips.push(clip)
+      extendDurationIfNeeded(clip.start + clip.duration)
+    }
+    touch()
+    return valid.length
+  }
+
   // ---------- バックアップ状態の追跡 ----------
   // 「最後に ZIP バックアップ (エクスポート/インポート) した内容」のハッシュを
   // localStorage に記録し、タブを閉じる際に未バックアップの編集があるかを判定する。
@@ -1083,9 +1274,19 @@ export const useProjectStore = defineStore('project', () => {
     setTextDecor,
     setTextAnim,
     setBlendMode,
-    setAudioEQ
+    setAudioEQ,
+    // v0.6
+    setCanvasSize,
+    setCrop,
+    setMask,
+    insertFreezeFrame,
+    importSubtitles
   }
 })
+
+function clone<T>(v: T | undefined): T | undefined {
+  return v === undefined ? undefined : (JSON.parse(JSON.stringify(v)) as T)
+}
 
 function guessMimeByName(name: string): string {
   const lower = name.toLowerCase()
