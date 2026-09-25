@@ -150,6 +150,26 @@ await test('同じ作品/素材/クリップ ID の復元でも新エンジン�
   engine.dispose()
 })
 
+await test('読み込み待ちの古い描画は、後から始まった描画を上書きしない', async () => {
+  const state = fixture(['image', 'video'])
+  setSources(state)
+  const engine = new PreviewEngine(canvas(), state)
+  deferLoads = true
+  const first = engine.renderCurrent()
+  for (let i = 0; i < 10; i++) await Promise.resolve()
+  engine.setState({ ...state, timeline: { ...state.timeline, playhead: 1 } })
+  const second = engine.renderCurrent()
+  for (let i = 0; i < 10; i++) await Promise.resolve()
+  loads.splice(0).forEach(done => done())
+  deferLoads = false
+  await Promise.all([first, second])
+  // 画像・動画とも最新の描画で 1 回ずつだけ描かれる
+  assert.deepEqual(draws.map(el => el.kind), ['image', 'video'])
+  const video = elements.find(el => el.kind === 'video')!
+  assert.equal(video.currentTime, 1)
+  engine.dispose()
+})
+
 await test('動画書き出しの FrameSource がセッション素材を読み込み、シーク/終了できる', async () => {
   const state = fixture(['video'])
   setSources(state)

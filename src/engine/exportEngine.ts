@@ -22,12 +22,24 @@ import {
   type VideoFrameRef
 } from './frameSource'
 import {
+  clipSourceSpan,
   clipSourceTimestamps,
+  compareDrawOrder,
+  sourceAdvance,
+  speedAt,
   isClipActiveAt,
   mapClipTimeToSource,
   type SourceKind
 } from './frameTiming'
 import { ExportProfiler, logProfile } from './exportProfiler'
+import {
+  buildDuckActivity,
+  duckGain,
+  hasDucking,
+  rmsFromChannels,
+  type DuckActivity,
+  type RmsTrack
+} from './ducking'
 
 // ============================================================
 // MP4 / WebM エクスポート (WebCodecs + mp4-muxer / webm-muxer)
@@ -104,6 +116,7 @@ interface RenderContext {
   canvas: OffscreenCanvas | HTMLCanvasElement
   ctx: OffscreenCanvasRenderingContext2D | CanvasRenderingContext2D
   buffer: LayerBuffer
+  bgBuffer: LayerBuffer
 }
 
 function drawFrame(rc: RenderContext, t: number) {
@@ -122,10 +135,10 @@ function drawFrame(rc: RenderContext, t: number) {
   const trackOrderMap = new Map(tracksByOrder.map((tr, i) => [tr.id, i]))
 
   const activeClips = state.clips
-    .filter(c => t >= c.start && t < c.start + c.duration)
-    .sort((a, b) => (trackOrderMap.get(a.trackId) ?? 0) - (trackOrderMap.get(b.trackId) ?? 0))
+    .filter(c => isClipActiveAt(c, t))
+    .sort((a, b) => compareDrawOrder(a, b, trackOrderMap))
 
-  const target = { ctx, width, height, buffer: rc.buffer }
+  const target = { ctx, width, height, buffer: rc.buffer, bgBuffer: rc.bgBuffer }
   for (const clip of activeClips) {
     const track = state.tracks.find(tr => tr.id === clip.trackId)
     if (track?.kind === 'audio') continue
@@ -184,6 +197,18 @@ async function renderAudioMix(
     }
   }
 
+  // ダッキング: デコード済みの音声から「他の音が鳴っている度合い」を求める
+  let duck: DuckActivity | null = null
+  if (hasDucking(state.clips)) {
+    const rms = new Map<string, RmsTrack>()
+    for (const [assetId, buf] of decoded) {
+      const chans: Float32Array[] = []
+      for (let ch = 0; ch < buf.numberOfChannels; ch++) chans.push(buf.getChannelData(ch))
+      rms.set(assetId, rmsFromChannels(chans, buf.sampleRate))
+    }
+    duck = buildDuckActivity(state, rms)
+  }
+
   // マスターゲイン
   const masterGain = oc.createGain()
   masterGain.gain.value = state.timeline.masterVolume ?? 1
@@ -220,8 +245,6 @@ async function renderAudioMix(
 
     const src = oc.createBufferSource()
     src.buffer = buf
-    const speed = Math.max(0.0625, Math.min(16, c.speed ?? 1))
-    src.playbackRate.value = speed
 
     const gain = oc.createGain()
 
@@ -232,9 +255,14 @@ async function renderAudioMix(
     const toOutT = (absT: number) => Math.max(0, absT - rangeOffset)
     // 音量エンベロープ = 音量 (キーフレーム) × トランジションの fade × 音声フェード。
     // プレビューと同じ computeEffective() で評価する
+    // ダッキング (他の音が鳴っている間は下げる) もここで掛ける
     const env = (lt: number) =>
-      Math.max(0, Math.min(2, computeEffective(c, c.start + lt).eff.volume))
+      Math.max(
+        0,
+        Math.min(2, computeEffective(c, c.start + lt).eff.volume * duckGain(duck, c, c.start + lt))
+      )
     const hasEnvelope =
+      (duck !== null && c.kind === 'audio' && (c.ducking?.amount ?? 0) > 0) ||
       (c.keyframes?.volume?.length ?? 0) > 0 ||
       c.transitionIn?.type === 'fade' ||
       c.transitionOut?.type === 'fade' ||
@@ -287,16 +315,26 @@ async function renderAudioMix(
     gain.connect(getDestForTrack(c.trackId))
 
     const offsetInAsset = c.sourceIn ?? 0
-    const clipDurAtSourceRate = c.duration * speed
     const startInOutput = c.start - rangeOffset
     if (startInOutput + c.duration <= 0) continue
     const actualStart = Math.max(0, startInOutput)
     const skip = actualStart - startInOutput // 範囲開始で途中再生の場合
-    src.start(
-      actualStart,
-      offsetInAsset + skip * speed,
-      Math.max(0, clipDurAtSourceRate - skip * speed)
-    )
+
+    // 再生速度: 速度カーブがあれば playbackRate を時間に沿って変化させる。
+    // 素材の進み方 (= 速度の積分) は映像側の mapClipTimeToSource と一致する
+    const clampRate = (v: number) => Math.max(0.0625, Math.min(16, v))
+    if (c.speedCurve?.length) {
+      src.playbackRate.setValueAtTime(clampRate(speedAt(c, skip)), actualStart)
+      const stepSec = 0.05
+      for (let lt = skip + stepSec; lt < c.duration; lt += stepSec) {
+        src.playbackRate.linearRampToValueAtTime(clampRate(speedAt(c, lt)), toOutT(c.start + lt))
+      }
+      src.playbackRate.linearRampToValueAtTime(clampRate(speedAt(c, c.duration)), toOutT(c.start + c.duration))
+    } else {
+      src.playbackRate.value = clampRate(c.speed ?? 1)
+    }
+    const srcOffset = offsetInAsset + sourceAdvance(c, skip)
+    src.start(actualStart, srcOffset, Math.max(0, clipSourceSpan(c) - sourceAdvance(c, skip)))
   }
 
   return await oc.startRendering()
@@ -351,7 +389,7 @@ class VideoFrameResolver {
       }
       if (!entry) continue
       waits.push(
-        entry.source.getFrameAt(mapClipTimeToSource(vc, t)).then(ref => {
+        entry.source.getFrameAt(Math.max(0, mapClipTimeToSource(vc, t))).then(ref => {
           if (ref) out.set(vc.id, ref)
         })
       )
@@ -365,7 +403,7 @@ class VideoFrameResolver {
     const created = await createFrameSourceForClip({
       projectId: this.projectId,
       assetId: vc.assetId,
-      speed: vc.speed ?? 1,
+      speed: vc.speedCurve?.length ? Math.min(...vc.speedCurve.map(p => p.speed)) : vc.speed ?? 1,
       timestamps: plan.timestamps,
       cache: this.cache,
       activeDecoders: this.decoderCount
@@ -525,7 +563,8 @@ export async function exportProject(
       ? new OffscreenCanvas(width, height)
       : Object.assign(document.createElement('canvas'), { width, height }),
     ctx: null as any,
-    buffer: new LayerBuffer()
+    buffer: new LayerBuffer(),
+    bgBuffer: new LayerBuffer()
   }
   rc.ctx = (rc.canvas as any).getContext('2d') as any
 
@@ -738,7 +777,8 @@ async function exportGIF(state: ProjectState, opts: ExportOptions): Promise<Expo
       ? new OffscreenCanvas(width, height)
       : Object.assign(document.createElement('canvas'), { width, height }),
     ctx: null as any,
-    buffer: new LayerBuffer()
+    buffer: new LayerBuffer(),
+    bgBuffer: new LayerBuffer()
   }
   rc.ctx = (rc.canvas as any).getContext('2d', { willReadFrequently: true }) as any
 

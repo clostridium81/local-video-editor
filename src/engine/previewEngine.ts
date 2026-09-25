@@ -7,6 +7,8 @@ import type {
 } from '../types/project'
 import { getAssetObjectURL } from '../persistence/assetStore'
 import { computeEffective, drawClip, LayerBuffer, type VisualSource } from './renderer'
+import { compareDrawOrder, isClipActiveAt, sourceAdvance, speedAt } from './frameTiming'
+import { duckGain, type DuckActivity } from './ducking'
 
 // 旧来の import 先 (previewEngine) を使うコード向けに再エクスポート
 export {
@@ -77,6 +79,9 @@ export class PreviewEngine {
   private onFrame?: (playhead: number) => void
   private onError?: (msg: string) => void
   private layerBuf = new LayerBuffer()
+  private bgBuf = new LayerBuffer()
+  // ダッキングの度合い (作品変更のたびに呼び出し側が非同期で求めて渡す)
+  private duck: DuckActivity | null = null
   // プレビュー音声用の AudioContext (EQ / 音量ブーストのルーティング先)。
   // ブラウザの自動再生制限があるため、生成は初回利用時・resume は play() 時
   private audioCtx: AudioContext | null = null
@@ -142,6 +147,10 @@ export class PreviewEngine {
     this.state = state
     this.resizeCanvas()
     this.pruneNodes()
+  }
+
+  setDuckActivity(activity: DuckActivity | null) {
+    this.duck = activity
   }
 
   setOnFrame(cb: (playhead: number) => void) {
@@ -277,11 +286,31 @@ export class PreviewEngine {
     await this.renderAt(this.state.timeline.playhead, false)
   }
 
+  // renderAt は非同期 (素材の読み込み・シーク待ち) なので、後から始まった描画が
+  // 先に終わることがある。最新の要求だけが描くよう通し番号で判定する
+  private renderSeq = 0
+
   private async renderAt(t: number, driveMedia: boolean) {
     if (this.disposed) return
+    const seq = ++this.renderSeq
     const { ctx } = this
     const { width, height, backgroundColor } = this.state.meta
 
+    const tracksByOrder = [...this.state.tracks].sort((a, b) => a.order - b.order)
+    const trackOrderMap = new Map(tracksByOrder.map((tr, i) => [tr.id, i]))
+
+    const activeClips = this.state.clips
+      .filter(c => isClipActiveAt(c, t))
+      .sort((a, b) => compareDrawOrder(a, b, trackOrderMap))
+
+    if (driveMedia) {
+      await this.syncMedia(activeClips, t, seq)
+    } else {
+      await this.seekOnly(activeClips, t, seq)
+    }
+    if (this.disposed || seq !== this.renderSeq) return
+
+    // 待ちが終わってから消して描く (待っている間に前の画が消えてちらつかないように)
     ctx.save()
     ctx.filter = 'none'
     ctx.globalAlpha = 1
@@ -291,39 +320,25 @@ export class PreviewEngine {
     ctx.fillRect(0, 0, width, height)
     ctx.restore()
 
-    const tracksByOrder = [...this.state.tracks].sort((a, b) => a.order - b.order)
-    const trackOrderMap = new Map(tracksByOrder.map((tr, i) => [tr.id, i]))
-
-    const activeClips = this.state.clips
-      .filter(c => t >= c.start && t < c.start + c.duration)
-      .sort((a, b) => {
-        const oa = trackOrderMap.get(a.trackId) ?? 0
-        const ob = trackOrderMap.get(b.trackId) ?? 0
-        return oa - ob
-      })
-
-    if (driveMedia) {
-      await this.syncMedia(activeClips, t)
-    } else {
-      await this.seekOnly(activeClips, t)
-    }
-
     for (const clip of activeClips) {
-      if (this.disposed) return
+      if (this.disposed || seq !== this.renderSeq) return
       const track = this.state.tracks.find(tr => tr.id === clip.trackId)
       if (track?.kind === 'audio') continue
       await this.drawClip(clip, t)
     }
   }
 
-  /** クリップのローカル時刻 (speed を考慮) */
+  /** クリップ先頭から進んだ素材の秒数 (speed / 速度カーブを考慮) */
   private localTime(clip: Clip, t: number): number {
-    const raw = t - clip.start
-    const speed = (clip as any).speed ?? 1
-    return raw * speed
+    return sourceAdvance(clip, t - clip.start)
   }
 
-  private async syncMedia(activeClips: Clip[], t: number) {
+  /** 後から始まった描画があれば、古い描画はメディア要素を操作しない */
+  private isStale(seq: number) {
+    return this.disposed || seq !== this.renderSeq
+  }
+
+  private async syncMedia(activeClips: Clip[], t: number, seq: number) {
     const activeIds = new Set(activeClips.map(c => c.id))
     for (const [id, node] of this.videoNodes) {
       if (!activeIds.has(id)) node.el.pause()
@@ -343,32 +358,38 @@ export class PreviewEngine {
       // ソロはトラック種別を問わず適用する (video トラックの S ボタンも効く)
       const muteBySolo = anySolo && !tr?.solo
       // WebAudio チェーンがあれば 100% 超のブーストも通す (エクスポートと同じ挙動)
-      const rawVol = Math.max(0, eff.volume * masterVol * trackVol)
+      const rawVol = Math.max(0, eff.volume * masterVol * trackVol * duckGain(this.duck, clip, t))
 
       const node =
         clip.kind === 'video'
           ? await this.ensureVideoNode(clip)
           : await this.ensureAudioNode(clip)
+      if (this.isStale(seq)) return
       if (!node) continue
 
-      const speed = clip.speed ?? 1
+      // 速度カーブがあれば現在位置の速度に追従させる
+      const speed = speedAt(clip, t - clip.start)
       const local = this.localTime(clip, t)
       const inClipTime = local + (clip.sourceIn ?? 0)
+      // 重ねるトランジションの前倒し区間で素材の手前が足りなければ先頭の画で止める
+      const frozen = inClipTime < 0
+      const target = Math.max(0, inClipTime)
       try {
         // クリップ speed に再生レート (シャトル) を乗算して追従させる
-        node.el.playbackRate = Math.max(0.25, Math.min(16, speed * Math.abs(this.rate)))
+        node.el.playbackRate = Math.max(0.0625, Math.min(16, speed * Math.abs(this.rate)))
       } catch {}
-      if (Math.abs(node.el.currentTime - inClipTime) > 0.2) {
-        node.el.currentTime = inClipTime
+      if (Math.abs(node.el.currentTime - target) > 0.2) {
+        node.el.currentTime = target
       }
-      node.el.muted = !!(clip.muted || tr?.muted || muteBySolo)
+      // 前倒し区間 (t < start) は映像だけ出し、音はクリップ開始から鳴らす
+      node.el.muted = !!(clip.muted || tr?.muted || muteBySolo || t < clip.start)
       this.applyAudioParams(node, clip, rawVol)
-      if (this.playing && node.el.paused && this.rate > 0) {
+      if (this.playing && node.el.paused && this.rate > 0 && !frozen) {
         node.el.play().catch(() => {})
       }
       // 負レート (シャトル逆走) は媒体要素では再生できないため、
       // pause したまま seek 駆動 (コマ送り) で描画する
-      if (this.rate < 0) node.el.pause()
+      if (this.rate < 0 || frozen) node.el.pause()
     }
   }
 
@@ -398,17 +419,24 @@ export class PreviewEngine {
     }
   }
 
-  private async seekOnly(activeClips: Clip[], t: number) {
+  private async seekOnly(activeClips: Clip[], t: number, seq: number) {
     for (const clip of activeClips) {
       if (clip.kind === 'video') {
         const node = await this.ensureVideoNode(clip)
+        if (this.isStale(seq)) return
         if (!node) continue
         node.el.pause()
         const local = this.localTime(clip, t)
-        const inClipTime = local + (clip.sourceIn ?? 0)
-        node.el.currentTime = inClipTime
+        const target = Math.max(0, local + (clip.sourceIn ?? 0))
+        if (Math.abs(node.el.currentTime - target) > 1e-3) {
+          // シーク完了前に描くと前のコマが出るので seeked を待つ (応答が無くても 0.5 秒で進む)
+          const seeked = waitEvent(node.el, 'seeked', 500).catch(() => {})
+          node.el.currentTime = target
+          await seeked
+        }
       } else if (clip.kind === 'audio') {
         const node = await this.ensureAudioNode(clip)
+        if (this.isStale(seq)) return
         if (!node) continue
         node.el.pause()
       }
@@ -499,7 +527,12 @@ export class PreviewEngine {
       source = { src: img, width: img.naturalWidth, height: img.naturalHeight }
     }
     const { width, height } = this.state.meta
-    drawClip({ ctx: this.ctx, width, height, buffer: this.layerBuf }, clip, t, source)
+    drawClip(
+      { ctx: this.ctx, width, height, buffer: this.layerBuf, bgBuffer: this.bgBuf },
+      clip,
+      t,
+      source
+    )
   }
 
   private disposed = false
@@ -533,8 +566,9 @@ function disposeMediaNode(node: { el: HTMLMediaElement; chain?: AudioChain }) {
   node.chain?.src.disconnect()
 }
 
-function waitEvent(el: EventTarget, name: string): Promise<void> {
+function waitEvent(el: EventTarget, name: string, timeoutMs?: number): Promise<void> {
   return new Promise((resolve, reject) => {
+    const timer = timeoutMs != null ? setTimeout(() => { cleanup(); resolve() }, timeoutMs) : null
     const onOk = () => {
       cleanup()
       resolve()
@@ -544,6 +578,7 @@ function waitEvent(el: EventTarget, name: string): Promise<void> {
       reject(new Error(`${name} failed`))
     }
     const cleanup = () => {
+      if (timer) clearTimeout(timer)
       el.removeEventListener(name, onOk)
       el.removeEventListener('error', onErr)
     }

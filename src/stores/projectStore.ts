@@ -25,7 +25,8 @@ import type {
   BlendMode,
   AudioEQ,
   Crop,
-  Mask
+  Mask,
+  BgFill
 } from '../types/project'
 import type { SubtitleCue } from '../engine/subtitles'
 import { getPreset } from '../engine/effectPresets'
@@ -48,6 +49,9 @@ import { contentSignature, isEmptyProject } from './backupSignature'
 import { useClipboard } from '../composables/useClipboard'
 import { useSelection } from '../composables/useSelection'
 import { clearWaveformCache } from '../engine/waveform'
+import { mapClipTimeToSource, splitSpeedCurve } from '../engine/frameTiming'
+import { clearDuckCache } from '../engine/ducking'
+import { getTextStyle, textStylePatch } from '../engine/textStyles'
 
 // ============================================================
 // プロジェクトストア
@@ -405,37 +409,9 @@ export const useProjectStore = defineStore('project', () => {
     if (localSplit <= 0.01 || localSplit >= c.duration - 0.01) return null
 
     recordHistory(mergeKey)
-
-    const { left: leftKf, right: rightKf } = splitAllKeyframes(c.keyframes, localSplit)
-
-    // 左側
-    const leftClip: Clip = {
-      ...c,
-      duration: localSplit,
-      keyframes: leftKf,
-      transitionOut: undefined // 分割境界にはトランジション不要
-    }
-
-    // 右側: 新 ID、sourceIn を進める (video/audio)
-    const rightBase = {
-      ...c,
-      id: nanoid(),
-      start: absoluteTime,
-      duration: c.duration - localSplit,
-      keyframes: rightKf,
-      transitionIn: undefined
-    }
-    if (c.kind === 'video' || c.kind === 'audio') {
-      // タイムライン上で localSplit 秒進んだ間に、素材は localSplit * speed 秒
-      // 進んでいる (speed=2 なら倍消費)
-      const speed = (c as any).speed ?? 1
-      ;(rightBase as VideoClip | AudioClip).sourceIn =
-        (c.sourceIn ?? 0) + localSplit * speed
-    }
-
-    state.value.clips.splice(idx, 1, leftClip, rightBase as Clip)
+    const rightId = splitWithoutHistory(clipId, absoluteTime)
     touch()
-    return rightBase.id
+    return rightId
   }
 
   function splitSelectedAtPlayhead(selectedIds: string[]) {
@@ -557,6 +533,34 @@ export const useProjectStore = defineStore('project', () => {
     touch()
   }
 
+  /**
+   * 同じトラックで「前のクリップにくっついている」全クリップに、入りの
+   * トランジションをまとめて設定する (つなぎ目への一括適用)。
+   * 長さは前後どちらのクリップにも収まるよう短くする。設定した数を返す。
+   */
+  function applyTransitionToTrack(trackId: string, transition: Transition): number {
+    const onTrack = state.value.clips
+      .filter(c => c.trackId === trackId && c.kind !== 'audio')
+      .sort((a, b) => a.start - b.start)
+    const targets: Array<{ id: string; duration: number }> = []
+    for (let i = 1; i < onTrack.length; i++) {
+      const prev = onTrack[i - 1]
+      const cur = onTrack[i]
+      // 隙間 / 重なりが 0.05 秒以内ならつなぎ目とみなす
+      if (Math.abs(prev.start + prev.duration - cur.start) > 0.05) continue
+      const limit = transition.overlap ? Math.min(prev.duration, cur.duration) : cur.duration
+      targets.push({ id: cur.id, duration: Math.min(transition.duration, limit) })
+    }
+    if (targets.length === 0) return 0
+    recordHistory()
+    for (const { id, duration } of targets) {
+      const idx = state.value.clips.findIndex(c => c.id === id)
+      state.value.clips[idx] = { ...state.value.clips[idx], transitionIn: { ...transition, duration } }
+    }
+    touch()
+    return targets.length
+  }
+
   function setEffects(clipId: string, effects: ClipEffects | undefined) {
     const idx = state.value.clips.findIndex(c => c.id === clipId)
     if (idx < 0) return
@@ -650,6 +654,7 @@ export const useProjectStore = defineStore('project', () => {
     useClipboard().clear()
     useSelection().clearSelection()
     clearWaveformCache()
+    clearDuckCache()
     dismissBackupPrompt()
     // 切替先プロジェクトの最終バックアップ署名を読み直す
     loadBackupSig(newState.meta.id)
@@ -984,6 +989,40 @@ export const useProjectStore = defineStore('project', () => {
     touch()
   }
 
+  // ---------- 背景ぼかし塗り ----------
+
+  /** 複数の動画/画像クリップに背景ぼかし塗りをまとめて設定 (undefined で解除) */
+  function setBgFill(clipIds: string[], fill: BgFill | undefined): number {
+    const ids = new Set(clipIds)
+    const targets = state.value.clips.filter(c => ids.has(c.id) && (c.kind === 'video' || c.kind === 'image'))
+    if (targets.length === 0) return 0
+    recordHistory(targets.length === 1 ? `bgfill:${targets[0].id}` : undefined)
+    state.value.clips = state.value.clips.map(c =>
+      ids.has(c.id) && (c.kind === 'video' || c.kind === 'image')
+        ? ({ ...c, bgFill: fill ? { ...fill } : undefined } as Clip)
+        : c
+    )
+    touch()
+    return targets.length
+  }
+
+  // ---------- テキストのスタイル集 ----------
+
+  /** 複数のテキストクリップにスタイルをまとめて当てる (位置・内容は変えない) */
+  function applyTextStyle(clipIds: string[], presetId: string): number {
+    const preset = getTextStyle(presetId)
+    if (!preset) return 0
+    const ids = new Set(clipIds)
+    const targets = state.value.clips.filter(c => ids.has(c.id) && c.kind === 'text')
+    if (targets.length === 0) return 0
+    recordHistory()
+    state.value.clips = state.value.clips.map(c =>
+      ids.has(c.id) && c.kind === 'text' ? ({ ...c, ...textStylePatch(preset) } as Clip) : c
+    )
+    touch()
+    return targets.length
+  }
+
   // ---------- フリーズフレーム ----------
 
   /**
@@ -1054,24 +1093,37 @@ export const useProjectStore = defineStore('project', () => {
     return still
   }
 
-  /** splitClipAt の履歴を積まない版 (複合操作の内部用) */
+  /**
+   * クリップを絶対時刻で分割する (履歴は積まない。splitClipAt や複合操作の内部用)。
+   * キーフレームと速度カーブも境界で分け、右側の sourceIn は境界の素材時刻にする。
+   */
   function splitWithoutHistory(clipId: string, absoluteTime: number): string | null {
     const idx = state.value.clips.findIndex(c => c.id === clipId)
     if (idx < 0) return null
     const c = state.value.clips[idx]
     const localSplit = absoluteTime - c.start
     const { left: leftKf, right: rightKf } = splitAllKeyframes(c.keyframes, localSplit)
-    const leftClip: Clip = { ...c, duration: localSplit, keyframes: leftKf, transitionOut: undefined }
+    const curve = splitSpeedCurve(c.speedCurve, localSplit / c.duration)
+    // 左側: 分割境界にはトランジション不要
+    const leftClip: Clip = {
+      ...c,
+      duration: localSplit,
+      keyframes: leftKf,
+      speedCurve: curve.left,
+      transitionOut: undefined
+    }
     const right = {
       ...c,
       id: nanoid(),
       start: absoluteTime,
       duration: c.duration - localSplit,
       keyframes: rightKf,
+      speedCurve: curve.right,
       transitionIn: undefined
     } as Clip
     if (right.kind === 'video' || right.kind === 'audio') {
-      right.sourceIn = (c.sourceIn ?? 0) + localSplit * (c.speed ?? 1)
+      // タイムライン上で localSplit 秒進んだ間に素材が進んだ分 (speed / 速度カーブ込み)
+      right.sourceIn = mapClipTimeToSource(c, absoluteTime)
     }
     state.value.clips.splice(idx, 1, leftClip, right)
     return right.id
@@ -1221,6 +1273,7 @@ export const useProjectStore = defineStore('project', () => {
     removeKeyframe,
     currentEffectiveValue,
     setTransition,
+    applyTransitionToTrack,
     setEffects,
     addTrack,
     updateTrack,
@@ -1279,6 +1332,8 @@ export const useProjectStore = defineStore('project', () => {
     setCanvasSize,
     setCrop,
     setMask,
+    setBgFill,
+    applyTextStyle,
     insertFreezeFrame,
     importSubtitles
   }

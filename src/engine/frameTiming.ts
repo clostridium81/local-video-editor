@@ -9,21 +9,146 @@
 // ============================================================
 
 export interface ClipTiming {
+  kind?: string
   start: number
   duration: number
   sourceIn?: number
   speed?: number
+  speedCurve?: Array<{ x: number; speed: number }>
+  transitionIn?: { duration: number; overlap?: boolean }
+}
+
+// ---------- 速度カーブ ----------
+
+export const MIN_CURVE_SPEED = 0.1
+export const MAX_CURVE_SPEED = 10
+
+/**
+ * 速度カーブを「クリップ先頭からの秒 → 速度」の折れ線に直す。
+ * x で並べ替え、範囲外は丸め、両端 (0 と duration) が必ず含まれるようにする。
+ * カーブが無ければ null。
+ */
+function curveKnots(clip: ClipTiming): Array<{ t: number; s: number }> | null {
+  const pts = clip.speedCurve
+  if (!pts || pts.length === 0) return null
+  const d = Math.max(0, clip.duration)
+  const clampS = (v: number) =>
+    Number.isFinite(v) ? Math.max(MIN_CURVE_SPEED, Math.min(MAX_CURVE_SPEED, v)) : 1
+  const sorted = pts
+    .map(p => ({ x: Math.max(0, Math.min(1, Number.isFinite(p.x) ? p.x : 0)), s: clampS(p.speed) }))
+    .sort((a, b) => a.x - b.x)
+  const knots = sorted.map(p => ({ t: p.x * d, s: p.s }))
+  if (knots[0].t > 0) knots.unshift({ t: 0, s: knots[0].s })
+  if (knots[knots.length - 1].t < d) knots.push({ t: d, s: knots[knots.length - 1].s })
+  return knots
+}
+
+/** クリップ先頭から local 秒の位置の再生速度 */
+export function speedAt(clip: ClipTiming, local: number): number {
+  const knots = curveKnots(clip)
+  if (!knots) return clip.speed ?? 1
+  if (local <= knots[0].t) return knots[0].s
+  for (let i = 1; i < knots.length; i++) {
+    const a = knots[i - 1]
+    const b = knots[i]
+    if (local <= b.t) {
+      const span = b.t - a.t
+      return span <= 0 ? b.s : a.s + ((b.s - a.s) * (local - a.t)) / span
+    }
+  }
+  return knots[knots.length - 1].s
+}
+
+/**
+ * クリップ先頭から local 秒の間に進む素材の秒数 (= 速度の積分)。
+ * 範囲外 (local < 0 や duration 超え) は端の速度で延長する。
+ */
+export function sourceAdvance(clip: ClipTiming, local: number): number {
+  const knots = curveKnots(clip)
+  if (!knots) return local * (clip.speed ?? 1)
+  if (local <= 0) return local * knots[0].s
+  let acc = 0
+  for (let i = 1; i < knots.length; i++) {
+    const a = knots[i - 1]
+    const b = knots[i]
+    if (local <= b.t) {
+      const sl = speedAt(clip, local)
+      return acc + ((local - a.t) * (a.s + sl)) / 2
+    }
+    acc += ((b.t - a.t) * (a.s + b.s)) / 2
+  }
+  const last = knots[knots.length - 1]
+  return acc + (local - last.t) * last.s
+}
+
+/** クリップ全体で消費する素材の秒数 */
+export function clipSourceSpan(clip: ClipTiming): number {
+  return sourceAdvance(clip, clip.duration)
+}
+
+/**
+ * 速度カーブを位置 f (0..1) で 2 つに分ける (クリップ分割用)。
+ * 左右それぞれ 0..1 に正規化し直し、境界の速度を補間して両側に入れる。
+ */
+export function splitSpeedCurve(
+  curve: Array<{ x: number; speed: number }> | undefined,
+  f: number
+): { left?: Array<{ x: number; speed: number }>; right?: Array<{ x: number; speed: number }> } {
+  if (!curve || curve.length === 0 || f <= 0 || f >= 1) return { left: curve, right: curve }
+  const probe: ClipTiming = { start: 0, duration: 1, speedCurve: curve }
+  const mid = speedAt(probe, f)
+  const sorted = [...curve].sort((a, b) => a.x - b.x)
+  const left = [
+    ...sorted.filter(p => p.x < f).map(p => ({ x: p.x / f, speed: p.speed })),
+    { x: 1, speed: mid }
+  ]
+  const right = [
+    { x: 0, speed: mid },
+    ...sorted.filter(p => p.x > f).map(p => ({ x: (p.x - f) / (1 - f), speed: p.speed }))
+  ]
+  if (left[0].x > 0) left.unshift({ x: 0, speed: speedAt(probe, 0) })
+  if (right[right.length - 1].x < 1) right.push({ x: 1, speed: speedAt(probe, 1) })
+  return { left, right }
+}
+
+/**
+ * 重ねる入りトランジション (transitionIn.overlap) で、開始位置より前に
+ * 描き始める秒数。音声クリップは映像を持たないので 0。
+ */
+export function preRoll(clip: ClipTiming): number {
+  const tr = clip.transitionIn
+  if (!tr?.overlap || clip.kind === 'audio') return 0
+  return Math.max(0, tr.duration)
+}
+
+/** 画面に描き始める時刻 (重ねるトランジションの分だけ start より前) */
+export function visualStart(clip: ClipTiming): number {
+  return clip.start - preRoll(clip)
 }
 
 /** タイムライン時刻 t (絶対秒) → 素材内時刻 (秒) */
 export function mapClipTimeToSource(clip: ClipTiming, t: number): number {
-  const speed = clip.speed ?? 1
-  return (t - clip.start) * speed + (clip.sourceIn ?? 0)
+  return sourceAdvance(clip, t - clip.start) + (clip.sourceIn ?? 0)
 }
 
-/** エクスポートループと同一の条件: フレーム時刻 t でクリップが描画対象か */
+/**
+ * フレーム時刻 t でクリップが描画対象か (プレビュー・書き出し共通)。
+ * 重ねるトランジションの前倒し分も含む。
+ */
 export function isClipActiveAt(clip: ClipTiming, t: number): boolean {
-  return t >= clip.start && t < clip.start + clip.duration
+  return t >= visualStart(clip) && t < clip.start + clip.duration
+}
+
+/**
+ * 描画順: トラック順 (奥→手前) で並べ、同じトラック内では開始が遅いものを
+ * 手前にする (重ねるトランジションで次のクリップが前のクリップの上に来る)。
+ */
+export function compareDrawOrder(
+  a: ClipTiming & { trackId: string },
+  b: ClipTiming & { trackId: string },
+  trackOrder: Map<string, number>
+): number {
+  return (trackOrder.get(a.trackId) ?? 0) - (trackOrder.get(b.trackId) ?? 0) || a.start - b.start
 }
 
 export interface ClipFramePlan {

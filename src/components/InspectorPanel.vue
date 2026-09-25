@@ -26,12 +26,17 @@ import type {
   AudioEQ,
   Crop,
   Mask,
-  MaskShape
+  MaskShape,
+  SpeedPoint,
+  BgFill
 } from '../types/project'
 import { findKeyframeAt, neighborKeyframes } from '../engine/keyframes'
 import { EFFECT_PRESETS } from '../engine/effectPresets'
 import { useLocale } from '../composables/useLocale'
 import EffectSlider from './EffectSlider.vue'
+import SpeedCurveEditor from './SpeedCurveEditor.vue'
+import { clipSourceSpan } from '../engine/frameTiming'
+import { TEXT_STYLE_PRESETS, textStylePreviewCss } from '../engine/textStyles'
 import { mapClipTimeToSource } from '../engine/frameTiming'
 import { captureVideoFrame } from '../engine/frameCapture'
 import { toast } from '../composables/useToast'
@@ -357,23 +362,93 @@ interface TransitionOption {
   outLabel: [string, string]
 }
 
-const TRANSITION_OPTIONS: TransitionOption[] = [
-  { type: 'slide-left', inLabel: ['右から入る', 'スライド (右から)'], outLabel: ['左へ出る', 'スライド (左へ)'] },
-  { type: 'slide-right', inLabel: ['左から入る', 'スライド (左から)'], outLabel: ['右へ出る', 'スライド (右へ)'] },
-  { type: 'slide-up', inLabel: ['下から入る', 'スライド (下から)'], outLabel: ['上へ出る', 'スライド (上へ)'] },
-  { type: 'slide-down', inLabel: ['上から入る', 'スライド (上から)'], outLabel: ['下へ出る', 'スライド (下へ)'] },
-  { type: 'zoom', inLabel: ['ズームイン (小→大)', 'ズームイン'], outLabel: ['ズームアウト (大→小)', 'ズームアウト'] },
-  { type: 'zoom-out', inLabel: ['大きい状態から戻る', 'ズーム (拡大から)'], outLabel: ['大きくなって消える', 'ズーム (拡大へ)'] },
-  { type: 'spin', inLabel: ['回りながら出る', 'スピン'], outLabel: ['回りながら消える', 'スピン'] },
-  { type: 'blur', inLabel: ['ぼかしから出る', 'ブラー'], outLabel: ['ぼけて消える', 'ブラー'] },
-  { type: 'flash', inLabel: ['白く光ってから出る', 'フラッシュ'], outLabel: ['白く光って終わる', 'フラッシュ'] },
-  { type: 'wipe', inLabel: ['ワイプ (左から拭う)', 'ワイプ (左→右)'], outLabel: ['ワイプ (左へ拭う)', 'ワイプ (右→左)'] },
-  { type: 'wipe-rtl', inLabel: ['ワイプ (右から拭う)', 'ワイプ (右→左)'], outLabel: ['ワイプ (右へ拭う)', 'ワイプ (左→右)'] },
-  { type: 'wipe-up', inLabel: ['ワイプ (下から拭う)', 'ワイプ (下→上)'], outLabel: ['ワイプ (下へ拭う)', 'ワイプ (上→下)'] },
-  { type: 'wipe-down', inLabel: ['ワイプ (上から拭う)', 'ワイプ (上→下)'], outLabel: ['ワイプ (上へ拭う)', 'ワイプ (下→上)'] },
-  { type: 'split', inLabel: ['まん中から左右に開く', 'スプリット (開く)'], outLabel: ['左右から閉じる', 'スプリット (閉じる)'] },
-  { type: 'iris', inLabel: ['まん中から丸く開く', 'アイリス (開く)'], outLabel: ['丸く閉じる', 'アイリス (閉じる)'] }
+interface TransitionGroup {
+  label: [string, string]
+  options: TransitionOption[]
+}
+
+// メニューは分類ごとに optgroup で表示する (fade は先頭に別枠)
+const TRANSITION_GROUPS: TransitionGroup[] = [
+  {
+    label: ['すべる', 'スライド'],
+    options: [
+      { type: 'slide-left', inLabel: ['右から入る', 'スライド (右から)'], outLabel: ['左へ出る', 'スライド (左へ)'] },
+      { type: 'slide-right', inLabel: ['左から入る', 'スライド (左から)'], outLabel: ['右へ出る', 'スライド (右へ)'] },
+      { type: 'slide-up', inLabel: ['下から入る', 'スライド (下から)'], outLabel: ['上へ出る', 'スライド (上へ)'] },
+      { type: 'slide-down', inLabel: ['上から入る', 'スライド (上から)'], outLabel: ['下へ出る', 'スライド (下へ)'] }
+    ]
+  },
+  {
+    label: ['ふく (ワイプ)', 'ワイプ'],
+    options: [
+      { type: 'wipe', inLabel: ['左から拭う', 'ワイプ (左→右)'], outLabel: ['左へ拭って消える', 'ワイプ (右→左)'] },
+      { type: 'wipe-rtl', inLabel: ['右から拭う', 'ワイプ (右→左)'], outLabel: ['右へ拭って消える', 'ワイプ (左→右)'] },
+      { type: 'wipe-up', inLabel: ['下から拭う', 'ワイプ (下→上)'], outLabel: ['下へ拭って消える', 'ワイプ (上→下)'] },
+      { type: 'wipe-down', inLabel: ['上から拭う', 'ワイプ (上→下)'], outLabel: ['上へ拭って消える', 'ワイプ (下→上)'] },
+      { type: 'wipe-diag', inLabel: ['ななめに拭う', 'ワイプ (斜め)'], outLabel: ['ななめに拭って消える', 'ワイプ (斜め)'] },
+      { type: 'split', inLabel: ['まん中から左右に開く', 'スプリット (横に開く)'], outLabel: ['左右から閉じる', 'スプリット (横に閉じる)'] },
+      { type: 'split-v', inLabel: ['まん中から上下に開く', 'スプリット (縦に開く)'], outLabel: ['上下から閉じる', 'スプリット (縦に閉じる)'] },
+      { type: 'blinds', inLabel: ['ブラインド (横じま)', 'ブラインド'], outLabel: ['ブラインド (横じま)', 'ブラインド'] },
+      { type: 'checker', inLabel: ['いちまつ模様', 'チェッカー'], outLabel: ['いちまつ模様', 'チェッカー'] }
+    ]
+  },
+  {
+    label: ['かたち', 'シェイプ'],
+    options: [
+      { type: 'iris', inLabel: ['丸く開く', 'アイリス (開く)'], outLabel: ['丸く閉じる', 'アイリス (閉じる)'] },
+      { type: 'diamond', inLabel: ['ひし形に開く', 'ダイヤ (開く)'], outLabel: ['ひし形に閉じる', 'ダイヤ (閉じる)'] },
+      { type: 'heart', inLabel: ['ハート形に開く', 'ハート (開く)'], outLabel: ['ハート形に閉じる', 'ハート (閉じる)'] },
+      { type: 'clock', inLabel: ['時計の針のように開く', 'クロックワイプ'], outLabel: ['時計の針のように消える', 'クロックワイプ'] }
+    ]
+  },
+  {
+    label: ['うごき', 'モーション'],
+    options: [
+      { type: 'zoom', inLabel: ['ズームイン (小→大)', 'ズームイン'], outLabel: ['ズームアウト (大→小)', 'ズームアウト'] },
+      { type: 'zoom-out', inLabel: ['大きい状態から戻る', 'ズーム (拡大から)'], outLabel: ['大きくなって消える', 'ズーム (拡大へ)'] },
+      { type: 'bounce', inLabel: ['ぽよんと弾んで出る', 'バウンス'], outLabel: ['弾んで消える', 'バウンス'] },
+      { type: 'spin', inLabel: ['回りながら出る', 'スピン'], outLabel: ['回りながら消える', 'スピン'] },
+      { type: 'flip-x', inLabel: ['横にくるっと裏返る', 'フリップ (横)'], outLabel: ['横に裏返って消える', 'フリップ (横)'] },
+      { type: 'flip-y', inLabel: ['縦にくるっと裏返る', 'フリップ (縦)'], outLabel: ['縦に裏返って消える', 'フリップ (縦)'] },
+      { type: 'shake', inLabel: ['ゆれて止まる', 'シェイク'], outLabel: ['ゆれ出す', 'シェイク'] }
+    ]
+  },
+  {
+    label: ['こうか', 'エフェクト'],
+    options: [
+      { type: 'blur', inLabel: ['ぼかしから出る', 'ブラー'], outLabel: ['ぼけて消える', 'ブラー'] },
+      { type: 'zoom-blur', inLabel: ['近づきながらぼかしから', 'ズームブラー'], outLabel: ['近づきながらぼけて消える', 'ズームブラー'] },
+      { type: 'flash', inLabel: ['白く光ってから出る', 'フラッシュ'], outLabel: ['白く光って終わる', 'フラッシュ'] },
+      { type: 'pixelate', inLabel: ['モザイクから出る', 'ピクセレート'], outLabel: ['モザイクになって消える', 'ピクセレート'] },
+      { type: 'glitch', inLabel: ['ノイズで乱れて出る', 'グリッチ'], outLabel: ['ノイズで乱れて消える', 'グリッチ'] }
+    ]
+  }
 ]
+
+// 前のクリップ (同じトラックで終わりが開始位置にくっついているもの)
+const prevAdjacentClip = computed<Clip | null>(() => {
+  const c = selectedClip.value
+  if (!c) return null
+  return (
+    store.state.clips.find(
+      o => o.id !== c.id && o.trackId === c.trackId && Math.abs(o.start + o.duration - c.start) <= 0.05
+    ) ?? null
+  )
+})
+
+function setOverlap(on: boolean) {
+  const c = selectedClip.value
+  if (!c?.transitionIn) return
+  setTransition('in', { ...c.transitionIn, overlap: on || undefined })
+}
+
+function applyInToTrack() {
+  const c = selectedClip.value
+  if (!c?.transitionIn) return
+  const n = store.applyTransitionToTrack(c.trackId, c.transitionIn)
+  if (n > 0) toast.success(t(`${n} か所の つなぎ目に 入れました`, `${n} か所のつなぎ目に適用しました`))
+  else toast.info(t('くっついている クリップが ありません', '隣接したクリップがありません'))
+}
 
 // ---------- クロップ ----------
 
@@ -437,6 +512,112 @@ function updateAudioFade(side: 'in' | 'out', v: number) {
     { audioFade: next.in > 0 || next.out > 0 ? next : undefined } as any,
     `afade:${c.id}`
   )
+}
+
+// ---------- 速度カーブ ----------
+
+interface SpeedPreset {
+  id: string
+  easy: string
+  normal: string
+  points: Array<[number, number]>
+}
+
+const SPEED_PRESETS: SpeedPreset[] = [
+  { id: 'montage', easy: 'モンタージュ', normal: 'モンタージュ', points: [[0, 1], [0.3, 3], [0.5, 0.5], [0.7, 3], [1, 1]] },
+  { id: 'hero', easy: 'ヒーロー (途中でスロー)', normal: 'ヒーロー', points: [[0, 2], [0.4, 2], [0.5, 0.3], [0.6, 2], [1, 2]] },
+  { id: 'bullet', easy: 'バレット (一瞬止まる)', normal: 'バレット', points: [[0, 1.5], [0.45, 1.5], [0.5, 0.15], [0.55, 1.5], [1, 1.5]] },
+  { id: 'jump', easy: 'ジャンプカット', normal: 'ジャンプカット', points: [[0, 1], [0.4, 1], [0.45, 6], [0.55, 6], [0.6, 1], [1, 1]] },
+  { id: 'flash-in', easy: 'はじめだけ速く', normal: 'フラッシュイン', points: [[0, 5], [0.25, 1], [1, 1]] },
+  { id: 'flash-out', easy: 'おわりだけ速く', normal: 'フラッシュアウト', points: [[0, 1], [0.75, 1], [1, 5]] },
+  { id: 'ramp-up', easy: 'だんだん速く', normal: '加速', points: [[0, 0.5], [1, 3]] },
+  { id: 'ramp-down', easy: 'だんだん遅く', normal: '減速', points: [[0, 3], [1, 0.5]] }
+]
+
+function setSpeedCurve(points: SpeedPoint[] | undefined, dragging = false) {
+  const c = audioLikeClip.value
+  if (!c) return
+  store.updateClip(
+    c.id,
+    { speedCurve: points && points.length >= 2 ? points : undefined } as any,
+    dragging ? `speedcurve-drag:${c.id}` : `speedcurve:${c.id}:${Date.now()}`
+  )
+}
+function applySpeedPreset(p: SpeedPreset) {
+  setSpeedCurve(p.points.map(([x, speed]) => ({ x, speed })))
+}
+function startCustomCurve() {
+  const c = audioLikeClip.value
+  if (!c) return
+  const s = c.speed ?? 1
+  setSpeedCurve([{ x: 0, speed: s }, { x: 1, speed: s }])
+}
+
+/** 選択クリップが消費する素材の秒数と、素材に対する過不足 */
+const sourceUsage = computed(() => {
+  const c = audioLikeClip.value
+  if (!c) return null
+  const span = clipSourceSpan(c)
+  const asset = store.getAsset(c.assetId)
+  const remain = asset?.duration != null ? asset.duration - (c.sourceIn ?? 0) : null
+  return { span, remain, over: remain != null && span > remain + 0.05 }
+})
+
+/** 素材の残りをちょうど使い切る長さにする (速度カーブの形は保つ) */
+function fitDurationToSource() {
+  const c = audioLikeClip.value
+  const u = sourceUsage.value
+  if (!c || !u || u.remain == null || u.span <= 0) return
+  const avg = u.span / c.duration
+  store.updateClip(c.id, { duration: Math.max(0.1, u.remain / avg) } as any)
+}
+
+// ---------- 背景ぼかし塗り ----------
+
+const DEFAULT_BG_FILL: BgFill = { blur: 40, dim: 0.15 }
+
+function setBgFillEnabled(on: boolean) {
+  const c = videoOrImageClip.value
+  if (!c) return
+  store.setBgFill([c.id], on ? { ...DEFAULT_BG_FILL } : undefined)
+}
+function updateBgFill(patch: Partial<BgFill>) {
+  const c = videoOrImageClip.value
+  if (!c?.bgFill) return
+  store.setBgFill([c.id], { ...c.bgFill, ...patch })
+}
+function applyBgFillToAll() {
+  const c = videoOrImageClip.value
+  if (!c?.bgFill) return
+  const ids = store.state.clips.filter(x => x.kind === 'video' || x.kind === 'image').map(x => x.id)
+  const n = store.setBgFill(ids, c.bgFill)
+  toast.success(t(`${n} 個の クリップに 入れました`, `${n} 件のクリップに適用しました`))
+}
+
+// ---------- ダッキング ----------
+
+function setDucking(amount: number | null) {
+  const c = selectedClip.value
+  if (!c || c.kind !== 'audio') return
+  store.updateClip(
+    c.id,
+    { ducking: amount && amount > 0 ? { amount } : undefined } as any,
+    `duck:${c.id}`
+  )
+}
+
+// ---------- テキストのスタイル集 ----------
+
+const styleWholeTrack = ref(false)
+
+function applyTextStyle(presetId: string) {
+  const c = selectedClip.value
+  if (!c || c.kind !== 'text') return
+  const ids = styleWholeTrack.value
+    ? store.state.clips.filter(x => x.kind === 'text' && x.trackId === c.trackId).map(x => x.id)
+    : [c.id]
+  const n = store.applyTextStyle(ids, presetId)
+  if (n > 1) toast.success(t(`${n} 個の 文字に 当てました`, `${n} 件のテキストに適用しました`))
 }
 
 // ---------- フリーズフレーム ----------
@@ -756,6 +937,29 @@ function kindNameJa(kind: string): string {
 
       <!-- テキスト固有 -->
       <section v-if="selectedClip.kind === 'text'" class="section">
+        <div class="section-head">{{ t('文字のスタイル (ワンタッチ)', 'スタイル') }}</div>
+        <div class="style-grid">
+          <button
+            v-for="p in TEXT_STYLE_PRESETS"
+            :key="p.id"
+            class="style-chip"
+            :title="t(p.labelEasy, p.labelNormal)"
+            @click="applyTextStyle(p.id)"
+          >
+            <span class="style-sample" :style="textStylePreviewCss(p)">Aあ</span>
+            <span class="style-name">{{ t(p.labelEasy, p.labelNormal) }}</span>
+          </button>
+        </div>
+        <label class="toggle">
+          <input v-model="styleWholeTrack" type="checkbox" />
+          <span>{{ t('同じトラックの文字すべてに当てる (字幕向け)', '同じトラックのテキストすべてに適用') }}</span>
+        </label>
+        <div class="section-hint">
+          {{ t('※ 書体・色・ふち・影がまとめて変わります (位置と文字はそのまま)', '※ 書体・色・装飾を置き換えます (位置・内容は維持)') }}
+        </div>
+      </section>
+
+      <section v-if="selectedClip.kind === 'text'" class="section">
         <div class="section-head">{{ t('文字', 'テキスト') }}</div>
         <label class="field">
           <span>{{ t('内容', '内容') }}</span>
@@ -900,6 +1104,30 @@ function kindNameJa(kind: string): string {
             '※ 映像のトランジションとは独立して音量だけに掛かります'
           ) }}
         </div>
+        <template v-if="selectedClip.kind === 'audio'">
+          <label class="toggle duck-toggle">
+            <input
+              type="checkbox"
+              :checked="!!selectedClip.ducking"
+              @change="(e) => setDucking((e.target as HTMLInputElement).checked ? 0.7 : null)"
+            />
+            <span>{{ t('話し声などが鳴る間、自動で小さくする (BGM 向け)', '自動ダッキング (BGM 用)') }}</span>
+          </label>
+          <template v-if="selectedClip.ducking">
+            <EffectSlider
+              :label="t('下げる量', '下げる量')"
+              :value="selectedClip.ducking.amount"
+              :min="0.1" :max="1" :step="0.05"
+              @change="(v) => setDucking(v)"
+            />
+            <div class="section-hint">
+              {{ t(
+                `※ 他の音が鳴っている間は ${Math.round((1 - selectedClip.ducking.amount) * 100)}% の音量になります`,
+                `※ 他のクリップの音 (動画の音声・ナレーション等) が鳴る間、音量を ${Math.round((1 - selectedClip.ducking.amount) * 100)}% に下げます`
+              ) }}
+            </div>
+          </template>
+        </template>
       </section>
 
       <!-- プリセット (ワンタッチ) -->
@@ -990,15 +1218,17 @@ function kindNameJa(kind: string): string {
               @change="(e) => {
                 const t = (e.target as HTMLSelectElement).value
                 if (!t) clearTransition('in')
-                else setTransition('in', { type: t as TransitionType, duration: selectedClip!.transitionIn?.duration ?? 0.3 })
+                else setTransition('in', { ...selectedClip!.transitionIn, type: t as TransitionType, duration: selectedClip!.transitionIn?.duration ?? 0.3 })
               }"
             >
               <option value="">なし</option>
               <option value="fade">{{ selectedClip.kind === 'audio' ? 'フェードイン (音が徐々に大きく)' : 'フェードイン (じわっと出る)' }}</option>
               <template v-if="selectedClip.kind !== 'audio'">
-                <option v-for="o in TRANSITION_OPTIONS" :key="o.type" :value="o.type">
-                  {{ t(o.inLabel[0], o.inLabel[1]) }}
-                </option>
+                <optgroup v-for="g in TRANSITION_GROUPS" :key="g.label[1]" :label="t(g.label[0], g.label[1])">
+                  <option v-for="o in g.options" :key="o.type" :value="o.type">
+                    {{ t(o.inLabel[0], o.inLabel[1]) }}
+                  </option>
+                </optgroup>
               </template>
             </select>
           </label>
@@ -1017,8 +1247,39 @@ function kindNameJa(kind: string): string {
             />
           </label>
         </div>
-        <div class="row gap-4" style="margin-bottom: 8px;">
+        <template v-if="selectedClip.kind !== 'audio' && selectedClip.transitionIn">
+          <label class="toggle">
+            <input
+              type="checkbox"
+              :checked="!!selectedClip.transitionIn.overlap"
+              @change="(e) => setOverlap((e.target as HTMLInputElement).checked)"
+            />
+            <span>{{ t('前のクリップに重ねてつなぐ', '前のクリップと重ねる (クロス)') }}</span>
+          </label>
+          <div class="section-hint">
+            {{ selectedClip.transitionIn.overlap
+              ? t(
+                  '※ はじまる少し前から、前のクリップの上に重なって切り替わります',
+                  '※ 開始位置の手前から前のクリップに重ねて切り替えます (配置・長さは変わりません)'
+                )
+              : t(
+                  '※ クリップのはじめで、背景から出てきます',
+                  '※ クリップ先頭で背景から現れます'
+                ) }}
+            <template v-if="selectedClip.transitionIn.overlap && !prevAdjacentClip">
+              {{ t('(前にくっついたクリップがありません)', '(直前に隣接するクリップがありません)') }}
+            </template>
+          </div>
+        </template>
+        <div class="row gap-4" style="margin: 6px 0 8px;">
           <button class="ghost tiny" @click="applyFadePreset('in')">フェードインを設定</button>
+          <button
+            v-if="selectedClip.kind !== 'audio'"
+            class="ghost tiny"
+            :disabled="!selectedClip.transitionIn"
+            :title="t('同じトラックで、くっついているクリップのつなぎ目すべてに この入り方を入れます', '同じトラックの隣接クリップすべてに、この入りトランジションを設定')"
+            @click="applyInToTrack"
+          >{{ t('ぜんぶのつなぎ目に入れる', 'トラック全体に適用') }}</button>
         </div>
 
         <div class="sub-title">{{ t('出', '出') }}</div>
@@ -1036,9 +1297,11 @@ function kindNameJa(kind: string): string {
               <option value="">なし</option>
               <option value="fade">{{ selectedClip.kind === 'audio' ? 'フェードアウト (音が徐々に小さく)' : 'フェードアウト (じわっと消える)' }}</option>
               <template v-if="selectedClip.kind !== 'audio'">
-                <option v-for="o in TRANSITION_OPTIONS" :key="o.type" :value="o.type">
-                  {{ t(o.outLabel[0], o.outLabel[1]) }}
-                </option>
+                <optgroup v-for="g in TRANSITION_GROUPS" :key="g.label[1]" :label="t(g.label[0], g.label[1])">
+                  <option v-for="o in g.options" :key="o.type" :value="o.type">
+                    {{ t(o.outLabel[0], o.outLabel[1]) }}
+                  </option>
+                </optgroup>
               </template>
             </select>
           </label>
@@ -1065,7 +1328,19 @@ function kindNameJa(kind: string): string {
       <!-- 速度 (実素材を持つ動画・音声のみ。静止画/図形/テキストには無意味) -->
       <section v-if="hasVolume(selectedClip)" class="section">
         <div class="section-head">{{ t('再生', '再生') }}</div>
-        <label class="field">
+        <div class="seg">
+          <button
+            class="seg-btn"
+            :class="{ on: !selectedClip.speedCurve }"
+            @click="setSpeedCurve(undefined)"
+          >{{ t('いつも同じ速さ', '一定') }}</button>
+          <button
+            class="seg-btn"
+            :class="{ on: !!selectedClip.speedCurve }"
+            @click="selectedClip.speedCurve || startCustomCurve()"
+          >{{ t('速さを変える (カーブ)', '速度カーブ') }}</button>
+        </div>
+        <label v-if="!selectedClip.speedCurve" class="field">
           <span>速さ (倍) <span class="mono muted">{{ (selectedClip.speed ?? 1).toFixed(2) }}</span></span>
           <input
             type="range"
@@ -1076,6 +1351,40 @@ function kindNameJa(kind: string): string {
             @input="(e) => setSpeed(Number((e.target as HTMLInputElement).value))"
           />
         </label>
+        <template v-else>
+          <SpeedCurveEditor
+            :points="selectedClip.speedCurve"
+            :playhead="playheadInClip ? localPlayhead / selectedClip.duration : -1"
+            @change="(pts, dragging) => setSpeedCurve(pts, dragging)"
+          />
+          <div class="section-hint">
+            {{ t(
+              '点を上下に動かすと速さが変わります。何もない所をクリックで点を追加、点をダブルクリックで消せます',
+              'ドラッグで速度を調整 / 空白クリックで点を追加 / ダブルクリックで削除'
+            ) }}
+          </div>
+        </template>
+        <div class="preset-grid speed-presets">
+          <button
+            v-for="p in SPEED_PRESETS"
+            :key="p.id"
+            class="preset-chip"
+            @click="applySpeedPreset(p)"
+          >{{ t(p.easy, p.normal) }}</button>
+        </div>
+        <div v-if="sourceUsage" class="section-hint">
+          {{ t('使う素材の長さ', '素材の使用範囲') }}: {{ sourceUsage.span.toFixed(2) }} s
+          <template v-if="sourceUsage.over">
+            <span class="warn">
+              {{ t('— 素材が足りないので、最後は止まった画になります', '— 素材が不足しています (末尾で停止)') }}
+            </span>
+          </template>
+          <button
+            v-if="sourceUsage.remain != null"
+            class="ghost tiny fit-btn"
+            @click="fitDurationToSource"
+          >{{ t('素材を使い切る長さにする', '長さを素材に合わせる') }}</button>
+        </div>
         <div class="section-hint">
           {{ t(
             '※ 速さを変えてもクリップの長さは変わらず、再生される素材の範囲が変わります',
@@ -1120,6 +1429,36 @@ function kindNameJa(kind: string): string {
             <option v-for="m in BLEND_MODES" :key="m" :value="m">{{ blendLabelJa(m) }}</option>
           </select>
         </label>
+      </section>
+
+      <!-- 背景ぼかし塗り -->
+      <section v-if="videoOrImageClip" class="section">
+        <div class="section-head">{{ t('余白をぼかしで埋める', '背景ぼかし') }}</div>
+        <label class="toggle">
+          <input
+            type="checkbox"
+            :checked="!!videoOrImageClip.bgFill"
+            @change="(e) => setBgFillEnabled((e.target as HTMLInputElement).checked)"
+          />
+          <span>{{ t('黒い余白を 同じ映像のぼかしで埋める', '余白を同じ素材のぼかしで塗る') }}</span>
+        </label>
+        <template v-if="videoOrImageClip.bgFill">
+          <div class="grid-2">
+            <EffectSlider :label="t('ぼかし', 'ぼかし')" :value="videoOrImageClip.bgFill.blur" :min="0" :max="100" :step="1"
+              @change="(v) => updateBgFill({ blur: v })" />
+            <EffectSlider :label="t('暗さ', '暗さ')" :value="videoOrImageClip.bgFill.dim" :min="0" :max="0.8" :step="0.01"
+              @change="(v) => updateBgFill({ dim: v })" />
+          </div>
+          <button class="ghost tiny" @click="applyBgFillToAll">
+            {{ t('ほかの動画・画像にも同じ設定を入れる', 'すべての動画・画像に適用') }}
+          </button>
+        </template>
+        <div class="section-hint">
+          {{ t(
+            '※ 横長の動画を縦長の画面に置いたときなど、上下左右の余白に使います',
+            '※ 横長素材を縦長キャンバスに置いた場合などの余白を埋めます'
+          ) }}
+        </div>
       </section>
 
       <!-- クロップ (切り抜き) -->
@@ -1718,6 +2057,72 @@ button.tiny {
   color: var(--fg-3);
   line-height: 1.5;
   margin-top: 6px;
+}
+
+.seg {
+  display: flex;
+  gap: 4px;
+  margin-bottom: 8px;
+}
+.seg-btn {
+  flex: 1;
+  font-size: 11px;
+  padding: 5px 6px;
+  background: var(--bg-2);
+  border: 1px solid var(--line-weak);
+  color: var(--fg-2);
+}
+.seg-btn.on {
+  color: var(--accent-hi);
+  border-color: var(--accent);
+  background: rgba(232, 168, 56, 0.1);
+}
+.speed-presets {
+  margin-top: 8px;
+}
+.warn {
+  color: var(--danger);
+}
+.fit-btn {
+  margin-left: 6px;
+}
+.duck-toggle {
+  margin-top: 10px;
+}
+
+.style-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 5px;
+  margin-bottom: 8px;
+}
+.style-chip {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 3px;
+  padding: 6px 2px 5px;
+  background: #2a2a2e;
+  border: 1px solid var(--line-weak);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+.style-chip:hover {
+  border-color: var(--accent);
+}
+.style-sample {
+  font-size: 17px;
+  line-height: 1.2;
+  padding: 0 4px;
+  border-radius: 2px;
+}
+.style-name {
+  font-size: 9px;
+  color: var(--fg-2);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 100%;
 }
 
 .freeze-hold {

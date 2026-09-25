@@ -6,6 +6,7 @@ import { useLocale } from '../composables/useLocale'
 import { PreviewEngine } from '../engine/previewEngine'
 import { sampleKeyframes } from '../engine/keyframes'
 import { pxUnit, visualDrawSize } from '../engine/renderer'
+import { computeDuckActivity, hasDucking, duckTriggers } from '../engine/ducking'
 import { toast } from '../composables/useToast'
 import type { Clip, VideoClip, ImageClip, TextClip, ShapeClip } from '../types/project'
 
@@ -121,6 +122,7 @@ onMounted(() => {
 })
 
 onBeforeUnmount(() => {
+  if (duckTimer) clearTimeout(duckTimer)
   engine?.dispose()
   engine = null
   window.removeEventListener('resize', updateFit)
@@ -145,6 +147,35 @@ watch(
     }
   },
   { deep: true }
+)
+
+// ---------- ダッキング ----------
+// ダッキング対象がある間だけ、他の音の鳴り具合を求めてエンジンに渡す。
+// 素材のデコードを伴うので、編集が落ち着いてから (デバウンス) 計算する。
+let duckTimer: ReturnType<typeof setTimeout> | null = null
+let duckSeq = 0
+watch(
+  () => {
+    if (!hasDucking(store.state.clips)) return ''
+    // 音量・時間・ミュートなど、度合いに影響する値だけを監視する
+    return JSON.stringify([
+      duckTriggers(store.state).map(c => [c.id, c.assetId, c.start, c.duration, c.sourceIn, c.speed, c.speedCurve]),
+      store.state.clips.filter(c => c.kind === 'audio' && c.ducking).map(c => c.id)
+    ])
+  },
+  key => {
+    if (duckTimer) clearTimeout(duckTimer)
+    const seq = ++duckSeq
+    if (!key) {
+      engine?.setDuckActivity(null)
+      return
+    }
+    duckTimer = setTimeout(async () => {
+      const activity = await computeDuckActivity(store.state).catch(() => null)
+      if (seq === duckSeq) engine?.setDuckActivity(activity)
+    }, 300)
+  },
+  { immediate: true }
 )
 
 function updateFit() {
