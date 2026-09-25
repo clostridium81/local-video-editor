@@ -31,6 +31,17 @@ import {
 } from '../src/engine/renderer'
 import { parseSubtitles, toSrt, toVtt, textClipsToCues } from '../src/engine/subtitles'
 import { avcCodecFor } from '../src/engine/capabilities'
+import {
+  preRoll,
+  visualStart,
+  compareDrawOrder,
+  speedAt,
+  sourceAdvance,
+  clipSourceSpan,
+  splitSpeedCurve
+} from '../src/engine/frameTiming'
+import { rmsFromChannels, buildDuckActivity, duckGain, duckTriggers, hasDucking } from '../src/engine/ducking'
+import { TEXT_STYLE_PRESETS, textStylePatch, getTextStyle } from '../src/engine/textStyles'
 import type { Clip, Keyframe, ProjectState, PixelEffects } from '../src/types/project'
 
 let failures = 0
@@ -563,6 +574,209 @@ console.log('avc level:')
   check('縦 1080×1920 30fps → Level 4.0 (8160MB ≤ 8192)', avcCodecFor(1080, 1920, 30) === 'avc1.640028')
   check('21:9 2560×1080 → Level 5.0', avcCodecFor(2560, 1080, 30) === 'avc1.640032')
   check('4K60 → Level 5.2', avcCodecFor(3840, 2160, 60) === 'avc1.640034')
+}
+
+// ---------- v0.7: トランジション 30 種 / 重ねるトランジション ----------
+console.log('transitions (v0.7):')
+{
+  const ALL = [
+    'fade', 'slide-left', 'slide-right', 'slide-up', 'slide-down', 'zoom', 'wipe',
+    'wipe-rtl', 'wipe-up', 'wipe-down', 'split', 'iris', 'zoom-out', 'spin', 'blur', 'flash',
+    'wipe-diag', 'split-v', 'clock', 'diamond', 'heart', 'blinds', 'checker', 'flip-x', 'flip-y',
+    'bounce', 'shake', 'glitch', 'pixelate', 'zoom-blur'
+  ]
+  const mk = (type: string, overlap = false) => ({
+    id: 'c', kind: 'video', trackId: 't', start: 10, duration: 4, opacity: 1,
+    transitionIn: { type, duration: 1, overlap }, transitionOut: { type, duration: 1 }
+  } as unknown as Clip)
+  const neutral = JSON.stringify(sampleTransition(mk('fade'), 12))
+  const changed = ALL.filter(ty =>
+    JSON.stringify(sampleTransition(mk(ty), 10.3)) !== neutral &&
+    JSON.stringify(sampleTransition(mk(ty), 13.7)) !== neutral)
+  check('30 種すべてが入り・出で変化する', changed.length === 30, ALL.filter(x => !changed.includes(x)).join(','))
+  check('30 種すべてが完了時点で元に戻る', ALL.every(ty => JSON.stringify(sampleTransition(mk(ty), 11)) === neutral))
+
+  const clock = sampleTransition(mk('clock'), 10.25)
+  check('clock 25% → 90° の扇形', clock.reveal?.kind === 'sector' && approx((clock.reveal as any).sweep, Math.PI / 2))
+  const blinds = sampleTransition(mk('blinds'), 10.5)
+  check('blinds 50% → 8 本の帯が半分ずつ',
+    blinds.reveal?.kind === 'rects' && (blinds.reveal as any).rects.length === 8 && approx((blinds.reveal as any).rects[0].y1, 1 / 16))
+  const checker = sampleTransition(mk('checker'), 10.25)
+  check('checker 25% → 半分のマスだけ出始める', checker.reveal?.kind === 'rects' && (checker.reveal as any).rects.length === 20)
+  const diag = sampleTransition(mk('wipe-diag'), 10.5)
+  check('wipe-diag 50% → 正規化多角形で右上〜左下の対角線まで', diag.reveal?.kind === 'npoly' &&
+    (diag.reveal as any).points.some(([x, y]: number[]) => approx(x, 1) && approx(y, 0)))
+  check('flip-x 開始時は横幅 0', approx(sampleTransition(mk('flip-x'), 10).scaleX, 0))
+  check('pixelate 開始時は粗さ 80', approx(sampleTransition(mk('pixelate'), 10).pixelate, 80))
+  const g1 = sampleTransition(mk('glitch'), 10.4)
+  const g2 = sampleTransition(mk('glitch'), 10.4)
+  check('glitch は同じ時刻で同じ結果 (プレビューと書き出しが一致)', JSON.stringify(g1) === JSON.stringify(g2))
+  check('bounce は途中で 1 を超えて弾む',
+    [0.5, 0.6, 0.7, 0.8].some(p => sampleTransition(mk('bounce'), 10 + p).scale > 1.01))
+
+  // 重ねる (overlap): 開始の 1 秒前から始まり開始位置で完了
+  const ov = mk('fade', true)
+  check('重ねる: 開始 0.5 秒前で 50%', approx(sampleTransition(ov, 9.5).alpha, 0.5))
+  check('重ねる: 開始位置で完了', approx(sampleTransition(ov, 10).alpha, 1))
+  check('重ねない: 開始位置で 0', approx(sampleTransition(mk('fade'), 10).alpha, 0))
+  check('preRoll / visualStart', preRoll(ov) === 1 && visualStart(ov) === 9)
+  check('音声クリップは前倒ししない', preRoll({ ...ov, kind: 'audio' } as any) === 0)
+  check('前倒し区間はアクティブ', isClipActiveAt(ov, 9.2) && !isClipActiveAt(ov, 8.9) && !isClipActiveAt(mk('fade'), 9.5))
+  const plan = clipSourceTimestamps({ ...ov, sourceIn: 0.25 } as any, 9, 10, 20)!
+  check('前倒し区間の素材時刻は 0 で止まり単調非減少',
+    plan.timestamps[0] === 0 && plan.timestamps.every((v, i, a) => i === 0 || v >= a[i - 1]) && approx(plan.timestamps[10], 0.25))
+  const order = new Map([['t', 0], ['u', 1]])
+  const A = { trackId: 't', start: 0, duration: 10 }
+  const B = { trackId: 't', start: 10, duration: 5 }
+  const C = { trackId: 'u', start: 0, duration: 5 }
+  check('同じトラックは開始が遅い方が手前、トラック順が優先',
+    compareDrawOrder(A, B, order) < 0 && compareDrawOrder(C, B, order) > 0)
+}
+
+// ---------- v0.7: 描画 (扇形 / 伸縮 / モザイク) ----------
+console.log('renderer calls (v0.7):')
+{
+  const calls: Array<{ fn: string; args: any[] }> = []
+  const makeCtx = () => new Proxy({} as any, {
+    get(target, key) {
+      if (key in target) return target[key]
+      if (key === 'getImageData') return (_x: number, _y: number, w: number, h: number) =>
+        ({ data: new Uint8ClampedArray(w * h * 4), width: w, height: h })
+      if (key === 'measureText') return (s: string) => ({ width: s.length * 10 })
+      return (...args: any[]) => { calls.push({ fn: String(key), args }) }
+    },
+    set(target, key, v) { target[key] = v; calls.push({ fn: `set:${String(key)}`, args: [v] }); return true }
+  })
+  ;(globalThis as any).document = { createElement: () => ({ width: 1, height: 1, getContext: () => makeCtx() }) }
+  const target = { ctx: makeCtx(), width: 1920, height: 1080, buffer: new LayerBuffer() }
+  const src = { src: { tag: 'img' } as any, width: 640, height: 360 }
+  const clip = (type: string) => ({
+    id: 'v', kind: 'image', trackId: 't', assetId: 'a', start: 0, duration: 4, opacity: 1,
+    x: 0.5, y: 0.5, scale: 1, rotation: 0, transitionIn: { type, duration: 1 }
+  } as Clip)
+
+  calls.length = 0
+  drawClip(target, clip('clock'), 0.25, src)
+  const arc = calls.find(c => c.fn === 'arc')
+  check('clock は 12 時から時計回りの扇形', !!arc && approx(arc.args[3], -Math.PI / 2) && approx(arc.args[4], 0))
+  calls.length = 0
+  drawClip(target, clip('flip-x'), 0.5, src)
+  const sc = calls.find(c => c.fn === 'scale')
+  check('flip-x は横だけ縮める', !!sc && sc.args[0] < 1 && approx(sc.args[1], 1))
+  calls.length = 0
+  drawClip(target, clip('pixelate'), 0.2, src)
+  check('pixelate はバッファ経由 (ピクセル処理) で描く',
+    calls.some(c => c.fn === 'putImageData') && calls.filter(c => c.fn === 'drawImage').length === 2)
+  calls.length = 0
+  drawClip(target, clip('blinds'), 0.5, src)
+  check('blinds は 8 個の矩形でクリップ', calls.filter(c => c.fn === 'rect').length === 8 && calls.some(c => c.fn === 'clip'))
+}
+
+// ---------- v0.8: 速度カーブ ----------
+console.log('speed curve:')
+{
+  // 4 秒のクリップ: 0→0.5 (2s) は 1x→3x、0.5→1 は 3x 一定
+  const c = { start: 10, duration: 4, sourceIn: 1, speedCurve: [{ x: 0, speed: 1 }, { x: 0.5, speed: 3 }, { x: 1, speed: 3 }] }
+  check('speedAt 途中の補間 (1s → 2x)', approx(speedAt(c, 1), 2))
+  check('sourceAdvance 台形の積分 (2s → 4)', approx(sourceAdvance(c, 2), 4))
+  check('sourceAdvance 末尾 (4s → 4 + 6 = 10)', approx(clipSourceSpan(c), 10))
+  check('mapClipTimeToSource に反映 (sourceIn 1 + 積分)', approx(mapClipTimeToSource(c, 11), 1 + 1.5))
+  check('範囲外は端の速度で延長', approx(sourceAdvance(c, -1), -1) && approx(sourceAdvance(c, 5), 13))
+  check('カーブなしは従来の speed', approx(sourceAdvance({ start: 0, duration: 4, speed: 2 }, 1.5), 3))
+  const unsorted = { start: 0, duration: 2, speedCurve: [{ x: 1, speed: 2 }, { x: 0.5, speed: 50 }] }
+  check('並べ替え・上限 10x・先頭を補う', approx(speedAt(unsorted, 0), 10) && approx(speedAt(unsorted, 1), 10))
+  const plan = clipSourceTimestamps({ ...c, start: 0 }, 0, 10, 40)!
+  check('素材時刻は単調増加 (シーケンシャルデコード可能)', plan.timestamps.every((v, i, a) => i === 0 || v > a[i - 1]))
+
+  // 分割: 左右の素材の進みが元と一致する
+  const f = 0.25
+  const { left, right } = splitSpeedCurve(c.speedCurve, f)
+  const L = { start: 0, duration: 1, speedCurve: left }
+  const R = { start: 0, duration: 3, speedCurve: right }
+  check('分割: 左の消費量 = 元の 0..1s', approx(clipSourceSpan(L), sourceAdvance(c, 1)))
+  check('分割: 右の消費量 = 元の 1..4s', approx(clipSourceSpan(R), clipSourceSpan(c) - sourceAdvance(c, 1)))
+  check('分割: 境界の速度が連続', approx(speedAt(L, 1), speedAt(R, 0)) && approx(speedAt(R, 0), 2))
+  check('カーブなしの分割はそのまま', splitSpeedCurve(undefined, 0.5).left === undefined)
+}
+
+// ---------- v0.8: ダッキング ----------
+console.log('ducking:')
+{
+  // 1 kHz サイン: 0..1s 無音、1..2s 大きい音 (sampleRate 1000)
+  const sr = 1000
+  const ch = new Float32Array(3 * sr)
+  for (let i = sr; i < 2 * sr; i++) ch[i] = 0.5 * Math.sin(i)
+  const r = rmsFromChannels([ch], sr, 20)
+  check('RMS: 無音は -120dB、音ありは -9dB 付近', r.db[5] === -120 && r.db[30] > -12 && r.db[30] < -6)
+
+  const state = {
+    tracks: [
+      { id: 'v', kind: 'video', name: 'V', muted: false, locked: false, order: 1 },
+      { id: 'a', kind: 'audio', name: 'A', muted: false, locked: false, order: 0 }
+    ],
+    clips: [
+      { id: 'voice', kind: 'audio', trackId: 'v', assetId: 'speech', start: 2, duration: 3, opacity: 1 },
+      { id: 'bgm', kind: 'audio', trackId: 'a', assetId: 'music', start: 0, duration: 8, opacity: 1, ducking: { amount: 0.8 } }
+    ]
+  } as any
+  check('ダッキング対象の検出', hasDucking(state.clips))
+  check('きっかけは対象クリップ以外', duckTriggers(state).map((c: any) => c.id).join() === 'voice')
+  const act = buildDuckActivity(state, new Map([['speech', r], ['music', rmsFromChannels([new Float32Array(8 * sr).fill(0.5)], sr)]]))
+  const bgm = state.clips[1]
+  // voice の素材 1..2s が鳴る → タイムライン 3..4s
+  check('無音の間は下げない', approx(duckGain(act, bgm, 2.5), 1, 0.02))
+  check('鳴っている間は 1 - 0.8 = 0.2 まで下がる', approx(duckGain(act, bgm, 3.6), 0.2, 0.03))
+  check('先読みで鳴る直前から下がり始める', duckGain(act, bgm, 2.97) < 0.9)
+  check('鳴り終わると徐々に戻る', duckGain(act, bgm, 4.3) > 0.25 && duckGain(act, bgm, 6) > 0.95)
+  check('対象外のクリップは常に 1', approx(duckGain(act, state.clips[0], 3.5), 1))
+  const mutedVoice = { ...state, tracks: state.tracks.map((t: any) => t.id === 'v' ? { ...t, muted: true } : t) }
+  check('ミュートしたトラックはきっかけにしない', duckTriggers(mutedVoice).length === 0)
+}
+
+// ---------- v0.8: 背景ぼかし塗り ----------
+console.log('bg fill:')
+{
+  const calls: Array<{ fn: string; args: any[] }> = []
+  const makeCtx = () => new Proxy({} as any, {
+    get(target, key) {
+      if (key in target) return target[key]
+      return (...args: any[]) => { calls.push({ fn: String(key), args }) }
+    },
+    set(target, key, v) { target[key] = v; calls.push({ fn: `set:${String(key)}`, args: [v] }); return true }
+  })
+  ;(globalThis as any).document = { createElement: () => ({ width: 1, height: 1, getContext: () => makeCtx() }) }
+  const target = { ctx: makeCtx(), width: 1080, height: 1920, buffer: new LayerBuffer(), bgBuffer: new LayerBuffer() }
+  const src = { src: { tag: 'video' } as any, width: 1920, height: 1080 }
+  const base = { id: 'v', kind: 'video', trackId: 't', assetId: 'a', start: 0, duration: 2, opacity: 1, x: 0.5, y: 0.5, scale: 1, rotation: 0 }
+  calls.length = 0
+  drawClip(target, { ...base, bgFill: { blur: 40, dim: 0.2 } } as Clip, 1, src)
+  const draws = calls.filter(c => c.fn === 'drawImage')
+  check('背景 (縮小 cover) → 拡大ぼかし → 本体 の 3 回描く', draws.length === 3 && draws[0].args[0] === src.src && draws[2].args[0] === src.src)
+  check('縮小バッファは画面の 1/8 に cover で描く', approx(draws[0].args[7], 1920 / 8 * 1920 / 1080, 1) && approx(draws[0].args[8], 240))
+  check('拡大時はぼかし幅の 2 倍はみ出して描く', approx(draws[1].args[1], -80) && approx(draws[1].args[3], 1080 + 160))
+  check('ぼかしと暗さのフィルタ', calls.some(c => c.fn === 'set:filter' && String(c.args[0]) === 'blur(40.0px) brightness(0.800)'))
+  calls.length = 0
+  drawClip(target, { ...base, scale: 1.8, bgFill: { blur: 40, dim: 0 } } as Clip, 1, src)
+  // scale 1.8 だと縦 1920 に届かない (607.5×1.8=1093) → 背景は必要
+  check('画面を覆わないなら背景を描く', calls.filter(c => c.fn === 'drawImage').length === 3)
+  calls.length = 0
+  drawClip(target, { ...base, scale: 3.2, bgFill: { blur: 40, dim: 0 } } as Clip, 1, src)
+  check('画面を覆うなら背景を省く', calls.filter(c => c.fn === 'drawImage').length === 1)
+}
+
+// ---------- v0.8: テキストのスタイル集 ----------
+console.log('text styles:')
+{
+  check('スタイル 13 種・ID 一意', TEXT_STYLE_PRESETS.length === 13 && new Set(TEXT_STYLE_PRESETS.map(p => p.id)).size === 13)
+  const patch = textStylePatch(getTextStyle('subtitle-band')!)
+  check('帯字幕: 背景色あり・ふちなし', patch.backgroundColor === '#000000b3' && !patch.decor?.outline)
+  const plain = textStylePatch(getTextStyle('subtitle')!)
+  check('背景なしのスタイルは背景を消す', 'backgroundColor' in plain && plain.backgroundColor === undefined)
+  check('アニメを持つスタイルだけ anim を設定', !('anim' in plain) && textStylePatch(getTextStyle('pop')!).anim?.type === 'scale-pop')
+  check('位置・内容は含まない', !('x' in patch) && !('y' in patch) && !('text' in patch))
+  const p1 = textStylePatch(getTextStyle('neon-pink')!)
+  p1.decor!.shadow!.blur = 999
+  check('装飾はコピー (プリセットを書き換えない)', getTextStyle('neon-pink')!.style.decor!.shadow!.blur === 32)
 }
 
 console.log(failures === 0 ? '\nALL PASS' : `\n${failures} FAILURES`)

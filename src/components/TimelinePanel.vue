@@ -4,6 +4,7 @@ import { useProjectStore } from '../stores/projectStore'
 import type { Clip, Track, KeyframeableProperty } from '../types/project'
 import { useSelection } from '../composables/useSelection'
 import { useLocale } from '../composables/useLocale'
+import { clipSourceSpan, sourceAdvance, speedAt } from '../engine/frameTiming'
 import { getOrGeneratePeaks, drawPeaks, type Peaks } from '../engine/waveform'
 import { loadAssetBlob } from '../persistence/assetStore'
 
@@ -134,8 +135,8 @@ interface DragState {
   origStarts?: Map<string, number>
   // 移動対象クリップの元トラック行 index (orderedTracks 基準, move 用)
   origRows?: Map<string, number>
-  // sourceIn 計算で speed 補正に使う
-  origSpeed: number
+  // ドラッグ開始時のクリップ (sourceIn の計算で speed / 速度カーブ補正に使う)
+  origClip: Clip
 }
 
 const dragRef = ref<DragState | null>(null)
@@ -189,7 +190,7 @@ function onClipMouseDown(c: Clip, e: MouseEvent, mode: DragState['mode']) {
     origSourceIn: c.sourceIn ?? 0,
     origStarts,
     origRows,
-    origSpeed: (c as any).speed ?? 1
+    origClip: JSON.parse(JSON.stringify(c)) as Clip
   }
   window.addEventListener('mousemove', onDragMove)
   window.addEventListener('mouseup', onDragEnd)
@@ -258,9 +259,8 @@ function onDragMove(e: MouseEvent) {
       store.updateClip(id, patch, mergeKey)
     }
   } else if (drag.mode === 'trim-left') {
-    const speed = drag.origSpeed
-    // 素材内方向の最大引き戻し量は sourceIn / speed (タイムライン秒換算)
-    const minDelta = -drag.origSourceIn / Math.max(0.0001, speed)
+    // 素材内方向の最大引き戻し量は sourceIn / 先頭の速度 (タイムライン秒換算)
+    const minDelta = -drag.origSourceIn / Math.max(0.0001, speedAt(drag.origClip, 0))
     const maxDelta = drag.origDuration - 0.05
     let delta = Math.max(minDelta, Math.min(maxDelta, dt))
     const rawStart = drag.origStart + delta
@@ -271,13 +271,13 @@ function onDragMove(e: MouseEvent) {
       newStart !== rawStart && Math.abs(drag.origStart + delta - newStart) < 1e-9
         ? newStart
         : null
-    // sourceIn は素材時間軸で増減 (delta * speed)
+    // sourceIn は素材時間軸で増減 (削った区間で進む素材の秒数。速度カーブも考慮)
     store.updateClip(
       drag.clipId,
       {
         start: drag.origStart + delta,
         duration: drag.origDuration - delta,
-        sourceIn: drag.origSourceIn + delta * speed
+        sourceIn: drag.origSourceIn + sourceAdvance(drag.origClip, delta)
       } as any,
       mergeKey
     )
@@ -287,13 +287,14 @@ function onDragMove(e: MouseEvent) {
     const rightEdge = store.snapTime(rawEdge, threshold, [drag.clipId])
     newDur = Math.max(0.1, rightEdge - drag.origStart)
     // video/audio は素材の残り時間を超えて伸ばせない
-    // (タイムライン秒 = 素材秒 / speed)
+    // (タイムライン秒 = 素材秒 / 平均速度。速度カーブは長さに比例して伸縮する)
     const c = store.getClip(drag.clipId)
     if (c && (c.kind === 'video' || c.kind === 'audio')) {
       const asset = store.getAsset((c as any).assetId)
       if (asset?.duration) {
+        const avgSpeed = clipSourceSpan(drag.origClip) / Math.max(0.0001, drag.origDuration)
         const maxDur =
-          (asset.duration - drag.origSourceIn) / Math.max(0.0001, drag.origSpeed)
+          (asset.duration - drag.origSourceIn) / Math.max(0.0001, avgSpeed)
         newDur = Math.min(newDur, Math.max(0.1, maxDur))
       }
     }
@@ -664,8 +665,9 @@ function renderWaveforms() {
     if (!ctx) continue
     ctx.clearRect(0, 0, canvas.width, canvas.height)
     // クリップがタイムライン上で duration 秒占めるとき、素材は duration * speed 秒消費する
+    // (速度カーブがある場合は積分値。波形は均等に引き伸ばして表示する)
     const sourceStart = c.sourceIn ?? 0
-    const sourceEnd = sourceStart + c.duration * ((c as any).speed ?? 1)
+    const sourceEnd = sourceStart + clipSourceSpan(c)
     const color =
       c.kind === 'audio' ? 'rgba(180, 230, 180, 0.9)' : 'rgba(180, 210, 240, 0.7)'
     drawPeaks(
@@ -869,6 +871,17 @@ function hasWaveform(c: Clip): boolean {
             @drop="(e) => onTrackDrop(e, track)"
             @mousedown="onContentMouseDown"
           >
+            <!-- 重ねるトランジション: 前のクリップに重なる区間 -->
+            <div
+              v-for="c in clipsOnTrack(track.id).filter(x => x.transitionIn?.overlap && x.transitionIn.duration > 0)"
+              :key="'ov-' + c.id"
+              class="clip-overlap"
+              :style="{
+                left: (c.start - c.transitionIn!.duration) * zoom + 'px',
+                width: c.transitionIn!.duration * zoom + 'px'
+              }"
+              :title="t('前のクリップに重ねて切り替わる区間', 'クロストランジション区間')"
+            />
             <div
               v-for="c in clipsOnTrack(track.id)"
               :key="c.id"
@@ -902,7 +915,7 @@ function hasWaveform(c: Clip): boolean {
                 :title="kfd.prop"
               />
               <div
-                v-if="c.transitionIn && c.transitionIn.duration > 0"
+                v-if="c.transitionIn && c.transitionIn.duration > 0 && !c.transitionIn.overlap"
                 class="transition-in"
                 :style="{ width: (c.transitionIn.duration * zoom) + 'px' }"
               />
@@ -1179,6 +1192,21 @@ button.tiny.active {
   transform: translate(-50%, 0) rotate(45deg);
   box-shadow: 0 0 4px rgba(0, 0, 0, 0.4);
   pointer-events: none;
+}
+
+.clip-overlap {
+  position: absolute;
+  top: 4px;
+  bottom: 4px;
+  z-index: 2;
+  border-radius: 4px;
+  pointer-events: none;
+  border: 1px solid rgba(232, 168, 56, 0.9);
+  background: repeating-linear-gradient(
+    135deg,
+    rgba(232, 168, 56, 0.45) 0 4px,
+    rgba(232, 168, 56, 0.12) 4px 8px
+  );
 }
 
 .transition-in, .transition-out {

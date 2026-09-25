@@ -70,10 +70,31 @@ export type TransitionType =
   | 'spin' // 回転しながら
   | 'blur' // ぼかしから
   | 'flash' // 白く飛んだ状態から
+  // v0.7 追加
+  | 'wipe-diag' // 左上から斜めに拭う
+  | 'split-v' // 中央から上下に開く
+  | 'clock' // 時計の針のように回って開く
+  | 'diamond' // 中央からひし形に開く
+  | 'heart' // 中央からハート形に開く
+  | 'blinds' // ブラインド (横じま)
+  | 'checker' // 市松模様
+  | 'flip-x' // 横に裏返る
+  | 'flip-y' // 縦に裏返る
+  | 'bounce' // 弾んで出る
+  | 'shake' // 揺れて止まる
+  | 'glitch' // ノイズ風に乱れる
+  | 'pixelate' // モザイクから
+  | 'zoom-blur' // 拡大しつつぼかしから
 
 export interface Transition {
   type: TransitionType
   duration: number // 秒
+  /**
+   * 入り (transitionIn) 専用: true なら開始位置より前 (前のクリップの末尾) に
+   * duration 秒重ねて始め、開始位置で完了する (クロストランジション)。
+   * タイムライン上の位置・長さは変わらない。素材の手前が足りない分は先頭の画で止める。
+   */
+  overlap?: boolean
 }
 
 // ---------- エフェクト ----------
@@ -168,6 +189,31 @@ export interface Mask {
 export interface AudioFade {
   in: number
   out: number
+}
+
+// ---------- 背景ぼかし塗り ----------
+// 素材が画面を覆いきらない (例: 16:9 を縦長画面に置く) とき、余白を同じ素材の
+// 拡大・ぼかし版で埋める。クリップの位置・大きさ・回転は背景には影響しない。
+
+export interface BgFill {
+  blur: number // ぼかしの強さ (px, 1080p 基準)
+  dim: number // 暗くする量 0..1 (0=そのまま)
+}
+
+// ---------- 速度カーブ ----------
+// クリップ内の位置 x (0=先頭, 1=末尾) ごとの再生速度。点の間は直線でつなぐ。
+// 設定されている間は clip.speed より優先する。
+
+export interface SpeedPoint {
+  x: number // 0..1
+  speed: number // 0.1..10
+}
+
+// ---------- ダッキング ----------
+// 他の音 (話し声・動画の音など) が鳴っている間、このクリップの音量を自動で下げる
+
+export interface Ducking {
+  amount: number // 下げる量 0..1 (0.7 = 30% まで下げる)
 }
 
 // ---------- ブレンドモード ----------
@@ -265,6 +311,8 @@ export interface BaseClip {
   blendMode?: BlendMode
   // 音量フェード (video / audio クリップのみ有効)
   audioFade?: AudioFade
+  // 速度カーブ (video / audio クリップのみ有効)
+  speedCurve?: SpeedPoint[]
   // 他のクリップと連動 (例: 動画 + その音声)
   linkGroup?: string
 }
@@ -285,6 +333,7 @@ export interface VideoClip extends BaseClip {
   pixelFx?: PixelEffects
   crop?: Crop
   mask?: Mask
+  bgFill?: BgFill
   eq?: AudioEQ
 }
 
@@ -301,12 +350,14 @@ export interface ImageClip extends BaseClip {
   pixelFx?: PixelEffects
   crop?: Crop
   mask?: Mask
+  bgFill?: BgFill
 }
 
 export interface AudioClip extends BaseClip {
   kind: 'audio'
   assetId: string
   eq?: AudioEQ
+  ducking?: Ducking
 }
 
 export interface TextClip extends BaseClip {

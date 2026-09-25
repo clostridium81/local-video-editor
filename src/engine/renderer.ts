@@ -5,6 +5,7 @@ import type {
   ChromaKey,
   Crop,
   Mask,
+  BgFill,
   PixelEffects,
   BlendMode,
   TextClip,
@@ -12,7 +13,12 @@ import type {
   TextAnim
 } from '../types/project'
 import { sampleKeyframes } from './keyframes'
-import { sampleTransition, sampleAudioFade, type TransitionSample } from './transitions'
+import {
+  sampleTransition,
+  sampleAudioFade,
+  type TransitionSample,
+  type RevealRect
+} from './transitions'
 import { applyPixelEffects, hasPixelEffects } from './pixelEffects'
 
 // ============================================================
@@ -161,6 +167,8 @@ export interface DrawTarget {
   width: number
   height: number
   buffer: LayerBuffer
+  /** 背景ぼかし塗り用 (縮小バッファ)。省略時は背景塗りを描かない */
+  bgBuffer?: LayerBuffer
 }
 
 export interface VisualSource {
@@ -192,7 +200,8 @@ export function drawClip(
         chroma: clip.chromaKey,
         pixelFx: clip.pixelFx,
         crop: clip.crop,
-        mask: clip.mask
+        mask: clip.mask,
+        bgFill: clip.bgFill
       })
     }
   } else if (clip.kind === 'text') {
@@ -219,19 +228,64 @@ function joinFilters(...fs: string[]): string {
 function applyReveal(ctx: Ctx2D, trans: TransitionSample, width: number, height: number) {
   const r = trans.reveal
   if (!r) return
+  const cx = width / 2
+  const cy = height / 2
+  // circle / poly / sector の単位 (画面の対角の半分)
+  const R = Math.hypot(width, height) / 2
   ctx.beginPath()
-  if (r.kind === 'rect') {
-    ctx.rect(
-      width * r.x0,
-      height * r.y0,
-      width * Math.max(0, r.x1 - r.x0),
-      height * Math.max(0, r.y1 - r.y0)
-    )
-  } else {
-    const radius = (Math.hypot(width, height) / 2) * Math.max(0, r.r)
-    ctx.arc(width / 2, height / 2, radius, 0, Math.PI * 2)
+  switch (r.kind) {
+    case 'rect':
+      rectPath(ctx, r, width, height)
+      break
+    case 'rects':
+      for (const rc of r.rects) rectPath(ctx, rc, width, height)
+      break
+    case 'circle':
+      ctx.arc(cx, cy, R * Math.max(0, r.r), 0, Math.PI * 2)
+      break
+    case 'poly':
+      r.points.forEach(([x, y], i) => {
+        if (i === 0) ctx.moveTo(cx + x * R, cy + y * R)
+        else ctx.lineTo(cx + x * R, cy + y * R)
+      })
+      ctx.closePath()
+      break
+    case 'npoly':
+      r.points.forEach(([x, y], i) => {
+        if (i === 0) ctx.moveTo(x * width, y * height)
+        else ctx.lineTo(x * width, y * height)
+      })
+      ctx.closePath()
+      break
+    case 'sector':
+      if (r.sweep >= Math.PI * 2) {
+        ctx.rect(0, 0, width, height)
+      } else if (r.sweep > 0) {
+        const start = -Math.PI / 2
+        ctx.moveTo(cx, cy)
+        ctx.arc(cx, cy, R * 1.01, start, start + r.sweep)
+        ctx.closePath()
+      }
+      break
   }
   ctx.clip()
+}
+
+function rectPath(ctx: Ctx2D, r: RevealRect, width: number, height: number) {
+  ctx.rect(
+    width * r.x0,
+    height * r.y0,
+    width * Math.max(0, r.x1 - r.x0),
+    height * Math.max(0, r.y1 - r.y0)
+  )
+}
+
+/** 回転の後に掛ける、トランジション由来の横/縦だけの伸縮 */
+function applyAxisScale(ctx: Ctx2D, trans: TransitionSample) {
+  if (trans.scaleX !== 1 || trans.scaleY !== 1) {
+    // 0 ちょうどだと変換行列が退化して描画系が例外を出す環境があるため下限を置く
+    ctx.scale(Math.max(1e-4, trans.scaleX), Math.max(1e-4, trans.scaleY))
+  }
 }
 
 // ---------- 画像 / 映像 ----------
@@ -243,6 +297,7 @@ interface VisualParams {
   pixelFx?: PixelEffects
   crop?: Crop
   mask?: Mask
+  bgFill?: BgFill
 }
 
 function needsGradePass(grade: ColorGrade | undefined): boolean {
@@ -267,7 +322,13 @@ function drawVisualSource(
   if (!source.width || !source.height) return
   const unit = pxUnit(width, height)
 
-  const needsPixelPass = needsGradePass(p.grade) || !!p.chroma?.enabled || hasPixelEffects(p.pixelFx)
+  // トランジションのモザイクは素材のピクセルエフェクトに重ねる (粗い方を採用)
+  const transPixelate = Math.round(trans.pixelate * unit)
+  const pixelFx: PixelEffects | undefined =
+    transPixelate >= 2
+      ? { ...p.pixelFx, pixelate: Math.max(p.pixelFx?.pixelate ?? 0, transPixelate) }
+      : p.pixelFx
+  const needsPixelPass = needsGradePass(p.grade) || !!p.chroma?.enabled || hasPixelEffects(pixelFx)
   const mask = p.mask
   const needsLayer = needsPixelPass || !!mask
   const cropped = hasCrop(p.crop)
@@ -278,6 +339,17 @@ function drawVisualSource(
   )
   const effectsFilter = p.effects ? buildFilterString(p.effects) : ''
 
+  if (p.bgFill && target.bgBuffer) {
+    // 画面を覆っている (中央・回転なし・余白なし) なら背景は見えないので省く
+    const covers =
+      Math.abs(drawW) >= width - 1 && Math.abs(drawH) >= height - 1 &&
+      Math.abs(eff.x - 0.5) < 1e-3 && Math.abs(eff.y - 0.5) < 1e-3 &&
+      eff.rotation % 360 === 0 && trans.scaleX === 1 && trans.scaleY === 1
+    if (!covers) {
+      drawBgFill(target, source, { sx, sy, sw, sh }, p.bgFill, effectsFilter, eff, trans, unit)
+    }
+  }
+
   ctx.save()
   ctx.globalAlpha = Math.max(0, Math.min(1, eff.opacity))
   // レイヤー経由のときはエフェクトのフィルタをバッファ側で掛けるため、
@@ -287,6 +359,7 @@ function drawVisualSource(
   applyReveal(ctx, trans, width, height)
   ctx.translate(width * eff.x, height * eff.y)
   if (eff.rotation) ctx.rotate((eff.rotation * Math.PI) / 180)
+  applyAxisScale(ctx, trans)
 
   if (!needsLayer) {
     if (cropped) ctx.drawImage(src, sx, sy, sw, sh, -drawW / 2, -drawH / 2, drawW, drawH)
@@ -312,7 +385,7 @@ function drawVisualSource(
       const img = bctx.getImageData(0, 0, bw, bh)
       if (p.chroma?.enabled) applyChromaKey(img, p.chroma)
       if (p.grade) applyColorGrade(img, p.grade)
-      if (hasPixelEffects(p.pixelFx)) applyPixelEffects(img, p.pixelFx)
+      if (hasPixelEffects(pixelFx)) applyPixelEffects(img, pixelFx)
       bctx.putImageData(img, 0, 0)
     } catch {
       // tainted canvas 等で失敗した場合は、フィルタ済みだけを描く
@@ -321,6 +394,56 @@ function drawVisualSource(
   if (mask) applyMask(bctx, bw, bh, mask)
 
   ctx.drawImage(buf, -drawW / 2, -drawH / 2, drawW, drawH)
+  ctx.restore()
+}
+
+/**
+ * 背景ぼかし塗り: 素材を画面いっぱい (cover) に縮小バッファへ描き、
+ * ぼかしながら画面サイズに拡大して敷く。ぼかしで端が透けないよう、
+ * ぼかし幅の分だけ画面の外まで広げて描く。
+ */
+function drawBgFill(
+  target: DrawTarget,
+  source: VisualSource,
+  rect: { sx: number; sy: number; sw: number; sh: number },
+  fill: BgFill,
+  effectsFilter: string,
+  eff: EffectiveTransform,
+  trans: TransitionSample,
+  unit: number
+) {
+  const { ctx, width, height } = target
+  const k = 8 // 縮小率 (縮小そのものがぼかしの大部分を担う)
+  const bw = Math.max(1, Math.ceil(width / k))
+  const bh = Math.max(1, Math.ceil(height / k))
+  const { canvas: buf, ctx: b } = target.bgBuffer!.get(bw, bh)
+  const cover = Math.max(bw / rect.sw, bh / rect.sh)
+  const dw = rect.sw * cover
+  const dh = rect.sh * cover
+  b.save()
+  b.setTransform(1, 0, 0, 1, 0, 0)
+  b.globalAlpha = 1
+  b.globalCompositeOperation = 'source-over'
+  b.filter = effectsFilter || 'none'
+  b.clearRect(0, 0, bw, bh)
+  b.drawImage(source.src, rect.sx, rect.sy, rect.sw, rect.sh, (bw - dw) / 2, (bh - dh) / 2, dw, dh)
+  b.restore()
+
+  const blurPx = Math.max(0, fill.blur) * unit
+  const margin = blurPx * 2
+  ctx.save()
+  ctx.globalAlpha = Math.max(0, Math.min(1, eff.opacity))
+  const dim = Math.max(0, Math.min(1, fill.dim))
+  ctx.filter =
+    joinFilters(
+      blurPx > 0.5 ? `blur(${blurPx.toFixed(1)}px)` : '',
+      dim > 0 ? `brightness(${(1 - dim).toFixed(3)})` : '',
+      transitionFilter(trans, unit)
+    ) || 'none'
+  applyReveal(ctx, trans, width, height)
+  ctx.imageSmoothingEnabled = true
+  ;(ctx as any).imageSmoothingQuality = 'high'
+  ctx.drawImage(buf, -margin, -margin, width + margin * 2, height + margin * 2)
   ctx.restore()
 }
 
@@ -379,6 +502,7 @@ function drawShape(
   const h = ref * clip.height * eff.scale
   ctx.translate(width * eff.x, height * eff.y)
   if (eff.rotation) ctx.rotate((eff.rotation * Math.PI) / 180)
+  applyAxisScale(ctx, trans)
   ctx.fillStyle = clip.style.fill ?? 'transparent'
   ctx.strokeStyle = clip.style.stroke ?? 'transparent'
   ctx.lineWidth = (clip.style.strokeWidth ?? 0) * unit
@@ -469,6 +593,7 @@ function drawText(
   const style = clip.italic ? 'italic' : 'normal'
   ctx.translate(width * eff.x, height * eff.y)
   if (eff.rotation) ctx.rotate((eff.rotation * Math.PI) / 180)
+  applyAxisScale(ctx, trans)
   // 以降は 1080p 基準の座標系で描く
   const s = eff.scale * unit
   if (s !== 1) ctx.scale(s, s)

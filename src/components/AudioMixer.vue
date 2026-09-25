@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { mapClipTimeToSource } from '../engine/frameTiming'
 import { ref, computed, onMounted, onBeforeUnmount, watch } from 'vue'
 import { useProjectStore } from '../stores/projectStore'
 import { loadAssetBlob } from '../persistence/assetStore'
@@ -37,8 +38,7 @@ function sampleNow() {
       const peaksWrap = peaksCache.value.get(assetId)
       if (!peaksWrap) continue
       const peaks = peaksWrap
-      const speed = c.speed ?? 1
-      const local = (t - c.start) * speed + (c.sourceIn ?? 0)
+      const local = mapClipTimeToSource(c, t)
       const bucket = Math.floor(local * peaks.peaksPerSecond)
       const b = Math.max(0, Math.min(peaks.min.length - 1, bucket))
       const amp = Math.max(Math.abs(peaks.min[b]), Math.abs(peaks.max[b]))

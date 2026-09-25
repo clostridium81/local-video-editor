@@ -405,5 +405,67 @@ await test('キャンバスサイズ変更は偶数に丸め、Undo でき、バ
   assert.deepEqual([store.meta.width, store.meta.height], [1920, 1080])
 })
 
+await test('トラック全体への適用は隣接するつなぎ目だけに 1 回の Undo で設定する', async () => {
+  await reset()
+  const track = store.tracks.find(t => t.kind === 'video')!.id
+  const a = store.addTextClip({ start: 0, trackId: track })
+  const b = store.addTextClip({ start: 3, trackId: track })
+  const c = store.addTextClip({ start: 6.02, trackId: track })
+  const d = store.addTextClip({ start: 12, trackId: track })
+  store.updateClip(c.id, { duration: 0.4 } as any)
+  const n = store.applyTransitionToTrack(track, { type: 'iris', duration: 0.8, overlap: true })
+  assert.equal(n, 2)
+  const get = (id: string) => store.getClip(id)!.transitionIn
+  assert.equal(get(a.id), undefined)
+  assert.deepEqual(get(b.id), { type: 'iris', duration: 0.8, overlap: true })
+  assert.equal(get(c.id)!.duration, 0.4, '短いクリップに収まるよう短縮')
+  assert.equal(get(d.id), undefined, '離れたクリップには入れない')
+  store.undo()
+  assert.equal(get(b.id), undefined)
+  const other = store.tracks.find(t => t.kind === 'video' && t.id !== track)!.id
+  store.addTextClip({ start: 0, trackId: other })
+  assert.equal(store.applyTransitionToTrack(other, { type: 'fade', duration: 1 }), 0, '隣接クリップなし')
+})
+
+await test('速度カーブ付きクリップの分割で素材位置とカーブが連続する', async () => {
+  await reset()
+  const video = (await store.addAssetFromFile(new File(['v'], 'clip.mp4', { type: 'video/mp4' })))!
+  const clip = store.addClipFromAsset(video.id, { start: 0 })!
+  store.updateClip(clip.id, { duration: 4, sourceIn: 1, speedCurve: [{ x: 0, speed: 1 }, { x: 1, speed: 3 }] } as any)
+  const rightId = store.splitClipAt(clip.id, 1)!
+  const left = store.getClip(clip.id)!
+  const right = store.getClip(rightId)!
+  // 1s 目の速度 1.5、0..1s の消費 = (1 + 1.5) / 2 = 1.25
+  assert.equal(right.sourceIn, 2.25)
+  assert.deepEqual(left.speedCurve, [{ x: 0, speed: 1 }, { x: 1, speed: 1.5 }])
+  assert.deepEqual(right.speedCurve, [{ x: 0, speed: 1.5 }, { x: 1, speed: 3 }])
+  store.undo()
+  assert.equal(store.state.clips.length, 1)
+})
+
+await test('テキストスタイル・背景ぼかしは複数クリップへ 1 回の Undo で適用できる', async () => {
+  await reset()
+  const track = store.tracks.find(t => t.kind === 'video')!.id
+  const a = store.addTextClip({ start: 0, trackId: track })
+  const b = store.addTextClip({ start: 3, trackId: track })
+  store.updateClip(a.id, { x: 0.2, text: 'そのまま' } as any)
+  assert.equal(store.applyTextStyle([a.id, b.id], 'neon-blue'), 2)
+  const sa = store.getClip(a.id) as any
+  assert.equal(sa.decor.outline.color, '#27d7ff')
+  assert.equal(sa.x, 0.2)
+  assert.equal(sa.text, 'そのまま')
+  store.undo()
+  assert.equal((store.getClip(b.id) as any).decor, undefined)
+  assert.equal(store.applyTextStyle([a.id], 'no-such-style'), 0)
+
+  const img = (await store.addAssetFromFile(imageFile()))!
+  const c1 = store.addClipFromAsset(img.id, { start: 0 })!
+  const c2 = store.addClipFromAsset(img.id, { start: 5 })!
+  assert.equal(store.setBgFill([c1.id, c2.id, a.id], { blur: 30, dim: 0.1 }), 2, 'テキストは対象外')
+  assert.deepEqual((store.getClip(c2.id) as any).bgFill, { blur: 30, dim: 0.1 })
+  store.undo()
+  assert.equal((store.getClip(c1.id) as any).bgFill, undefined)
+})
+
 await reset()
 console.log(`\n${passed} session regression tests passed.`)
