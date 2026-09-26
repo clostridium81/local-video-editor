@@ -1,6 +1,7 @@
 import type { Clip, ProjectState } from '../types/project'
 import { mapClipTimeToSource } from './frameTiming'
 import { loadAssetBlob } from '../persistence/assetStore'
+import { decodeForAnalysis, TooLargeForAnalysisError } from './audioDecode'
 
 // ============================================================
 // ダッキング (他の音が鳴っている間だけ BGM を自動で下げる)
@@ -143,7 +144,7 @@ export function loadRms(projectId: string, assetId: string): Promise<RmsTrack | 
   const key = `${projectId}:${assetId}`
   let p = rmsCache.get(key)
   if (!p) {
-    p = decodeRms(projectId, assetId).catch(() => null)
+    p = decodeRms(projectId, assetId)
     rmsCache.set(key, p)
   }
   return p
@@ -152,29 +153,39 @@ export function loadRms(projectId: string, assetId: string): Promise<RmsTrack | 
 async function decodeRms(projectId: string, assetId: string): Promise<RmsTrack | null> {
   const blob = await loadAssetBlob(projectId, assetId)
   if (!blob) return null
-  const Ctx = (globalThis as any).AudioContext || (globalThis as any).webkitAudioContext
-  if (!Ctx) return null
-  const ctx = new Ctx()
   try {
-    const buf: AudioBuffer = await ctx.decodeAudioData(await blob.arrayBuffer())
+    const buf = await decodeForAnalysis(blob)
     const chans: Float32Array[] = []
     for (let c = 0; c < buf.numberOfChannels; c++) chans.push(buf.getChannelData(c))
     return rmsFromChannels(chans, buf.sampleRate)
-  } finally {
-    ctx.close().catch(() => {})
+  } catch (e) {
+    // 大きすぎる素材は「解析できなかった」として呼び出し側に知らせる
+    if (e instanceof TooLargeForAnalysisError) throw e
+    return null // 音声の無い素材など
   }
 }
 
-/** 現在の作品のダッキング度合いを求める (プレビュー用)。対象が無ければ null */
-export async function computeDuckActivity(state: ProjectState): Promise<DuckActivity | null> {
-  if (!hasDucking(state.clips)) return null
+export interface DuckComputation {
+  activity: DuckActivity | null
+  /** 大きすぎて解析できず、きっかけにできなかった素材 ID */
+  skippedAssetIds: string[]
+}
+
+/** 現在の作品のダッキング度合いを求める (プレビュー用)。対象が無ければ activity は null */
+export async function computeDuckActivity(state: ProjectState): Promise<DuckComputation> {
+  if (!hasDucking(state.clips)) return { activity: null, skippedAssetIds: [] }
   const rms = new Map<string, RmsTrack>()
+  const skipped: string[] = []
   for (const c of duckTriggers(state)) {
-    if (rms.has(c.assetId)) continue
-    const r = await loadRms(state.meta.id, c.assetId)
-    if (r) rms.set(c.assetId, r)
+    if (rms.has(c.assetId) || skipped.includes(c.assetId)) continue
+    try {
+      const r = await loadRms(state.meta.id, c.assetId)
+      if (r) rms.set(c.assetId, r)
+    } catch {
+      skipped.push(c.assetId)
+    }
   }
-  return buildDuckActivity(state, rms)
+  return { activity: buildDuckActivity(state, rms), skippedAssetIds: skipped }
 }
 
 export function clearDuckCache() {

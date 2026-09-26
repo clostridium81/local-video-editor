@@ -4,10 +4,11 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { createPinia, setActivePinia } from 'pinia'
 import { nextTick } from 'vue'
-import { zipSync, unzipSync, strToU8 } from 'fflate'
+import { zipSync, unzipSync, strToU8, strFromU8 } from 'fflate'
 import * as assets from '../src/persistence/assetStore'
 import { cleanupLegacyStorage, type CleanupStatus } from '../src/persistence/legacyCleanup'
-import { createBackupBlob, importBackup } from '../src/persistence/backup'
+import { buildBackup, createBackupBlob, importBackup } from '../src/persistence/backup'
+import { readZipEntries, crc32OfBlob, buildStoredZip } from '../src/persistence/zipStream'
 import { useProjectStore } from '../src/stores/projectStore'
 import { useClipboard } from '../src/composables/useClipboard'
 import { useSelection } from '../src/composables/useSelection'
@@ -250,16 +251,14 @@ await test('従来の ZIP v1 配置を読み込める (同じコードの往復�
   assert.equal(result.assetCount, originalBytes.size)
 })
 
-await test('欠損/破損/重複素材/不正参照の ZIP は失敗し、編集中の作品と本体は無傷', async () => {
+await test('構造が壊れた ZIP (重複素材・不正 JSON) は失敗し、編集中の作品と本体は無傷', async () => {
   const before = store.serialize()
   const source = unzipSync(new Uint8Array(await backup.arrayBuffer()))
   const assetPath = Object.keys(source).find(path => path.startsWith('assets/'))!
   const cases = [
-    (files: Record<string, Uint8Array>) => { delete files[assetPath] },
-    (files: Record<string, Uint8Array>) => { files[assetPath] = new Uint8Array(0) },
     (files: Record<string, Uint8Array>) => { files[assetPath.replace(/\.[^.]+$/, '.dup')] = files[assetPath] },
-    (files: Record<string, Uint8Array>) => { const p = structuredClone(before); p.clips[0].trackId = 'missing'; files['project.json'] = strToU8(JSON.stringify(p)) },
-    (files: Record<string, Uint8Array>) => { files['project.json'] = strToU8('{invalid') }
+    (files: Record<string, Uint8Array>) => { files['project.json'] = strToU8('{invalid') },
+    (files: Record<string, Uint8Array>) => { delete files['manifest.json'] }
   ]
   for (const mutate of cases) {
     const files = { ...source }
@@ -268,14 +267,96 @@ await test('欠損/破損/重複素材/不正参照の ZIP は失敗し、編集
     assert.deepEqual(store.serialize(), before)
     for (const [id, content] of originalBytes) assert.equal(await (await assets.loadAssetBlob(store.meta.id, id))!.text(), content)
   }
+  await assert.rejects(importBackup(zipFile(new Blob(['not a zip']))))
   assert.throws(() => store.replaceState(before, new Map()), /素材がありません/)
   assert.deepEqual(store.serialize(), before)
 })
 
-await test('素材不足の ZIP 作成は成功扱いにしない', async () => {
-  const id = Object.keys(store.assets)[0]
+await test('旧版の不具合で素材欠損・参照切れがある ZIP も、該当クリップだけ外して復元できる', async () => {
+  const before = store.serialize()
+  const source = unzipSync(new Uint8Array(await backup.arrayBuffer()))
+  const assetPath = Object.keys(source).find(path => path.startsWith('assets/'))!
+  const missingId = assetPath.slice('assets/'.length).replace(/\.[^.]+$/, '')
+  // 1) 素材ファイルが ZIP に無い
+  {
+    const files = { ...source }
+    delete files[assetPath]
+    const r = await importBackup(zipFile(new Blob([zipSync(files)])))
+    assert.ok(!(missingId in r.project.assets))
+    assert.ok(r.project.clips.every(c => !('assetId' in c) || c.assetId !== missingId))
+    assert.ok(r.project.clips.length > 0, '他のクリップは残る')
+    assert.match(r.warnings.join(), /バックアップに入っていなかった/)
+    assert.equal(r.assetCount, originalBytes.size - 1)
+  }
+  // 2) トラック参照切れ・存在しない素材を指すクリップ
+  {
+    const files = { ...source }
+    const p = structuredClone(before)
+    p.clips[0].trackId = 'missing'
+    ;(p.clips[1] as any).assetId = 'nope'
+    files['project.json'] = strToU8(JSON.stringify(p))
+    const r = await importBackup(zipFile(new Blob([zipSync(files)])))
+    assert.equal(r.project.clips.length, p.clips.length - 2)
+    assert.match(r.warnings.join(), /2 件/)
+  }
+  // 3) サイズ不一致 (壊れている可能性) は警告して読める分を使う
+  {
+    const files = { ...source, [assetPath]: new Uint8Array(0) }
+    const r = await importBackup(zipFile(new Blob([zipSync(files)])))
+    assert.equal(r.blobs.get(missingId)!.size, 0)
+    assert.match(r.warnings.join(), /サイズが記録と違います/)
+  }
+  assert.deepEqual(store.serialize(), before, '読み込むだけでは現在の作品は変わらない')
+})
+
+await test('読めない素材があってもバックアップ全体は失敗させず、除外して知らせる', async () => {
+  const [id] = Object.keys(store.assets)
+  const name = store.assets[id].name
+  // 元ファイルが移動・変更された File の代わり (読むと例外)
+  class BrokenBlob extends Blob {
+    stream(): ReadableStream<Uint8Array> {
+      return new ReadableStream({ pull(c) { c.error(new DOMException('The blob could not be read', 'NotReadableError')) } })
+    }
+  }
+  const original = (await assets.loadAssetBlob(store.meta.id, id))!
+  assets.saveAssetBlob(store.meta.id, id, new BrokenBlob([await original.arrayBuffer()]))
+  const built = await buildBackup(store.serialize())
+  assert.deepEqual(built.skipped.map(a => a.name), [name])
+  const r = await importBackup(zipFile(built.blob))
+  assert.ok(!(id in r.project.assets))
+  assert.equal(r.assetCount, originalBytes.size - 1)
+  assets.saveAssetBlob(store.meta.id, id, original)
+  // 素材本体がセッションに無い場合も同様に除外される
   assets.deleteAssetBlob(store.meta.id, id)
-  await assert.rejects(createBackupBlob(store.serialize()), /素材が見つかりません/)
+  assert.deepEqual((await buildBackup(store.serialize())).skipped.map(a => a.id), [id])
+  assets.saveAssetBlob(store.meta.id, id, original)
+})
+
+await test('新しい ZIP は他の ZIP 実装 (fflate) でも読め、無圧縮で CRC が正しい', async () => {
+  const blob = await createBackupBlob(store.serialize())
+  const files = unzipSync(new Uint8Array(await blob.arrayBuffer()))
+  assert.ok(files['project.json'] && files['manifest.json'])
+  for (const [id, content] of originalBytes) {
+    const path = Object.keys(files).find(p => p.startsWith(`assets/${id}.`))!
+    assert.equal(strFromU8(files[path]), content)
+  }
+  const entries = await readZipEntries(blob)
+  assert.ok(entries.every(e => e.method === 0))
+  for (const e of entries) assert.equal(e.crc, (await crc32OfBlob(await e.read())).crc)
+})
+
+await test('ZIP64 (4GB 超) 形式の書き込み・読み込みが往復でき、fflate でも読める', async () => {
+  const data = [new Blob(['hello']), new Blob([new Uint8Array(70000).fill(7)]), new Blob([])]
+  const zip = await buildStoredZip(data.map((d, i) => ({ name: `f${i}.bin`, data: d })), new Date(), true)
+  const entries = await readZipEntries(zip)
+  assert.deepEqual(entries.map(e => [e.name, e.size]), [['f0.bin', 5], ['f1.bin', 70000], ['f2.bin', 0]])
+  assert.equal(await (await entries[0].read()).text(), 'hello')
+  assert.equal((await entries[1].read()).size, 70000)
+  const viaFflate = unzipSync(new Uint8Array(await zip.arrayBuffer()))
+  assert.equal(strFromU8(viaFflate['f0.bin']), 'hello')
+  assert.equal(viaFflate['f1.bin'].length, 70000)
+  // 途中で切れたファイルは失敗として扱う
+  await assert.rejects(readZipEntries(zip.slice(0, zip.size - 30)))
 })
 
 await test('ZIP 作成開始直後に作品を閉じても開始時点の全素材を保存できる', async () => {

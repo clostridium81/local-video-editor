@@ -153,6 +153,7 @@ watch(
 // ダッキング対象がある間だけ、他の音の鳴り具合を求めてエンジンに渡す。
 // 素材のデコードを伴うので、編集が落ち着いてから (デバウンス) 計算する。
 let duckTimer: ReturnType<typeof setTimeout> | null = null
+const duckWarned = new Set<string>()
 let duckSeq = 0
 watch(
   () => {
@@ -171,8 +172,17 @@ watch(
       return
     }
     duckTimer = setTimeout(async () => {
-      const activity = await computeDuckActivity(store.state).catch(() => null)
-      if (seq === duckSeq) engine?.setDuckActivity(activity)
+      const result = await computeDuckActivity(store.state).catch(() => null)
+      if (seq !== duckSeq) return
+      engine?.setDuckActivity(result?.activity ?? null)
+      const fresh = (result?.skippedAssetIds ?? []).filter(id => !duckWarned.has(id))
+      if (fresh.length) {
+        fresh.forEach(id => duckWarned.add(id))
+        toast.warn(t(
+          '大きすぎる素材は 音の大きさを 調べられないため、BGM を下げる きっかけに なりません: ',
+          '大きすぎる素材は解析できないため、ダッキングのきっかけになりません: '
+        ) + fresh.map(id => store.getAsset(id)?.name ?? id).join('、'), 10000)
+      }
     }, 300)
   },
   { immediate: true }
@@ -205,9 +215,11 @@ function togglePlay() {
   } else {
     // 範囲 (Out 点) または末尾に到達済みなら、範囲先頭 (In 点) へ戻して再生
     const tl = store.state.timeline
-    const rangeEnd = tl.outPoint ?? tl.duration
+    const validOut =
+      tl.outPoint != null && tl.outPoint > (tl.inPoint ?? 0) + 0.01 ? tl.outPoint : undefined
+    const rangeEnd = validOut ?? tl.duration
     if (tl.playhead >= rangeEnd - 0.01) {
-      store.setPlayhead(tl.inPoint ?? 0)
+      store.setPlayhead(validOut != null ? tl.inPoint ?? 0 : 0)
     }
     // Space からの再生は常に等速順方向 (J/K/L のシャトルレートを引き継がない)
     engine.setPlaybackRate(1)

@@ -472,4 +472,6 @@ export interface BackupManifest {
   createdAt: number
   projectId: string
   projectName: string
+  /** 保存時に読めずに含められなかった素材 ID (元ファイルの移動・変更など) */
+  missingAssets?: string[]
 }

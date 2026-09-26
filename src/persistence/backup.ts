@@ -1,36 +1,16 @@
-import { zip, unzip, strToU8, strFromU8 } from 'fflate'
-import type { BackupManifest, ProjectState } from '../types/project'
+import type { Asset, BackupManifest, ProjectState } from '../types/project'
 import { loadAssetBlob } from './assetStore'
+import { buildStoredZip, crc32OfBlob, readZipEntries, type ZipEntryInput } from './zipStream'
 
 // ============================================================
 // バックアップZIPの構造
 // ============================================================
-//   manifest.json           ... フォーマット識別
+//   manifest.json           ... フォーマット識別 (+ 保存できなかった素材の一覧)
 //   project.json            ... ProjectState (JSON)
 //   assets/<assetId>.<ext>  ... 素材ファイル本体 (元のバイト列のまま)
+// 大容量でもタブが落ちないよう、素材は無圧縮で元の File を参照したまま ZIP にする
+// (zipStream.ts)。読み込みも 1 素材ずつ取り出す。
 // ============================================================
-
-interface ZipInput {
-  [path: string]: Uint8Array
-}
-
-function zipAsync(input: ZipInput): Promise<Uint8Array> {
-  return new Promise((resolve, reject) => {
-    zip(input, { level: 6 }, (err, data) => {
-      if (err) reject(err)
-      else resolve(data)
-    })
-  })
-}
-
-function unzipAsync(data: Uint8Array): Promise<ZipInput> {
-  return new Promise((resolve, reject) => {
-    unzip(data, (err, files) => {
-      if (err) reject(err)
-      else resolve(files as ZipInput)
-    })
-  })
-}
 
 // assetId から、保存時に使う拡張子を決める
 function extForMime(mime: string, fallbackName: string): string {
@@ -53,55 +33,130 @@ function extForMime(mime: string, fallbackName: string): string {
 // ----------------------------------------------------------------
 // エクスポート
 // ----------------------------------------------------------------
-export async function createBackupBlob(project: ProjectState): Promise<Blob> {
+
+export interface BackupBuildResult {
+  blob: Blob
+  /** 読み込めず ZIP に入れられなかった素材 (元ファイルの移動・変更・削除など) */
+  skipped: Asset[]
+}
+
+/**
+ * バックアップ ZIP を組み立てる。読めない素材があっても全体は失敗させず、
+ * その素材だけを除いて skipped で返す (manifest にも記録し、復元時に知らせる)。
+ */
+export async function buildBackup(project: ProjectState): Promise<BackupBuildResult> {
+  // 全参照を最初に確保する。ZIP 作成中に作品を切り替えても途中で素材を失わない。
+  const sources = await Promise.all(Object.values(project.assets).map(async asset => ({
+    asset,
+    blob: await loadAssetBlob(project.meta.id, asset.id)
+  })))
+
+  const entries: ZipEntryInput[] = []
+  const skipped: Asset[] = []
+  for (const { asset, blob } of sources) {
+    if (!blob) {
+      skipped.push(asset)
+      continue
+    }
+    try {
+      // 1 回読み通して CRC を求める (ここで読めない File は除外する)
+      const { crc, size } = await crc32OfBlob(blob)
+      if (size !== blob.size) throw new Error('size changed')
+      entries.push({ name: `assets/${asset.id}.${extForMime(asset.mimeType, asset.name)}`, data: blob, crc })
+    } catch (e) {
+      console.warn('バックアップに含められない素材', asset.name, e)
+      skipped.push(asset)
+    }
+  }
+
   const manifest: BackupManifest = {
     format: 'local-video-editor-backup',
     version: 1,
     createdAt: Date.now(),
     projectId: project.meta.id,
-    projectName: project.meta.name
+    projectName: project.meta.name,
+    ...(skipped.length ? { missingAssets: skipped.map(a => a.id) } : {})
   }
-
-  const files: ZipInput = {
-    'manifest.json': strToU8(JSON.stringify(manifest, null, 2)),
-    'project.json': strToU8(JSON.stringify(project, null, 2))
-  }
-
-  // 全参照を最初に確保する。ZIP 作成中に作品を切り替えても途中で素材を失わない。
-  const sources = await Promise.all(Object.values(project.assets).map(async asset => {
-    const blob = await loadAssetBlob(project.meta.id, asset.id)
-    if (!blob) {
-      throw new Error(`素材が見つかりません: ${asset.name}`)
-    }
-    return { asset, blob }
-  }))
-  for (const { asset, blob } of sources) {
-    const ext = extForMime(asset.mimeType, asset.name)
-    const bytes = new Uint8Array(await blob.arrayBuffer())
-    files[`assets/${asset.id}.${ext}`] = bytes
-  }
-
-  const zipped = await zipAsync(files)
-  return new Blob([zipped as BlobPart], { type: 'application/zip' })
+  const text = (v: unknown) => new Blob([JSON.stringify(v, null, 2)], { type: 'application/json' })
+  const blob = await buildStoredZip([
+    { name: 'manifest.json', data: text(manifest) },
+    { name: 'project.json', data: text(project) },
+    ...entries
+  ])
+  return { blob, skipped }
 }
 
-export async function exportBackup(
-  project: ProjectState,
-  opts: { filename?: string } = {}
-): Promise<void> {
-  const blob = await createBackupBlob(project)
+/** 互換用: ZIP の Blob だけを返す */
+export async function createBackupBlob(project: ProjectState): Promise<Blob> {
+  return (await buildBackup(project)).blob
+}
 
-  const safeName = (opts.filename ?? project.meta.name).replace(
-    /[\\/:*?"<>|]/g,
-    '_'
-  )
+export function backupFileName(project: ProjectState, filename?: string): string {
+  const safeName = (filename ?? project.meta.name).replace(/[\\/:*?"<>|]/g, '_')
   const ts = new Date()
     .toISOString()
     .replace(/[:T]/g, '-')
     .replace(/\..+/, '')
-  const fname = `${safeName}__${ts}.lvebackup.zip`
+  return `${safeName}__${ts}.lvebackup.zip`
+}
 
-  downloadBlob(blob, fname)
+export interface SaveBackupResult {
+  /**
+   * saved: 保存先に書き込み完了を確認した / downloaded: ダウンロードを開始した
+   * (ブラウザ任せで完了は確認できない) / cancelled: 保存先の選択をやめた
+   */
+  status: 'saved' | 'downloaded' | 'cancelled'
+  skipped: Asset[]
+}
+
+/**
+ * バックアップを保存する。File System Access API が使えるブラウザでは、
+ * クリック直後 (ユーザー操作が有効なうち) に保存先を選ばせ、ZIP を作ってから
+ * 書き込み、完了まで待つ。使えない場合は従来どおりダウンロードする。
+ */
+export async function saveBackup(
+  project: ProjectState,
+  opts: { filename?: string } = {}
+): Promise<SaveBackupResult> {
+  const name = backupFileName(project, opts.filename)
+  const picker = (globalThis as any).showSaveFilePicker as undefined | ((o: unknown) => Promise<any>)
+  if (typeof picker === 'function') {
+    let handle: any = null
+    try {
+      handle = await picker({
+        suggestedName: name,
+        types: [{ description: 'バックアップ (ZIP)', accept: { 'application/zip': ['.zip'] } }]
+      })
+    } catch (e: any) {
+      if (e?.name === 'AbortError') return { status: 'cancelled', skipped: [] }
+      // SecurityError (ユーザー操作切れ・iframe 内) などはダウンロードに切り替える
+      handle = null
+    }
+    if (handle) {
+      const { blob, skipped } = await buildBackup(project)
+      const writable = await handle.createWritable()
+      try {
+        await writable.write(blob)
+        await writable.close()
+      } catch (e) {
+        await writable.abort?.().catch?.(() => {})
+        throw e
+      }
+      return { status: 'saved', skipped }
+    }
+  }
+  const { blob, skipped } = await buildBackup(project)
+  downloadBlob(blob, name)
+  return { status: 'downloaded', skipped }
+}
+
+/** 互換用 (ダウンロード固定) */
+export async function exportBackup(
+  project: ProjectState,
+  opts: { filename?: string } = {}
+): Promise<void> {
+  const { blob } = await buildBackup(project)
+  downloadBlob(blob, backupFileName(project, opts.filename))
 }
 
 function downloadBlob(blob: Blob, filename: string) {
@@ -112,8 +167,8 @@ function downloadBlob(blob: Blob, filename: string) {
   document.body.appendChild(a)
   a.click()
   a.remove()
-  // 次のタスクで revoke
-  setTimeout(() => URL.revokeObjectURL(url), 1000)
+  // 大きなファイルでもダウンロード開始まで URL を生かしておく
+  setTimeout(() => URL.revokeObjectURL(url), 60_000)
 }
 
 // ----------------------------------------------------------------
@@ -123,17 +178,20 @@ export interface ImportResult {
   project: ProjectState
   assetCount: number
   blobs: ReadonlyMap<string, Blob>
+  /** 復元できなかった素材・クリップなどの注意 (空なら完全に復元) */
+  warnings: string[]
 }
 
 export async function importBackup(file: File): Promise<ImportResult> {
-  const bytes = new Uint8Array(await file.arrayBuffer())
-  const files = await unzipAsync(bytes)
-
-  if (!files['manifest.json'] || !files['project.json']) {
+  const entries = await readZipEntries(file)
+  const byName = new Map(entries.map(e => [e.name, e]))
+  const manifestEntry = byName.get('manifest.json')
+  const projectEntry = byName.get('project.json')
+  if (!manifestEntry || !projectEntry) {
     throw new Error('このファイルはこのアプリで作成したものではないようです')
   }
 
-  const manifest = JSON.parse(strFromU8(files['manifest.json'])) as BackupManifest
+  const manifest = JSON.parse(await manifestEntry.text()) as BackupManifest
   if (manifest.format !== 'local-video-editor-backup') {
     throw new Error('このファイルはこのアプリで作成したものではありません')
   }
@@ -141,27 +199,48 @@ export async function importBackup(file: File): Promise<ImportResult> {
     throw new Error(`このファイルは新しすぎて開けません (v${manifest.version})`)
   }
 
-  const project = JSON.parse(strFromU8(files['project.json'])) as ProjectState
+  const project = JSON.parse(await projectEntry.text()) as ProjectState
   validateProjectReferences(project, manifest)
+  const warnings: string[] = []
 
   // 全素材を検証してから呼び出し側で一括反映する。失敗時は現作品に触れない。
+  // 1 素材ずつ取り出すので、ZIP 全体をメモリに載せない。
   const blobs = new Map<string, Blob>()
-  for (const [path, data] of Object.entries(files)) {
-    if (!path.startsWith('assets/')) continue
-    const filename = path.slice('assets/'.length)
+  for (const entry of entries) {
+    if (!entry.name.startsWith('assets/')) continue
+    const filename = entry.name.slice('assets/'.length)
     const assetId = filename.replace(/\.[^.]+$/, '')
     if (!Object.hasOwn(project.assets, assetId)) continue
     const asset = project.assets[assetId]
     if (blobs.has(assetId)) throw new Error(`素材が重複しています: ${asset.name}`)
-    if (data.byteLength !== asset.size) throw new Error(`素材のサイズが一致しません: ${asset.name}`)
-    const blob = new Blob([data as BlobPart], { type: asset.mimeType })
+    const blob = await entry.read(asset.mimeType)
+    if (blob.size !== asset.size) {
+      // 壊れている可能性はあるが、作品ごと開けなくなるよりは読める分を使う
+      warnings.push(`素材のサイズが記録と違います (壊れている可能性があります): ${asset.name}`)
+    }
     blobs.set(assetId, blob)
   }
 
-  for (const asset of Object.values(project.assets)) {
-    if (!blobs.has(asset.id)) throw new Error(`バックアップに素材がありません: ${asset.name}`)
+  // ZIP に入っていない素材 (旧版の不具合・保存時に読めなかった素材) は、
+  // それを使うクリップと一緒に外して、残りを復元する
+  const missing = Object.values(project.assets).filter(a => !blobs.has(a.id))
+  if (missing.length) {
+    for (const a of missing) delete project.assets[a.id]
+    warnings.push(
+      `次の素材はバックアップに入っていなかったため、使っていたクリップを外しました: ` +
+        missing.map(a => a.name).join('、')
+    )
   }
-  return { project, assetCount: blobs.size, blobs }
+  const trackIds = new Set(project.tracks.map(t => t.id))
+  const before = project.clips.length
+  project.clips = project.clips.filter(c =>
+    trackIds.has(c.trackId) &&
+    !(['video', 'image', 'audio'].includes(c.kind) && !Object.hasOwn(project.assets, (c as any).assetId))
+  )
+  const dropped = before - project.clips.length
+  if (dropped > 0) warnings.push(`素材やトラックが見つからないクリップ ${dropped} 件を外しました`)
+
+  return { project, assetCount: blobs.size, blobs, warnings }
 }
 
 // ZIP v1 の構造・素材参照の整合性を確認する (エフェクト等の拡張フィールドは維持)。
@@ -192,12 +271,12 @@ function validateProjectReferences(project: ProjectState, manifest: BackupManife
   }
   const clipIds = new Set<string>()
   for (const clip of project.clips) {
-    if (!clip || !validId(clip.id) || clipIds.has(clip.id) || !trackIds.has(clip.trackId)
+    // 素材・トラックが見つからない参照は importBackup で外す (旧版の不具合で起こりうるため
+    // 作品全体を開けなくはしない)。ここでは構造として壊れているものだけを弾く
+    if (!clip || !validId(clip.id) || clipIds.has(clip.id) || typeof clip.trackId !== 'string'
       || !['video', 'image', 'audio', 'text', 'shape'].includes(clip.kind)
-      || !Number.isFinite(clip.start) || !Number.isFinite(clip.duration) || clip.duration <= 0
-      || (['video', 'image', 'audio'].includes(clip.kind)
-        && (!('assetId' in clip) || !Object.hasOwn(project.assets, clip.assetId)))) {
-      throw new Error('クリップの素材・トラック参照が不正です')
+      || !Number.isFinite(clip.start) || !Number.isFinite(clip.duration) || clip.duration <= 0) {
+      throw new Error('クリップ情報が不正です')
     }
     clipIds.add(clip.id)
   }

@@ -4,7 +4,14 @@ import { useProjectStore } from '../stores/projectStore'
 import type { Clip, Track, KeyframeableProperty } from '../types/project'
 import { useSelection } from '../composables/useSelection'
 import { useLocale } from '../composables/useLocale'
-import { clipSourceSpan, sourceAdvance, speedAt } from '../engine/frameTiming'
+import {
+  clipSourceSpan,
+  durationForSourceSpan,
+  sourceAdvance,
+  speedAt,
+  trimSpeedCurveLeft,
+  trimSpeedCurveRight
+} from '../engine/frameTiming'
 import { getOrGeneratePeaks, drawPeaks, type Peaks } from '../engine/waveform'
 import { loadAssetBlob } from '../persistence/assetStore'
 
@@ -277,7 +284,11 @@ function onDragMove(e: MouseEvent) {
       {
         start: drag.origStart + delta,
         duration: drag.origDuration - delta,
-        sourceIn: drag.origSourceIn + sourceAdvance(drag.origClip, delta)
+        sourceIn: drag.origSourceIn + sourceAdvance(drag.origClip, delta),
+        // 速度カーブは残る部分をそのまま保つよう切り取る (伸縮させない)
+        ...(drag.origClip.speedCurve
+          ? { speedCurve: trimSpeedCurveLeft(drag.origClip.speedCurve, drag.origDuration, delta) }
+          : {})
       } as any,
       mergeKey
     )
@@ -286,15 +297,12 @@ function onDragMove(e: MouseEvent) {
     const rawEdge = drag.origStart + newDur
     const rightEdge = store.snapTime(rawEdge, threshold, [drag.clipId])
     newDur = Math.max(0.1, rightEdge - drag.origStart)
-    // video/audio は素材の残り時間を超えて伸ばせない
-    // (タイムライン秒 = 素材秒 / 平均速度。速度カーブは長さに比例して伸縮する)
+    // video/audio は素材の残り時間を超えて伸ばせない (speed / 速度カーブ込みで計算)
     const c = store.getClip(drag.clipId)
     if (c && (c.kind === 'video' || c.kind === 'audio')) {
       const asset = store.getAsset((c as any).assetId)
       if (asset?.duration) {
-        const avgSpeed = clipSourceSpan(drag.origClip) / Math.max(0.0001, drag.origDuration)
-        const maxDur =
-          (asset.duration - drag.origSourceIn) / Math.max(0.0001, avgSpeed)
+        const maxDur = durationForSourceSpan(drag.origClip, asset.duration - drag.origSourceIn)
         newDur = Math.min(newDur, Math.max(0.1, maxDur))
       }
     }
@@ -302,7 +310,16 @@ function onDragMove(e: MouseEvent) {
       rightEdge !== rawEdge && Math.abs(drag.origStart + newDur - rightEdge) < 1e-9
         ? rightEdge
         : null
-    store.updateClip(drag.clipId, { duration: newDur } as any, mergeKey)
+    store.updateClip(
+      drag.clipId,
+      {
+        duration: newDur,
+        ...(drag.origClip.speedCurve
+          ? { speedCurve: trimSpeedCurveRight(drag.origClip.speedCurve, drag.origDuration, newDur) }
+          : {})
+      } as any,
+      mergeKey
+    )
   }
 }
 

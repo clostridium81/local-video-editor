@@ -83,7 +83,11 @@ function isSubtitleFile(f: File): boolean {
 }
 
 async function importSubtitleFile(f: File) {
-  const cues = parseSubtitles(await f.text())
+  const session = store.sessionVersion
+  const text = await f.text()
+  // 読み込み中に新規作成/復元した場合は、新しい作品に混ぜない
+  if (session !== store.sessionVersion) return
+  const cues = parseSubtitles(text)
   if (cues.length === 0) {
     toast.warn(t(`「${f.name}」に 字幕が 見つかりませんでした`, `字幕を読み取れませんでした: ${f.name}`))
     return

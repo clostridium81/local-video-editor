@@ -126,6 +126,50 @@ export function visualStart(clip: ClipTiming): number {
   return clip.start - preRoll(clip)
 }
 
+type Curve = Array<{ x: number; speed: number }>
+
+/**
+ * 左端を delta 秒トリムしたときの速度カーブ (delta > 0 で短く、< 0 で延長)。
+ * 残る部分の速度は元のまま (切り取る)。延長分は先頭の速度で一定にする。
+ */
+export function trimSpeedCurveLeft(curve: Curve | undefined, duration: number, delta: number): Curve | undefined {
+  if (!curve || curve.length === 0 || delta === 0 || duration <= 0) return curve
+  const newD = duration - delta
+  if (newD <= 0) return curve
+  if (delta > 0) return splitSpeedCurve(curve, delta / duration).right
+  const s0 = speedAt({ start: 0, duration: 1, speedCurve: curve }, 0)
+  const shifted = curve.map(p => ({ x: (p.x * duration - delta) / newD, speed: p.speed }))
+  return [{ x: 0, speed: s0 }, ...shifted]
+}
+
+/** 右端を動かして長さを newDuration にしたときの速度カーブ (延長分は末尾の速度で一定) */
+export function trimSpeedCurveRight(curve: Curve | undefined, duration: number, newDuration: number): Curve | undefined {
+  if (!curve || curve.length === 0 || newDuration === duration || duration <= 0 || newDuration <= 0) return curve
+  if (newDuration < duration) return splitSpeedCurve(curve, newDuration / duration).left
+  const sEnd = speedAt({ start: 0, duration: 1, speedCurve: curve }, 1)
+  const scaled = curve.map(p => ({ x: (p.x * duration) / newDuration, speed: p.speed }))
+  return [...scaled, { x: 1, speed: sEnd }]
+}
+
+/**
+ * 素材を span 秒ぶん使い切るクリップの長さ (右端トリムの上限用)。
+ * 長さを変えてもカーブは切り取り/末尾延長 (trimSpeedCurveRight) で扱う前提。
+ */
+export function durationForSourceSpan(clip: ClipTiming, span: number): number {
+  if (!clip.speedCurve?.length) return span / Math.max(1e-4, clip.speed ?? 1)
+  const full = clipSourceSpan(clip)
+  if (span >= full) return clip.duration + (span - full) / Math.max(1e-4, speedAt(clip, clip.duration))
+  // sourceAdvance は単調増加なので二分探索
+  let lo = 0
+  let hi = clip.duration
+  for (let i = 0; i < 50; i++) {
+    const mid = (lo + hi) / 2
+    if (sourceAdvance(clip, mid) < span) lo = mid
+    else hi = mid
+  }
+  return lo
+}
+
 /** タイムライン時刻 t (絶対秒) → 素材内時刻 (秒) */
 export function mapClipTimeToSource(clip: ClipTiming, t: number): number {
   return sourceAdvance(clip, t - clip.start) + (clip.sourceIn ?? 0)
