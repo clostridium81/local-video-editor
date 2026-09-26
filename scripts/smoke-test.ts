@@ -31,6 +31,9 @@ import {
 } from '../src/engine/renderer'
 import { parseSubtitles, toSrt, toVtt, textClipsToCues } from '../src/engine/subtitles'
 import { avcCodecFor } from '../src/engine/capabilities'
+import { PositionedBlobWriter } from '../src/engine/positionedBlob'
+import * as Mp4 from 'mp4-muxer'
+import * as Webm from 'webm-muxer'
 import {
   preRoll,
   visualStart,
@@ -38,7 +41,10 @@ import {
   speedAt,
   sourceAdvance,
   clipSourceSpan,
-  splitSpeedCurve
+  splitSpeedCurve,
+  trimSpeedCurveLeft,
+  trimSpeedCurveRight,
+  durationForSourceSpan
 } from '../src/engine/frameTiming'
 import { rmsFromChannels, buildDuckActivity, duckGain, duckTriggers, hasDucking } from '../src/engine/ducking'
 import { TEXT_STYLE_PRESETS, textStylePatch, getTextStyle } from '../src/engine/textStyles'
@@ -777,6 +783,109 @@ console.log('text styles:')
   const p1 = textStylePatch(getTextStyle('neon-pink')!)
   p1.decor!.shadow!.blur = 999
   check('装飾はコピー (プリセットを書き換えない)', getTextStyle('neon-pink')!.style.decor!.shadow!.blur === 32)
+}
+
+// ---------- 監査対応: 速度カーブのトリム / バッファ上限 ----------
+console.log('audit fixes:')
+{
+  // 10 秒・0.5x→3x のカーブ
+  const c = { start: 0, duration: 10, sourceIn: 0, speedCurve: [{ x: 0, speed: 0.5 }, { x: 1, speed: 3 }] }
+  // 左を 5 秒トリム: 残りの素材対応は元と一致する
+  const d = 5
+  const L = { start: d, duration: 5, sourceIn: sourceAdvance(c, d), speedCurve: trimSpeedCurveLeft(c.speedCurve, 10, d) }
+  check('左トリム後も残り部分の素材時刻が変わらない',
+    [5, 6.5, 7.5, 9.9].every(t => approx(mapClipTimeToSource(L, t), mapClipTimeToSource(c, t), 1e-9)))
+  // 左を 2 秒延長: 元の部分は一致、延長分は先頭速度
+  const E = { start: -2, duration: 12, sourceIn: sourceAdvance(c, -2) + 0, speedCurve: trimSpeedCurveLeft(c.speedCurve, 10, -2) }
+  check('左延長後も元の部分の素材時刻が変わらない',
+    [0, 3, 9.5].every(t => approx(mapClipTimeToSource(E, t), mapClipTimeToSource(c, t), 1e-9)))
+  // 右を 6 秒に短縮 / 13 秒に延長
+  const R1 = { ...c, duration: 6, speedCurve: trimSpeedCurveRight(c.speedCurve, 10, 6) }
+  const R2 = { ...c, duration: 13, speedCurve: trimSpeedCurveRight(c.speedCurve, 10, 13) }
+  check('右トリム (短縮・延長) で元の部分の素材時刻が変わらない',
+    [1, 4, 5.9].every(t => approx(mapClipTimeToSource(R1, t), mapClipTimeToSource(c, t), 1e-9)) &&
+    [1, 9.9].every(t => approx(mapClipTimeToSource(R2, t), mapClipTimeToSource(c, t), 1e-9)) &&
+    approx(speedAt(R2, 12), 3))
+  const span = 8
+  const Dm = durationForSourceSpan(c, span)
+  check('素材を使い切る長さ (カーブ内)', approx(sourceAdvance(c, Dm), span, 1e-6))
+  const Dx = durationForSourceSpan(c, clipSourceSpan(c) + 6)
+  check('素材を使い切る長さ (末尾速度で延長)', approx(Dx, 12))
+  check('カーブなしは span / speed', approx(durationForSourceSpan({ start: 0, duration: 4, speed: 2 }, 10), 5))
+
+  // 大きく拡大したマスク付きクリップでもバッファは素材解像度で頭打ち
+  const sizes: number[][] = []
+  ;(globalThis as any).document = {
+    createElement: () => {
+      const cv: any = { _w: 1, _h: 1, getContext: () => new Proxy({}, { get: (t: any, k) => k in t ? t[k] : (k === 'getImageData' ? (_a: number, _b: number, w: number, h: number) => ({ data: new Uint8ClampedArray(w * h * 4) }) : () => {}), set: (t: any, k, v) => { t[k] = v; return true } }) }
+      Object.defineProperty(cv, 'width', { get: () => cv._w, set: v => { cv._w = v; sizes.push([cv._w, cv._h]) } })
+      Object.defineProperty(cv, 'height', { get: () => cv._h, set: v => { cv._h = v; sizes.push([cv._w, cv._h]) } })
+      return cv
+    }
+  }
+  const ctx = new Proxy({}, { get: () => () => {}, set: () => true })
+  const target = { ctx: ctx as any, width: 1920, height: 1080, buffer: new LayerBuffer() }
+  drawClip(target, {
+    id: 'v', kind: 'image', trackId: 't', assetId: 'a', start: 0, duration: 2, opacity: 1, x: 0.5, y: 0.5, scale: 10, rotation: 0,
+    mask: { shape: 'ellipse', x: 0.5, y: 0.5, width: 0.5, height: 0.5, rotation: 0, feather: 0.2, invert: false },
+    pixelFx: { vignette: 0.3 }
+  } as Clip, 1, { src: {} as any, width: 1280, height: 720 })
+  const maxSide = Math.max(...sizes.flat())
+  check('拡大 10 倍でもバッファは素材解像度 (1280) 以下', maxSide <= 1280, `max=${maxSide}`)
+}
+
+// ---------- 監査対応: 書き出しの逐次 Blob 化 ----------
+console.log('streamed muxing:')
+{
+  // 同じ入力を ArrayBufferTarget と StreamTarget + PositionedBlobWriter で書いて一致を確認
+  // (head / tail をファイルより小さく・クラスタより大きくして、確定・書き直しの経路を通す)
+  const frames = Array.from({ length: 120 }, (_, i) => {
+    const b = new Uint8Array(3000 + (i % 7) * 900)
+    for (let k = 0; k < b.length; k++) b[k] = (i * 31 + k) & 0xff
+    return b
+  })
+  const run = async (kind: 'mp4' | 'webm', streamed: boolean) => {
+    const M: any = kind === 'mp4' ? Mp4 : Webm
+    const writer = new PositionedBlobWriter(4096, 250000)
+    const target = streamed
+      ? new M.StreamTarget({ onData: (d: Uint8Array, p: number) => writer.write(d, p), chunked: true, chunkSize: 16384 })
+      : new M.ArrayBufferTarget()
+    const muxer = kind === 'mp4'
+      ? new M.Muxer({ target, video: { codec: 'avc', width: 320, height: 240, frameRate: 30 }, fastStart: false, firstTimestampBehavior: 'offset' })
+      : new M.Muxer({ target, video: { codec: 'V_VP9', width: 320, height: 240, frameRate: 30 }, firstTimestampBehavior: 'offset' })
+    frames.forEach((f, i) => {
+      const key = i % 30 === 0
+      const meta = i === 0 ? { decoderConfig: { codec: kind === 'mp4' ? 'avc1.640028' : 'vp09.00.10.08', codedWidth: 320, codedHeight: 240, description: new Uint8Array([1, 100, 0, 40, 255, 225, 0, 0]) } } : undefined
+      if (kind === 'mp4') muxer.addVideoChunkRaw(f, key ? 'key' : 'delta', Math.round(i * 1e6 / 30), Math.round(1e6 / 30), meta)
+      else muxer.addVideoChunkRaw(f, key ? 'key' : 'delta', Math.round(i * 1e6 / 30), meta)
+    })
+    muxer.finalize()
+    return streamed ? new Uint8Array(await writer.toBlob('x').arrayBuffer()) : new Uint8Array(target.buffer)
+  }
+  for (const kind of ['mp4', 'webm'] as const) {
+    const a = await run(kind, false)
+    const b = await run(kind, true)
+    check(`${kind}: 逐次 Blob 化した出力が従来と 1 バイトも違わない (${a.length} bytes)`,
+      a.length === b.length && a.every((v, i) => v === b[i]))
+  }
+  const w = new PositionedBlobWriter(8, 16)
+  w.write(new Uint8Array(40).fill(1), 0)
+  w.write(new Uint8Array(40).fill(2), 40)
+  let threw = false
+  try { w.write(new Uint8Array([9]), 20) } catch { threw = true }
+  check('確定済みの位置への書き直しは例外 (壊れたファイルを黙って出さない)', threw)
+  w.write(new Uint8Array([7, 7]), 3)
+  w.write(new Uint8Array([5]), 79)
+  const out = new Uint8Array(await w.toBlob('x').arrayBuffer())
+  check('先頭・直近の書き直しは反映される', out[3] === 7 && out[4] === 7 && out[79] === 5 && out.length === 80)
+}
+
+// ---------- 監査対応: 字幕の空行 ----------
+console.log('srt blank lines:')
+{
+  const cues = [{ start: 0, end: 1, text: 'a\n\nb\n \nc' }, { start: 2, end: 3, text: 'd' }]
+  const back = parseSubtitles(toSrt(cues))
+  check('本文の空行で字幕が分断されない', back.length === 2 && back[0].text === 'a\nb\nc')
 }
 
 console.log(failures === 0 ? '\nALL PASS' : `\n${failures} FAILURES`)

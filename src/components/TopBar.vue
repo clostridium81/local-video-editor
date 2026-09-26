@@ -1,7 +1,8 @@
 <script setup lang="ts">
 import { ref, watch } from 'vue'
 import { useProjectStore } from '../stores/projectStore'
-import { exportBackup, importBackup } from '../persistence/backup'
+import { importBackup } from '../persistence/backup'
+import { runBackupSave } from '../composables/useBackupSave'
 import { toast } from '../composables/useToast'
 import { hasWebCodecs } from '../engine/capabilities'
 import ExportDialog from './ExportDialog.vue'
@@ -42,17 +43,10 @@ watch(() => store.sessionVersion, () => {
 })
 
 async function onSave() {
+  if (saving.value) return
   saving.value = true
-  const session = store.sessionVersion
   try {
-    // ダウンロードした内容と一致する署名を記録するため、同じスナップショットを使う
-    const snapshot = store.serialize()
-    await exportBackup(snapshot)
-    if (session === store.sessionVersion) store.markBackedUp(snapshot)
-    toast.success(t('バックアップを保存しました', 'バックアップを保存しました'))
-  } catch (e: any) {
-    console.error(e)
-    toast.error(t('バックアップの保存に失敗しました: ', 'バックアップの保存に失敗しました: ') + (e?.message ?? ''))
+    await runBackupSave(store)
   } finally {
     saving.value = false
   }
@@ -86,16 +80,21 @@ async function onFileChosen(e: Event) {
       '現在のプロジェクトを破棄してバックアップから復元します (未バックアップなら復元不可)。よろしいですか？'
     ))) return
     const signature = contentSignature(store.state)
-    const { project, assetCount, blobs } = await importBackup(file)
+    const { project, assetCount, blobs, warnings } = await importBackup(file)
     if (session !== store.sessionVersion) return
     if (signature !== contentSignature(store.state)) {
       toast.warn('読み込み中に作品が編集されたため、復元を中止しました。もう一度復元してください。')
       return
     }
     store.replaceState(project, blobs)
-    // 復元した内容 = 読み込んだバックアップファイルそのものなので「バックアップ済み」
-    store.markBackedUp()
-    toast.success(t(`復元しました (素材 ${assetCount} 件)`, `復元しました (素材 ${assetCount} 件)`))
+    if (warnings.length === 0) {
+      // 復元した内容 = 読み込んだバックアップファイルそのものなので「バックアップ済み」
+      store.markBackedUp()
+      toast.success(t(`復元しました (素材 ${assetCount} 件)`, `復元しました (素材 ${assetCount} 件)`))
+    } else {
+      // 一部を外して復元した場合は、外した後の状態を改めて保存してもらうため未保存のままにする
+      toast.warn(t('一部を 除いて 復元しました。', '一部を除いて復元しました。') + warnings.join(' / '), 15000)
+    }
   } catch (err: any) {
     console.error(err)
     toast.error(t('復元に失敗しました: ', '復元に失敗しました: ') + (err?.message ?? ''))

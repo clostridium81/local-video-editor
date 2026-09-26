@@ -6,6 +6,7 @@ import type {
 } from '../types/project'
 import { getAssetObjectURL, loadAssetBlob } from '../persistence/assetStore'
 import { computeEffective, drawClip, LayerBuffer, type VisualSource } from './renderer'
+import { PositionedBlobWriter } from './positionedBlob'
 import {
   avcCodecFor,
   AAC_CODEC,
@@ -13,6 +14,7 @@ import {
   OPUS_CODEC,
   hasWebCodecs,
   canEncodeVideo,
+  canEncodeAudio,
   type CodecConfig
 } from './capabilities'
 import {
@@ -85,6 +87,8 @@ export interface ExportResult {
   blob: Blob
   filename: string
   mime: string
+  /** 書き出せたが注意が必要な点 (音声を読めなかった素材など) */
+  warnings: string[]
 }
 
 function notifyProgress(opts: ExportOptions, p: Progress) {
@@ -164,7 +168,8 @@ async function renderAudioMix(
   totalDuration: number,
   sampleRate: number,
   signal?: AbortSignal,
-  rangeOffset = 0
+  rangeOffset = 0,
+  warnings: string[] = []
 ): Promise<AudioBuffer> {
   const Ctx =
     (globalThis as any).OfflineAudioContext ||
@@ -173,28 +178,45 @@ async function renderAudioMix(
   const oc = new Ctx(2, Math.ceil(sampleRate * totalDuration), sampleRate)
 
   type AClip = { clip: AudioClip | VideoClip; assetId: string }
+  const anySolo = state.tracks.some(t => t.solo)
+  const mutedTracks = new Set(state.tracks.filter(t => t.muted).map(t => t.id))
+  const soloTracks = new Set(state.tracks.filter(t => t.solo).map(t => t.id))
+  // 鳴らさないクリップ (ミュート・ソロ対象外・書き出し範囲外) の素材はデコードしない。
+  // 素材ごとの全音声をメモリに展開するので、不要な分まで読むと長い素材でタブが落ちうる。
+  // (範囲の少し外はダッキングの戻りに影響するので 1 秒の余裕を持つ)
+  const rangeEndAbs = rangeOffset + totalDuration
   const audible: AClip[] = []
   for (const c of state.clips) {
-    if (c.kind === 'audio') audible.push({ clip: c, assetId: c.assetId })
-    else if (c.kind === 'video') audible.push({ clip: c, assetId: c.assetId })
+    if (c.kind !== 'audio' && c.kind !== 'video') continue
+    if (c.muted || mutedTracks.has(c.trackId)) continue
+    if (anySolo && !soloTracks.has(c.trackId)) continue
+    if (c.start + c.duration < rangeOffset - 1 || c.start > rangeEndAbs + 1) continue
+    audible.push({ clip: c, assetId: c.assetId })
   }
-
-  const anySolo = state.tracks.some(t => t.solo)
 
   // 素材ごとに decodeAudioData (重複排除)
   const decoded = new Map<string, AudioBuffer>()
+  const failed: string[] = []
   for (const a of audible) {
-    if (decoded.has(a.assetId)) continue
+    if (decoded.has(a.assetId) || failed.includes(a.assetId)) continue
     checkAbort(signal)
     const blob = await loadAssetBlob(state.meta.id, a.assetId)
-    if (!blob) continue
+    if (!blob) {
+      failed.push(a.assetId)
+      continue
+    }
     try {
       const arr = await blob.arrayBuffer()
       const buf = await (oc.decodeAudioData(arr) as Promise<AudioBuffer>)
       decoded.set(a.assetId, buf)
     } catch {
-      // 無音スキップ
+      // 音声トラックの無い動画もここに来る (その場合は無音で正しい)
+      failed.push(a.assetId)
     }
+  }
+  if (failed.length) {
+    const names = failed.map(id => state.assets[id]?.name ?? id)
+    warnings.push(`音声を読み込めなかった素材があります (音声の無い動画なら問題ありません): ${names.join('、')}`)
   }
 
   // ダッキング: デコード済みの音声から「他の音が鳴っている度合い」を求める
@@ -445,10 +467,69 @@ async function pickVideoEncoderConfig(base: CodecConfig): Promise<CodecConfig> {
 /** エンコードキューが溜まりすぎたら掃けるまで待つ (メモリ抑制) */
 const MAX_ENCODE_QUEUE = 8
 
-async function waitEncoderQueue(encoder: any, profiler?: ExportProfiler): Promise<void> {
+/**
+ * エンコーダの状態監視: エラーコールバックを記録し、待ちの途中でも
+ * キャンセル・エラーで抜けられるようにする (固まったまま閉じられなくなるのを防ぐ)
+ */
+class EncoderWatch {
+  error: Error | null = null
+  private waiters = new Set<(e: Error) => void>()
+  fail(e: any) {
+    this.error = e instanceof Error ? e : new Error(String(e?.message ?? e))
+    for (const w of this.waiters) w(this.error)
+    this.waiters.clear()
+  }
+  check(signal?: AbortSignal) {
+    checkAbort(signal)
+    if (this.error) throw this.error
+  }
+  /** p の完了を待つ。キャンセル・エンコーダエラー・時間切れで例外にする */
+  async guard<T>(p: Promise<T>, signal: AbortSignal | undefined, timeoutMs: number, what: string): Promise<T> {
+    this.check(signal)
+    let timer: ReturnType<typeof setTimeout> | undefined
+    let onAbort: (() => void) | undefined
+    let waiter: ((e: Error) => void) | undefined
+    try {
+      return await Promise.race([
+        p,
+        new Promise<never>((_, reject) => {
+          timer = setTimeout(() => reject(new Error(`${what}が応答しません (時間切れ)`)), timeoutMs)
+          onAbort = () => reject(new DOMException('Aborted', 'AbortError'))
+          signal?.addEventListener('abort', onAbort, { once: true })
+          waiter = reject
+          this.waiters.add(waiter)
+        })
+      ])
+    } finally {
+      if (timer) clearTimeout(timer)
+      if (onAbort) signal?.removeEventListener('abort', onAbort)
+      if (waiter) this.waiters.delete(waiter)
+    }
+  }
+}
+
+/** エンコーダの処理待ちの上限 (これを超えて進まなければ固まったとみなす) */
+const ENCODER_STALL_MS = 60_000
+
+async function waitEncoderQueue(
+  encoder: any,
+  watch: EncoderWatch,
+  signal?: AbortSignal,
+  profiler?: ExportProfiler
+): Promise<void> {
   if (!(encoder.encodeQueueSize > MAX_ENCODE_QUEUE)) return
   profiler?.begin('encodeWait')
+  const startedAt = Date.now()
+  let lastSize = encoder.encodeQueueSize
+  let lastProgress = startedAt
   while (encoder.encodeQueueSize > MAX_ENCODE_QUEUE) {
+    watch.check(signal)
+    if (encoder.encodeQueueSize < lastSize) {
+      lastSize = encoder.encodeQueueSize
+      lastProgress = Date.now()
+    } else if (Date.now() - lastProgress > ENCODER_STALL_MS) {
+      throw new Error('映像エンコーダが応答しません (時間切れ)')
+    }
     // dequeue イベント非対応環境向けにタイムアウトとの併用
     await new Promise<void>(resolve => {
       const timer = setTimeout(resolve, 50)
@@ -493,6 +574,8 @@ export async function exportProject(
   const rangeDur = Math.max(0.01, rangeEnd - rangeStart)
   const totalFrames = Math.max(1, Math.ceil(rangeDur * fps))
 
+  const warnings: string[] = []
+
   // GIF 出力は専用パス
   if (format === 'gif') {
     return await exportGIF(state, { ...opts, startTime: rangeStart, endTime: rangeEnd })
@@ -506,28 +589,42 @@ export async function exportProject(
   let videoCodecStr: string
   let audioCodecStr: string
 
+  // 出力は位置指定の書き込みを順次 Blob に確定していく (全体を 1 つの ArrayBuffer に
+  // 持たない)。長い書き出しでも出力サイズの数倍のメモリを使わない
+  const writer = new PositionedBlobWriter()
+  // mp4-muxer は整数の frameRate しか受け付けない (復元した作品の 29.97 等でも失敗させない)
+  const muxFrameRate = Math.max(1, Math.round(fps))
   if (format === 'mp4') {
-    const { Muxer, ArrayBufferTarget } = await import('mp4-muxer')
+    const { Muxer, StreamTarget } = await import('mp4-muxer')
     // 解像度・fps に見合う Level を選ぶ (縦長や 21:9 は 1080p30 の Level 4.0 を超える)
     videoCodecStr = avcCodecFor(width, height, fps)
     audioCodecStr = AAC_CODEC
     muxer = new (Muxer as any)({
-      target: new ArrayBufferTarget(),
-      video: { codec: 'avc', width, height, frameRate: fps },
+      target: new StreamTarget({
+        onData: (data: Uint8Array, position: number) => writer.write(data, position),
+        chunked: true,
+        chunkSize: 8 * 1024 * 1024
+      }),
+      video: { codec: 'avc', width, height, frameRate: muxFrameRate },
       audio: includeAudio
         ? { codec: 'aac', numberOfChannels: 2, sampleRate: 48000 }
         : undefined,
-      fastStart: 'in-memory',
+      // 'in-memory' は全データを最後まで保持するため使わない (moov は末尾になる)
+      fastStart: false,
       firstTimestampBehavior: 'offset'
     })
     mimeType = 'video/mp4'
   } else {
-    const { Muxer, ArrayBufferTarget } = await import('webm-muxer')
+    const { Muxer, StreamTarget } = await import('webm-muxer')
     videoCodecStr = VP9_CODEC
     audioCodecStr = OPUS_CODEC
     muxer = new (Muxer as any)({
-      target: new ArrayBufferTarget(),
-      video: { codec: 'V_VP9', width, height, frameRate: fps },
+      target: new StreamTarget({
+        onData: (data: Uint8Array, position: number) => writer.write(data, position),
+        chunked: true,
+        chunkSize: 8 * 1024 * 1024
+      }),
+      video: { codec: 'V_VP9', width, height, frameRate: muxFrameRate },
       audio: includeAudio
         ? { codec: 'A_OPUS', numberOfChannels: 2, sampleRate: 48000 }
         : undefined,
@@ -539,17 +636,46 @@ export async function exportProject(
   // ---------- VideoEncoder ----------
   const profiler = new ExportProfiler()
   const VE = (globalThis as any).VideoEncoder
-  const encoderConfig = await pickVideoEncoderConfig({
+  const baseConfig = {
     codec: videoCodecStr,
     width,
     height,
     bitrate: videoBitrate,
     framerate: fps
-  })
+  }
+  // 選んだ設定で本当にエンコードできるかを先に確かめる (途中で不明なエラーにしない)
+  if (!(await canEncodeVideo(baseConfig))) {
+    throw new Error(
+      `このブラウザでは ${format.toUpperCase()} ${width}×${height} ${fps}fps の書き出しに対応していません。` +
+        '形式・画面サイズ・フレームレートを変えてください'
+    )
+  }
+  if (includeAudio) {
+    const audioOk = await canEncodeAudio({
+      codec: audioCodecStr,
+      sampleRate: 48000,
+      numberOfChannels: 2,
+      bitrate: audioBitrate
+    })
+    if (!audioOk) {
+      throw new Error(
+        `このブラウザでは ${format.toUpperCase()} の音声を作れません。形式を変えるか「音声を含める」を外してください`
+      )
+    }
+  }
+  const encoderConfig = await pickVideoEncoderConfig(baseConfig)
+  const watch = new EncoderWatch()
   const videoEncoder = new VE({
-    output: (chunk: any, metadata: any) => muxer.addVideoChunk(chunk, metadata),
+    output: (chunk: any, metadata: any) => {
+      try {
+        muxer.addVideoChunk(chunk, metadata)
+      } catch (e) {
+        watch.fail(e)
+      }
+    },
     error: (e: any) => {
       console.error('video encoder error', e)
+      watch.fail(e)
     }
   })
   videoEncoder.configure(encoderConfig)
@@ -614,7 +740,8 @@ export async function exportProject(
       drawFrame(rc, t)
       profiler.end('draw')
 
-      await waitEncoderQueue(videoEncoder, profiler)
+      await waitEncoderQueue(videoEncoder, watch, signal, profiler)
+      watch.check(signal)
       const frame = new VFrame(rc.canvas as any, {
         timestamp: Math.round((i * 1e6) / fps),
         duration: frameDurationUs
@@ -631,7 +758,7 @@ export async function exportProject(
     }
 
     profiler.begin('encodeFlush')
-    await videoEncoder.flush()
+    await watch.guard(videoEncoder.flush(), signal, ENCODER_STALL_MS * 2, '映像エンコーダ')
     profiler.end('encodeFlush')
     videoEncoder.close()
 
@@ -643,17 +770,32 @@ export async function exportProject(
       let audioBuf: AudioBuffer | null = null
       profiler.begin('audioMix')
       try {
-        audioBuf = await renderAudioMix(state, rangeDur, sampleRate, signal, rangeStart)
-      } catch (e) {
-        console.warn('audio mix failed', e)
+        audioBuf = await renderAudioMix(state, rangeDur, sampleRate, signal, rangeStart, warnings)
+      } catch (e: any) {
+        // キャンセルはそのまま中止。それ以外も「音声なしのファイル」を黙って作らず失敗にする
+        if (e?.name === 'AbortError') throw e
+        console.error('audio mix failed', e)
+        throw new Error(
+          '音声の合成に失敗しました。「音声を含める」を外すと映像だけ書き出せます' +
+            (e?.message ? ` (${e.message})` : '')
+        )
       }
       profiler.end('audioMix')
       if (audioBuf) {
         const AE = (globalThis as any).AudioEncoder
         const AData = (globalThis as any).AudioData
         audioEncoder = new AE({
-          output: (chunk: any, metadata: any) => muxer.addAudioChunk(chunk, metadata),
-          error: (e: any) => console.error('audio encoder error', e)
+          output: (chunk: any, metadata: any) => {
+            try {
+              muxer.addAudioChunk(chunk, metadata)
+            } catch (e) {
+              watch.fail(e)
+            }
+          },
+          error: (e: any) => {
+            console.error('audio encoder error', e)
+            watch.fail(e)
+          }
         })
         audioEncoder.configure({
           codec: audioCodecStr,
@@ -671,7 +813,8 @@ export async function exportProject(
         const totalBlocks = Math.ceil(frameCount / blockSize)
 
         for (let b = 0; b < totalBlocks; b++) {
-          checkAbort(signal)
+          watch.check(signal)
+          await waitEncoderQueue(audioEncoder, watch, signal)
           const off = b * blockSize
           const end = Math.min(off + blockSize, frameCount)
           const n = end - off
@@ -696,16 +839,17 @@ export async function exportProject(
             await new Promise(r => setTimeout(r, 0))
           }
         }
-        await audioEncoder.flush()
+        await watch.guard(audioEncoder.flush(), signal, ENCODER_STALL_MS * 2, '音声エンコーダ')
         audioEncoder.close()
         profiler.end('audioEncode')
       }
     }
 
     // ---------- Mux 完了 ----------
+    // キャンセル・エンコーダエラーの後に不完全なファイルを完成扱いにしない
+    watch.check(signal)
     notifyProgress(opts, { phase: 'mux', done: 0, total: 1, message: '出力中…' })
     muxer.finalize()
-    const buf = (muxer.target as any).buffer as ArrayBuffer
 
     notifyProgress(opts, { phase: 'done', done: 1, total: 1, message: '完了' })
     logProfile(
@@ -719,9 +863,10 @@ export async function exportProject(
     const stamp = new Date().toISOString().replace(/[:.]/g, '-')
     const ext = format === 'mp4' ? 'mp4' : 'webm'
     return {
-      blob: new Blob([buf], { type: mimeType }),
+      blob: writer.toBlob(mimeType),
       filename: `${safeName}__${stamp}.${ext}`,
-      mime: mimeType
+      mime: mimeType,
+      warnings
     }
   } finally {
     // 中断・エラー時もフレームソース / デコーダ / エンコーダを確実に解放する
@@ -748,7 +893,8 @@ export async function downloadBlob(blob: Blob, filename: string) {
   document.body.appendChild(a)
   a.click()
   a.remove()
-  setTimeout(() => URL.revokeObjectURL(url), 2000)
+  // 大きなファイルでもダウンロード開始まで URL を生かしておく
+  setTimeout(() => URL.revokeObjectURL(url), 60_000)
 }
 
 // ============================================================
@@ -835,7 +981,8 @@ async function exportGIF(state: ProjectState, opts: ExportOptions): Promise<Expo
     return {
       blob: new Blob([buf], { type: 'image/gif' }),
       filename: `${safeName}__${stamp}.gif`,
-      mime: 'image/gif'
+      mime: 'image/gif',
+      warnings: []
     }
   } finally {
     resolver.closeAll()

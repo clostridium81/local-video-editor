@@ -35,7 +35,7 @@ import { EFFECT_PRESETS } from '../engine/effectPresets'
 import { useLocale } from '../composables/useLocale'
 import EffectSlider from './EffectSlider.vue'
 import SpeedCurveEditor from './SpeedCurveEditor.vue'
-import { clipSourceSpan } from '../engine/frameTiming'
+import { clipSourceSpan, durationForSourceSpan, trimSpeedCurveRight } from '../engine/frameTiming'
 import { TEXT_STYLE_PRESETS, textStylePreviewCss } from '../engine/textStyles'
 import { mapClipTimeToSource } from '../engine/frameTiming'
 import { captureVideoFrame } from '../engine/frameCapture'
@@ -103,6 +103,13 @@ function update(patch: Partial<Clip>) {
         }
         return
       }
+    }
+  }
+  // 長さの変更は右端のトリムと同じく、速度カーブを伸縮させずに切り取り/延長する
+  if (typeof patch.duration === 'number') {
+    const c = store.getClip(id)
+    if (c?.speedCurve) {
+      ;(patch as any).speedCurve = trimSpeedCurveRight(c.speedCurve, c.duration, patch.duration)
     }
   }
   store.updateClip(id, patch as any)
@@ -563,13 +570,16 @@ const sourceUsage = computed(() => {
   return { span, remain, over: remain != null && span > remain + 0.05 }
 })
 
-/** 素材の残りをちょうど使い切る長さにする (速度カーブの形は保つ) */
+/** 素材の残りをちょうど使い切る長さにする (速度カーブは切り取り / 末尾の速度で延長) */
 function fitDurationToSource() {
   const c = audioLikeClip.value
   const u = sourceUsage.value
   if (!c || !u || u.remain == null || u.span <= 0) return
-  const avg = u.span / c.duration
-  store.updateClip(c.id, { duration: Math.max(0.1, u.remain / avg) } as any)
+  const newD = Math.max(0.1, durationForSourceSpan(c, u.remain))
+  store.updateClip(c.id, {
+    duration: newD,
+    ...(c.speedCurve ? { speedCurve: trimSpeedCurveRight(c.speedCurve, c.duration, newD) } : {})
+  } as any)
 }
 
 // ---------- 背景ぼかし塗り ----------

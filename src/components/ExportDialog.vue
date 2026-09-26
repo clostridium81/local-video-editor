@@ -66,7 +66,8 @@ const resolution = computed(() => {
 
 const resolvedBitrate = computed(() => {
   if (customBitrate.value != null && customBitrate.value > 0) {
-    return customBitrate.value * 1000 // kbps → bps
+    // 上限 100Mbps (書き出しの出力バッファの前提。positionedBlob.ts)
+    return Math.min(100_000, customBitrate.value) * 1000 // kbps → bps
   }
   const { width, height } = resolution.value
   const pixels = width * height
@@ -279,9 +280,10 @@ async function onStart() {
   }
 
   try {
-    const { blob, filename } = await exportProject(store.serialize(), opts)
+    const { blob, filename, warnings } = await exportProject(store.serialize(), opts)
     await downloadBlob(blob, filename)
     toast.success(`完成しました: ${filename}`)
+    for (const w of warnings) toast.warn(w, 12000)
     emit('close')
   } catch (err: any) {
     if (err?.name === 'AbortError') {
@@ -395,7 +397,7 @@ function fmtPhaseMessage(m: string): string {
           <input
             type="number"
             :value="customBitrate ?? ''"
-            placeholder="空欄で自動"
+            placeholder="空欄で自動 (最大 100000)"
             @change="(e) => {
               const v = (e.target as HTMLInputElement).value
               customBitrate = v ? Number(v) : null

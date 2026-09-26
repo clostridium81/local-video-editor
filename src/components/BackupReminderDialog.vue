@@ -1,8 +1,7 @@
 <script setup lang="ts">
 import { ref } from 'vue'
 import { useProjectStore } from '../stores/projectStore'
-import { exportBackup } from '../persistence/backup'
-import { toast } from '../composables/useToast'
+import { runBackupSave } from '../composables/useBackupSave'
 import { useLocale } from '../composables/useLocale'
 
 const { t } = useLocale()
@@ -16,19 +15,9 @@ async function onBackup() {
   saving.value = true
   const session = store.sessionVersion
   try {
-    // TopBar のバックアップと同じ: ダウンロードした内容の署名を記録する
-    const snapshot = store.serialize()
-    await exportBackup(snapshot)
-    // markBackedUp が shouldPromptBackup を false にするのでダイアログは自動で閉じる
-    if (session === store.sessionVersion) store.markBackedUp(snapshot)
-    toast.success(t('バックアップを保存しました', 'バックアップを保存しました'))
-    if (session === store.sessionVersion) emit('close')
-  } catch (e: any) {
-    console.error(e)
-    toast.error(
-      t('バックアップの保存に失敗しました: ', 'バックアップの保存に失敗しました: ') +
-        (e?.message ?? '')
-    )
+    // 保存を確認できたら markBackedUp で shouldPromptBackup が false になる
+    const ok = await runBackupSave(store)
+    if (ok && session === store.sessionVersion) emit('close')
   } finally {
     saving.value = false
   }

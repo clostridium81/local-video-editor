@@ -61,6 +61,9 @@ export function getActiveEngine(): PreviewEngine | null {
   return activeEngine
 }
 
+/** 同時に保持するメディア要素 (video / audio) の上限。表示中のものは超えても解放しない */
+const MAX_MEDIA_NODES = 12
+
 export class PreviewEngine {
   private canvas: HTMLCanvasElement
   private ctx: CanvasRenderingContext2D
@@ -182,12 +185,14 @@ export class PreviewEngine {
       if (!liveIds.has(id)) {
         disposeMediaNode(node)
         this.videoNodes.delete(id)
+        this.lastUsed.delete(id)
       }
     }
     for (const [id, node] of this.audioNodes) {
       if (!liveIds.has(id)) {
         disposeMediaNode(node)
         this.audioNodes.delete(id)
+        this.lastUsed.delete(id)
       }
     }
   }
@@ -258,9 +263,12 @@ export class PreviewEngine {
     } else {
       // 範囲再生: out 点が設定されていれば in 点へ戻ってループ。
       // out 点なしで末尾に達した場合は停止。
-      const rangeEnd = tl.outPoint ?? tl.duration
+      // Out 点が In 点以前 (逆転) なら範囲は無効として扱う (毎フレーム In 点へ戻って止まって見えるのを防ぐ)
+      const validOut =
+        tl.outPoint != null && tl.outPoint > (tl.inPoint ?? 0) + 0.01 ? tl.outPoint : undefined
+      const rangeEnd = validOut ?? tl.duration
       if (t >= rangeEnd) {
-        if (tl.outPoint != null) {
+        if (validOut != null) {
           t = tl.inPoint ?? 0
           tl.playhead = t
           this.renderAt(t, true).catch(console.error)
@@ -286,6 +294,32 @@ export class PreviewEngine {
     await this.renderAt(this.state.timeline.playhead, false)
   }
 
+  // メディア要素はクリップごとに作る。長い素材を細かく分割すると数百個になり、
+  // メモリやブラウザの同時再生数の上限に当たるため、使っていないものから解放する
+  private lastUsed = new Map<string, number>()
+  private touchNode(id: string) {
+    this.lastUsed.set(id, performance.now())
+  }
+  private releaseIdleNodes(activeIds: Set<string>) {
+    const total = this.videoNodes.size + this.audioNodes.size
+    if (total <= MAX_MEDIA_NODES) return
+    const idle = [
+      ...[...this.videoNodes.keys()].map(id => ({ id, map: this.videoNodes as Map<string, VideoMediaNode | AudioMediaNode> })),
+      ...[...this.audioNodes.keys()].map(id => ({ id, map: this.audioNodes as Map<string, VideoMediaNode | AudioMediaNode> }))
+    ]
+      .filter(n => !activeIds.has(n.id))
+      .sort((a, b) => (this.lastUsed.get(a.id) ?? 0) - (this.lastUsed.get(b.id) ?? 0))
+    let excess = total - MAX_MEDIA_NODES
+    for (const n of idle) {
+      if (excess <= 0) break
+      const node = n.map.get(n.id)
+      if (node) disposeMediaNode(node)
+      n.map.delete(n.id)
+      this.lastUsed.delete(n.id)
+      excess--
+    }
+  }
+
   // renderAt は非同期 (素材の読み込み・シーク待ち) なので、後から始まった描画が
   // 先に終わることがある。最新の要求だけが描くよう通し番号で判定する
   private renderSeq = 0
@@ -309,6 +343,8 @@ export class PreviewEngine {
       await this.seekOnly(activeClips, t, seq)
     }
     if (this.disposed || seq !== this.renderSeq) return
+    for (const c of activeClips) this.touchNode(c.id)
+    this.releaseIdleNodes(new Set(activeClips.map(c => c.id)))
 
     // 待ちが終わってから消して描く (待っている間に前の画が消えてちらつかないように)
     ctx.save()
@@ -406,14 +442,17 @@ export class PreviewEngine {
     const eq = (clip as any).eq as
       | { low?: number; mid?: number; high?: number }
       | undefined
+    // 非有限値を AudioParam / volume に入れると例外で描画ごと止まるため 0 / 1 に落とす
+    if (!Number.isFinite(rawVol)) rawVol = 0
+    const fin = (v: number | undefined) => (Number.isFinite(v) ? (v as number) : 0)
     if (node.chain) {
       node.el.volume = 1
       // クリップ(≤2) × トラック(≤2) × マスター(≤2) の乗算結果を許容
       // (エクスポートのゲイン構成と同じ上限)
       node.chain.gain.gain.value = Math.max(0, Math.min(8, rawVol))
-      node.chain.low.gain.value = Math.max(-24, Math.min(24, eq?.low ?? 0))
-      node.chain.mid.gain.value = Math.max(-24, Math.min(24, eq?.mid ?? 0))
-      node.chain.high.gain.value = Math.max(-24, Math.min(24, eq?.high ?? 0))
+      node.chain.low.gain.value = Math.max(-24, Math.min(24, fin(eq?.low)))
+      node.chain.mid.gain.value = Math.max(-24, Math.min(24, fin(eq?.mid)))
+      node.chain.high.gain.value = Math.max(-24, Math.min(24, fin(eq?.high)))
     } else {
       node.el.volume = Math.max(0, Math.min(1, rawVol))
     }

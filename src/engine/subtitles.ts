@@ -70,10 +70,15 @@ function fmtTime(sec: number, sep: ',' | '.'): string {
   return `${p(h)}:${p(m)}:${p(s)}${sep}${p(ms, 3)}`
 }
 
+/** 字幕の本文に空行があると次の字幕の区切りと解釈されるため、詰める */
+function cueBody(text: string): string {
+  return text.replace(/\r\n?/g, '\n').replace(/\n\s*\n+/g, '\n').trim()
+}
+
 export function toSrt(cues: SubtitleCue[]): string {
   return (
     cues
-      .map((c, i) => `${i + 1}\n${fmtTime(c.start, ',')} --> ${fmtTime(c.end, ',')}\n${c.text}`)
+      .map((c, i) => `${i + 1}\n${fmtTime(c.start, ',')} --> ${fmtTime(c.end, ',')}\n${cueBody(c.text)}`)
       .join('\n\n') + '\n'
   )
 }
@@ -82,7 +87,7 @@ export function toVtt(cues: SubtitleCue[]): string {
   return (
     'WEBVTT\n\n' +
     cues
-      .map(c => `${fmtTime(c.start, '.')} --> ${fmtTime(c.end, '.')}\n${c.text}`)
+      .map(c => `${fmtTime(c.start, '.')} --> ${fmtTime(c.end, '.')}\n${cueBody(c.text)}`)
       .join('\n\n') +
     '\n'
   )

@@ -139,6 +139,9 @@ export function visualDrawSize(
 
 // ---------- オフスクリーンバッファ ----------
 
+/** grade / mask 等の中間バッファの 1 辺の上限 (4096² × 4B ≒ 64MB) */
+export const MAX_LAYER_SIDE = 4096
+
 /** grade / chroma / pixelFx / mask 用の再利用バッファ */
 export class LayerBuffer {
   private canvas_: HTMLCanvasElement | null = null
@@ -191,6 +194,24 @@ export function drawClip(
   const { eff, trans, localT } = computeEffective(clip, t)
   const blend = (clip.blendMode ?? 'normal') as BlendMode
   ctx.save()
+  // 途中で例外が出ても clip 領域・変形が残って以降の全フレームが崩れないよう、必ず restore する
+  try {
+    drawClipBody(target, clip, eff, trans, localT, source, blend)
+  } finally {
+    ctx.restore()
+  }
+}
+
+function drawClipBody(
+  target: DrawTarget,
+  clip: Clip,
+  eff: EffectiveTransform,
+  trans: TransitionSample,
+  localT: number,
+  source: VisualSource | null,
+  blend: BlendMode
+) {
+  const { ctx } = target
   if (blend !== 'normal') ctx.globalCompositeOperation = blendToCanvas(blend)
   if (clip.kind === 'video' || clip.kind === 'image') {
     if (source) {
@@ -209,7 +230,6 @@ export function drawClip(
   } else if (clip.kind === 'shape') {
     drawShape(target, clip, eff, trans)
   }
-  ctx.restore()
 }
 
 // ---------- 共通の前処理 (不透明度 / フィルタ / 表示領域 / 変形) ----------
@@ -368,12 +388,30 @@ function drawVisualSource(
     return
   }
 
-  const bw = Math.max(1, Math.round(Math.abs(drawW)))
-  const bh = Math.max(1, Math.round(Math.abs(drawH)))
+  // バッファは「表示サイズ」ではなく「素材の解像度」と 1 辺 MAX_LAYER_SIDE で頭打ちにし、
+  // 画面上の拡大は最後の drawImage に任せる。大きく拡大したクリップで数百 MB の
+  // キャンバス + 毎フレームの getImageData が走り、タブが落ちるのを防ぐ。
+  // px 指定の効果 (ぼかし・モザイク・色収差) はバッファの縮小率 k に合わせて換算する。
+  const absW = Math.max(1e-6, Math.abs(drawW))
+  const absH = Math.max(1e-6, Math.abs(drawH))
+  const k = Math.min(1, sw / absW, sh / absH, MAX_LAYER_SIDE / absW, MAX_LAYER_SIDE / absH)
+  const bw = Math.max(1, Math.round(absW * k))
+  const bh = Math.max(1, Math.round(absH * k))
+  const bufFilter = p.effects
+    ? buildFilterString(k < 1 && p.effects.blur ? { ...p.effects, blur: p.effects.blur * k } : p.effects)
+    : ''
+  const bufPixelFx: PixelEffects | undefined =
+    pixelFx && k < 1
+      ? {
+          ...pixelFx,
+          pixelate: pixelFx.pixelate ? Math.max(pixelFx.pixelate > 1 ? 2 : 0, Math.round(pixelFx.pixelate * k)) : pixelFx.pixelate,
+          chromaticAberration: pixelFx.chromaticAberration ? pixelFx.chromaticAberration * k : pixelFx.chromaticAberration
+        }
+      : pixelFx
   const { canvas: buf, ctx: bctx } = target.buffer.get(bw, bh)
   bctx.save()
   bctx.setTransform(1, 0, 0, 1, 0, 0)
-  bctx.filter = effectsFilter || 'none'
+  bctx.filter = bufFilter || 'none'
   bctx.globalCompositeOperation = 'source-over'
   bctx.globalAlpha = 1
   bctx.clearRect(0, 0, bw, bh)
@@ -385,7 +423,7 @@ function drawVisualSource(
       const img = bctx.getImageData(0, 0, bw, bh)
       if (p.chroma?.enabled) applyChromaKey(img, p.chroma)
       if (p.grade) applyColorGrade(img, p.grade)
-      if (hasPixelEffects(pixelFx)) applyPixelEffects(img, pixelFx)
+      if (hasPixelEffects(bufPixelFx)) applyPixelEffects(img, bufPixelFx)
       bctx.putImageData(img, 0, 0)
     } catch {
       // tainted canvas 等で失敗した場合は、フィルタ済みだけを描く

@@ -17,6 +17,8 @@ export function detectAssetKind(file: File): AssetKind | null {
   return null
 }
 
+const META_TIMEOUT_MS = 20000
+
 interface MediaMeta {
   duration?: number
   width?: number
@@ -29,10 +31,19 @@ export async function extractMediaMeta(
 ): Promise<MediaMeta> {
   const url = URL.createObjectURL(file)
   try {
-    if (kind === 'image') return await extractImageMeta(url)
-    if (kind === 'video') return await extractVideoMeta(url)
-    if (kind === 'audio') return await extractAudioMeta(url)
-    return {}
+    const task =
+      kind === 'image' ? extractImageMeta(url)
+        : kind === 'video' ? extractVideoMeta(url)
+          : kind === 'audio' ? extractAudioMeta(url)
+            : Promise.resolve({})
+    // 壊れたファイル等で読み込みイベントが来ないまま、素材追加の処理全体が
+    // 止まらないよう上限を設ける (時間切れは「情報なし」として追加を続ける)
+    return await Promise.race([
+      task,
+      new Promise<MediaMeta>((_, reject) =>
+        setTimeout(() => reject(new Error('メタデータの取得がタイムアウトしました')), META_TIMEOUT_MS)
+      )
+    ])
   } finally {
     URL.revokeObjectURL(url)
   }

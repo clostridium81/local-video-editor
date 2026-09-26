@@ -38,17 +38,27 @@ export async function captureVideoFrame(url: string, time: number): Promise<Blob
   }
 }
 
-function once(el: HTMLMediaElement, name: string): Promise<void> {
+/** イベントを待つ。応答が無いまま止まらないよう timeoutMs で失敗にする */
+function once(el: HTMLMediaElement, name: string, timeoutMs = 15000): Promise<void> {
   return new Promise((resolve, reject) => {
-    const ok = () => {
+    const timer = setTimeout(() => {
+      cleanup()
+      reject(new Error('動画の読み込みに時間がかかりすぎています'))
+    }, timeoutMs)
+    const cleanup = () => {
+      clearTimeout(timer)
+      el.removeEventListener(name, ok)
       el.removeEventListener('error', ng)
+    }
+    const ok = () => {
+      cleanup()
       resolve()
     }
     const ng = () => {
-      el.removeEventListener(name, ok)
+      cleanup()
       reject(new Error('動画を読み込めませんでした'))
     }
-    el.addEventListener(name, ok, { once: true })
-    el.addEventListener('error', ng, { once: true })
+    el.addEventListener(name, ok)
+    el.addEventListener('error', ng)
   })
 }

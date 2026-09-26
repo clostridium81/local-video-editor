@@ -6,6 +6,8 @@
 // - モジュール内にキャッシュを持つ (assetId ベース)
 // ============================================================
 
+import { decodeForAnalysis } from './audioDecode'
+
 export interface Peaks {
   /** 各バケット内の最小値 (-1..1) */
   min: Float32Array
@@ -21,24 +23,8 @@ export async function generatePeaks(
   blob: Blob,
   peaksPerSecond = 120
 ): Promise<Peaks> {
-  const arrayBuf = await blob.arrayBuffer()
-  // 既存の AudioContext を作り直すコストはあるが、ユーザ操作(ユーザ gesture)が
-  // 必要な resume を避けるため、decodeAudioData のために OfflineAudioContext は使わず
-  // AudioContext を使って decodeAudioData してすぐ close する
-  const Ctx =
-    (globalThis as any).AudioContext || (globalThis as any).webkitAudioContext
-  if (!Ctx) throw new Error('AudioContext 未対応')
-  const ctx = new Ctx()
-  let audioBuf: AudioBuffer
-  try {
-    audioBuf = await ctx.decodeAudioData(arrayBuf)
-  } finally {
-    try {
-      await ctx.close()
-    } catch {
-      /* noop */
-    }
-  }
+  // 低サンプルレート・1 件ずつのデコード (長い素材・多数の素材でもメモリを抑える)
+  const audioBuf = await decodeForAnalysis(blob)
   const duration = audioBuf.duration
   const totalBuckets = Math.max(1, Math.ceil(duration * peaksPerSecond))
   const samplesPerBucket = Math.max(1, Math.floor(audioBuf.length / totalBuckets))
