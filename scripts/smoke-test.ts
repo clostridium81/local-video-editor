@@ -48,6 +48,9 @@ import {
 } from '../src/engine/frameTiming'
 import { rmsFromChannels, buildDuckActivity, duckGain, duckTriggers, hasDucking } from '../src/engine/ducking'
 import { TEXT_STYLE_PRESETS, textStylePatch, getTextStyle } from '../src/engine/textStyles'
+import { easingFn, cubicBezier } from '../src/engine/keyframes'
+import { applyAnimatedProps, setPath, valueAt, ANIMATABLE } from '../src/engine/animatable'
+import { tokenizeLine, karaokeLines, karaokeProgress } from '../src/engine/karaoke'
 import type { Clip, Keyframe, ProjectState, PixelEffects } from '../src/types/project'
 
 let failures = 0
@@ -773,7 +776,7 @@ console.log('bg fill:')
 // ---------- v0.8: テキストのスタイル集 ----------
 console.log('text styles:')
 {
-  check('スタイル 13 種・ID 一意', TEXT_STYLE_PRESETS.length === 13 && new Set(TEXT_STYLE_PRESETS.map(p => p.id)).size === 13)
+  check('スタイル 16 種・ID 一意', TEXT_STYLE_PRESETS.length === 16 && new Set(TEXT_STYLE_PRESETS.map(p => p.id)).size === 16)
   const patch = textStylePatch(getTextStyle('subtitle-band')!)
   check('帯字幕: 背景色あり・ふちなし', patch.backgroundColor === '#000000b3' && !patch.decor?.outline)
   const plain = textStylePatch(getTextStyle('subtitle')!)
@@ -886,6 +889,98 @@ console.log('srt blank lines:')
   const cues = [{ start: 0, end: 1, text: 'a\n\nb\n \nc' }, { start: 2, end: 3, text: 'd' }]
   const back = parseSubtitles(toSrt(cues))
   check('本文の空行で字幕が分断されない', back.length === 2 && back[0].text === 'a\nb\nc')
+}
+
+// ---------- v0.9: 緩急 ----------
+console.log('easing (v0.9):')
+{
+  const kinds = ['linear', 'easeIn', 'easeOut', 'easeInOut', 'easeInCubic', 'easeOutCubic', 'easeInOutCubic', 'back', 'spring', 'bounce', 'elastic', 'hold', 'bezier'] as const
+  check('全種類 0 で 0・1 で 1', kinds.every(k => approx(easingFn(k)(0), 0, 1e-6) && approx(easingFn(k)(1), 1, 1e-6)))
+  check('hold は途中ずっと 0', approx(easingFn('hold')(0.99), 0))
+  check('spring / back / elastic は途中で 1 を超える',
+    ['spring', 'back', 'elastic'].every(k => Array.from({ length: 99 }, (_, i) => easingFn(k as any)((i + 1) / 100)).some(v => v > 1.01)))
+  const ease = cubicBezier(0.25, 0.1, 0.25, 1)
+  // CSS の ease: t=0.5 → 約 0.8024
+  check('cubic-bezier(ease) の t=0.5 が CSS と一致 (0.8024)', approx(ease(0.5), 0.8024, 2e-3))
+  check('cubic-bezier(0,0,1,1) は直線', approx(cubicBezier(0, 0, 1, 1)(0.3), 0.3, 1e-4))
+  const kfs = [{ time: 0, value: 0, easing: 'linear' }, { time: 1, value: 10, easing: 'bezier', bezier: [0, 0, 1, 1] }] as Keyframe[]
+  check('キーフレームの bezier が補間に使われる', approx(sampleKeyframes(kfs, 0.3, 0), 3, 1e-3))
+}
+
+// ---------- v0.9: 動かせる項目 (パス) ----------
+console.log('animatable paths:')
+{
+  const clip = {
+    id: 'v', kind: 'video', trackId: 't', assetId: 'a', start: 10, duration: 4, opacity: 1, x: 0.5, y: 0.5, scale: 1, rotation: 0,
+    keyframes: {
+      'effects.blur': [{ time: 0, value: 0, easing: 'linear' }, { time: 2, value: 20, easing: 'linear' }],
+      'crop.left': [{ time: 0, value: 0.3, easing: 'linear' }],
+      'mask.x': [{ time: 0, value: 0.2, easing: 'linear' }],
+      x: [{ time: 0, value: 0.1, easing: 'linear' }]
+    }
+  } as unknown as Clip
+  const a = applyAnimatedProps(clip, 1) as any
+  check('effects.blur を時刻の値で埋める (親が無くても補う)', approx(a.effects.blur, 10))
+  check('crop は既定値を補って left だけ設定', a.crop.left === 0.3 && a.crop.right === 0)
+  check('マスクが無いのに残った mask.* キーは無視 (壊れたマスクを作らない)', a.mask === undefined)
+  check('基本 6 項目はここでは触らない (computeEffective 担当)', a.x === 0.5)
+  check('元のクリップは変えない', (clip as any).effects === undefined)
+  const noKf = { ...clip, keyframes: undefined } as Clip
+  const coreOnly = { ...clip, keyframes: { x: (clip as any).keyframes.x } } as Clip
+  check('キーフレーム無し・基本 6 項目だけなら同じオブジェクトを返す (毎フレーム複製しない)',
+    applyAnimatedProps(noKf, 1) === noKf && applyAnimatedProps(coreOnly, 1) === coreOnly)
+  check('valueAt: キー無しは基準値 / 既定値', approx(valueAt(clip, 'effects.brightness', 1), 1) && approx(valueAt(clip, 'effects.blur', 2), 20))
+  check('setPath: 補えない親は null', setPath({} as any, 'mask.x', 1) === null && (setPath({} as any, 'decor.outline.width', 3) as any).decor.outline.color === '#000000')
+  check('ANIMATABLE のパスは一意', new Set(ANIMATABLE.map(d => d.path)).size === ANIMATABLE.length)
+  const txt = { id: 't', kind: 'text', start: 0, duration: 2, fontSize: 40, keyframes: { fontSize: [{ time: 0, value: 40, easing: 'linear' }, { time: 2, value: 120, easing: 'linear' }] } } as unknown as Clip
+  check('テキストの文字サイズもキーフレームで変わる', approx((applyAnimatedProps(txt, 1) as any).fontSize, 80))
+}
+
+// ---------- v0.9: 単語ハイライト ----------
+console.log('karaoke:')
+{
+  const jp = tokenizeLine('今日はいい天気ですね。')
+  check('日本語を単語に区切る (1 文字ずつではない)', jp.length > 1 && jp.length < 10, JSON.stringify(jp.map(t => t.text)))
+  check('句読点は直前の単語にくっつき重み 0 扱い', jp[jp.length - 1].text.endsWith('。') && jp.reduce((n, t) => n + t.weight, 0) === 10)
+  const en = tokenizeLine('Hello big world!')
+  check('英語は単語 + 空白を直前にまとめる', en.map(t => t.text).join('|') === 'Hello |big |world!')
+  const k = { mode: 'pop', color: '#fff', lead: 1, tail: 1 } as const
+  check('進み具合: lead 前は 0、tail 後は 1', karaokeProgress(k, 6, 0.5) === 0 && karaokeProgress(k, 6, 5.5) === 1 && approx(karaokeProgress(k, 6, 3), 0.5))
+  const clip = { text: 'ab cd\nef', duration: 6, karaoke: { ...k, lead: 0, tail: 0 } } as any
+  // 重み: ab=2, cd=2, ef=2 → 合計 6。t=3 → 3 文字分
+  const L = karaokeLines(clip, 3)
+  check('行をまたいで時間を割り振る', L.length === 2 && approx(L[0][0].progress, 1) && approx(L[0][1].progress, 0.5) && L[1][0].progress === 0)
+  check('今の単語はちょうど 1 つ', L.flat().filter(t => t.current).length === 1 && L[0][1].current)
+  check('終わった後は今の単語なし', karaokeLines(clip, 6).flat().every(t => !t.current && t.progress === 1))
+
+  // 描画: pop は今の単語だけ色付き・拡大、fill は途中の単語を clip して塗る
+  const calls: Array<{ fn: string; args: any[]; fill?: string }> = []
+  const ctx: any = new Proxy({ fillStyle: '' }, {
+    get(target, key) {
+      if (key in target) return target[key]
+      if (key === 'measureText') return (s: string) => ({ width: Array.from(s).length * 10 })
+      return (...args: any[]) => { calls.push({ fn: String(key), args, fill: target.fillStyle }) }
+    },
+    set(target, key, v) { target[key] = v; return true }
+  })
+  const target = { ctx, width: 1920, height: 1080, buffer: new LayerBuffer() }
+  const text = (mode: string) => ({
+    id: 'k', kind: 'text', trackId: 't', start: 0, duration: 6, opacity: 1, text: 'ab cd ef', fontFamily: 'x', fontSize: 50,
+    color: '#ffffff', x: 0.5, y: 0.5, align: 'center', bold: false, italic: false,
+    karaoke: { mode, color: '#ff0000', lead: 0, tail: 0 }
+  } as unknown as Clip)
+  calls.length = 0
+  drawClip(target, text('pop'), 3, null)
+  const fills = calls.filter(c => c.fn === 'fillText')
+  check('pop: 単語ごとに描き、今の単語 (cd) だけ強調色',
+    fills.length === 3 && fills[1].args[0].startsWith('cd') && fills[1].fill === '#ff0000' && fills[0].fill === '#ffffff')
+  check('pop: 今の単語を拡大する', calls.some(c => c.fn === 'scale' && c.args[0] > 1))
+  calls.length = 0
+  drawClip(target, text('fill'), 3, null)
+  check('fill: 途中の単語は clip して上から塗る', calls.filter(c => c.fn === 'fillText').length === 4 && calls.some(c => c.fn === 'clip'))
+  calls.length = 0
+  drawClip(target, text('reveal'), 2.5, null)
+  check('reveal: まだの単語は描かない (ab 済み・cd 途中 → 2 語だけ)', calls.filter(c => c.fn === 'fillText').length === 2)
 }
 
 console.log(failures === 0 ? '\nALL PASS' : `\n${failures} FAILURES`)

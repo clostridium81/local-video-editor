@@ -30,16 +30,39 @@ export interface Asset {
 
 // ---------- キーフレーム ----------
 
-export type Easing = 'linear' | 'easeIn' | 'easeOut' | 'easeInOut'
+export type Easing =
+  | 'linear'
+  | 'easeIn'
+  | 'easeOut'
+  | 'easeInOut'
+  // v0.9 追加
+  | 'easeInCubic'
+  | 'easeOutCubic'
+  | 'easeInOutCubic'
+  | 'back' // 少し行き過ぎて戻る
+  | 'spring' // バネ (揺れながら収まる)
+  | 'bounce' // 弾む
+  | 'elastic' // ゴムのように伸び縮み
+  | 'hold' // 補間しない (次のキーフレームで切り替わる)
+  | 'bezier' // bezier に 3 次ベジェの制御点 (CSS の cubic-bezier と同じ)
 
 export interface Keyframe {
   // クリップ開始からのローカル秒。クリップを移動/トリムしても
   // 内容に追従させるため、絶対時刻ではなくローカル時刻で保持する。
   time: number
   value: number
+  // 前のキーフレームからこのキーフレームへの補間の緩急
   easing: Easing
+  /** easing = 'bezier' のときの制御点 [x1, y1, x2, y2] */
+  bezier?: [number, number, number, number]
 }
 
+/**
+ * キーフレームで動かせる項目。基本の 6 項目に加えて、クリップ内の数値を
+ * ドット区切りのパスで指定できる (例: 'effects.brightness', 'mask.x',
+ * 'crop.left', 'fontSize', 'decor.outline.width')。
+ * 使えるパスは engine/animatable.ts の ANIMATABLE に定義する。
+ */
 export type KeyframeableProperty =
   | 'x'
   | 'y'
@@ -47,6 +70,7 @@ export type KeyframeableProperty =
   | 'rotation'
   | 'opacity'
   | 'volume'
+  | (string & {})
 
 export type Keyframes = Partial<Record<KeyframeableProperty, Keyframe[]>>
 
@@ -249,6 +273,25 @@ export type TextAnimType =
   | 'scale-pop'
   | 'wave'
 
+// ---------- 単語ハイライト字幕 (カラオケ風) ----------
+// 文章を単語 (日本語は形態素に近い単位) に分け、文字数に比例した時間で
+// 順に強調する。lead 秒後に始まり、クリップ終わりの tail 秒前に終わる。
+
+export type KaraokeMode =
+  | 'color' // 読んだ所の色を変える
+  | 'fill' // 左から色が塗られていく
+  | 'pop' // 今の単語を色付き・少し大きく (TikTok 風)
+  | 'box' // 今の単語の後ろに色の箱
+  | 'reveal' // 読んだ所まで表示していく
+
+export interface Karaoke {
+  mode: KaraokeMode
+  color: string // 強調色
+  boxColor?: string // box モードの箱の色 (未指定は color)
+  lead: number // 開始までの秒
+  tail: number // 終わりを何秒手前にするか
+}
+
 export interface TextAnim {
   type: TextAnimType
   duration: number // アニメ全体の長さ (秒、0 ならクリップ長に一致)
@@ -374,6 +417,7 @@ export interface TextClip extends BaseClip {
   italic: boolean
   decor?: TextDecor
   anim?: TextAnim
+  karaoke?: Karaoke
 }
 
 export interface ShapeClip extends BaseClip {

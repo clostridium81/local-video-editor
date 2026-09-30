@@ -4,6 +4,7 @@ import { ref, computed, watch } from 'vue'
 import type {
   Asset,
   Clip,
+  Easing,
   Keyframe,
   KeyframeableProperty,
   Marker,
@@ -42,8 +43,9 @@ import {
   insertKeyframe,
   removeKeyframeAt,
   splitAllKeyframes,
-  sampleKeyframes
+  findKeyframeAt
 } from '../engine/keyframes'
+import { animatableDef, setPath, valueAt } from '../engine/animatable'
 import { toast } from '../composables/useToast'
 import { contentSignature, isEmptyProject } from './backupSignature'
 import { useClipboard } from '../composables/useClipboard'
@@ -509,11 +511,82 @@ export const useProjectStore = defineStore('project', () => {
     prop: KeyframeableProperty,
     at = state.value.timeline.playhead
   ): number {
-    const base = (clip as any)[prop]
-    if (typeof base !== 'number') return 0
-    const localT = at - clip.start
-    const kfs = clip.keyframes?.[prop]
-    return sampleKeyframes(kfs, localT, base)
+    return valueAt(clip, prop, at - clip.start)
+  }
+
+  /**
+   * 動かせる項目の値を「再生位置の値」として設定する。
+   * - その項目にキーフレームがあり、再生位置がクリップ内なら、再生位置にキーを打つ
+   *   (キーフレームがあると基準値を変えても画面が変わらず、操作が効かないように見えるため)
+   * - それ以外は基準の値を変える
+   * 複数の項目をまとめて 1 回の履歴にできる (mergeKey でドラッグ中をまとめる)。
+   */
+  function setAnimatable(clipId: string, values: Record<string, number>, mergeKey?: string) {
+    const idx = state.value.clips.findIndex(c => c.id === clipId)
+    if (idx < 0) return
+    let c = state.value.clips[idx]
+    const local = state.value.timeline.playhead - c.start
+    const inClip = local >= 0 && local <= c.duration
+    recordHistory(mergeKey ?? `anim:${clipId}:${Object.keys(values).join(',')}`)
+    for (const [path, raw] of Object.entries(values)) {
+      if (!Number.isFinite(raw)) continue
+      const def = animatableDef(path)
+      const value = def ? Math.max(def.min, Math.min(def.max, raw)) : raw
+      const kfs = c.keyframes?.[path]
+      if (kfs?.length && inClip) {
+        const existing = findKeyframeAt(kfs, local)
+        const next = insertKeyframe(kfs, {
+          time: existing?.time ?? local,
+          value,
+          easing: existing?.easing ?? 'linear',
+          ...(existing?.bezier ? { bezier: existing.bezier } : {})
+        })
+        c = { ...c, keyframes: { ...(c.keyframes ?? {}), [path]: next } }
+      } else {
+        const next = setPath(c, path, value)
+        if (next) c = next
+      }
+    }
+    state.value.clips[idx] = c
+    extendDurationIfNeeded(c.start + c.duration)
+    touch()
+  }
+
+  /** 再生位置のキーフレームの緩急を変える */
+  function setKeyframeEasing(
+    clipId: string,
+    prop: KeyframeableProperty,
+    time: number,
+    easing: Easing,
+    bezier?: [number, number, number, number]
+  ) {
+    const c = state.value.clips.find(x => x.id === clipId)
+    const k = findKeyframeAt(c?.keyframes?.[prop], time)
+    if (!c || !k) return
+    const kf: Keyframe = { time: k.time, value: k.value, easing }
+    if (easing === 'bezier') kf.bezier = bezier ?? k.bezier ?? [0.25, 0.1, 0.25, 1]
+    // insertKeyframe は同時刻を置き換える (bezier を外す場合も新しいオブジェクトで上書き)
+    const idx = state.value.clips.findIndex(x => x.id === clipId)
+    recordHistory(`kfease:${clipId}:${prop}`)
+    const list = (c.keyframes?.[prop] ?? []).map(x => (Math.abs(x.time - k.time) < 1e-4 ? kf : x))
+    state.value.clips[idx] = { ...c, keyframes: { ...(c.keyframes ?? {}), [prop]: list } }
+    touch()
+  }
+
+  /** 項目のキーフレームをすべて消す (現在の値を基準値として残す) */
+  function clearKeyframes(clipId: string, prop: KeyframeableProperty) {
+    const idx = state.value.clips.findIndex(x => x.id === clipId)
+    if (idx < 0) return
+    const c = state.value.clips[idx]
+    if (!c.keyframes?.[prop]) return
+    recordHistory()
+    const v = valueAt(c, prop, state.value.timeline.playhead - c.start)
+    const kfs = { ...c.keyframes }
+    delete kfs[prop]
+    let next: Clip = { ...c, keyframes: Object.keys(kfs).length ? kfs : undefined }
+    next = setPath(next, prop, v) ?? next
+    state.value.clips[idx] = next
+    touch()
   }
 
   // ---------- トランジション / エフェクト ----------
@@ -1272,6 +1345,9 @@ export const useProjectStore = defineStore('project', () => {
     addKeyframe,
     removeKeyframe,
     currentEffectiveValue,
+    setAnimatable,
+    setKeyframeEasing,
+    clearKeyframes,
     setTransition,
     applyTransitionToTrack,
     setEffects,

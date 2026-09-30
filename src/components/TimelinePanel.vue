@@ -4,6 +4,7 @@ import { useProjectStore } from '../stores/projectStore'
 import type { Clip, Track, KeyframeableProperty } from '../types/project'
 import { useSelection } from '../composables/useSelection'
 import { useLocale } from '../composables/useLocale'
+import { animatableDef } from '../engine/animatable'
 import {
   clipSourceSpan,
   durationForSourceSpan,
@@ -929,7 +930,7 @@ function hasWaveform(c: Clip): boolean {
                 :key="i"
                 class="kf-dot"
                 :style="{ left: kfd.x + 'px' }"
-                :title="kfd.prop"
+                :title="animatableDef(kfd.prop) ? t(animatableDef(kfd.prop)!.easy, animatableDef(kfd.prop)!.normal) : kfd.prop"
               />
               <div
                 v-if="c.transitionIn && c.transitionIn.duration > 0 && !c.transitionIn.overlap"

@@ -10,7 +10,8 @@ import type {
   BlendMode,
   TextClip,
   ShapeClip,
-  TextAnim
+  TextAnim,
+  Karaoke
 } from '../types/project'
 import { sampleKeyframes } from './keyframes'
 import {
@@ -20,6 +21,8 @@ import {
   type RevealRect
 } from './transitions'
 import { applyPixelEffects, hasPixelEffects } from './pixelEffects'
+import { applyAnimatedProps } from './animatable'
+import { karaokeLines, type KaraokeTokenState } from './karaoke'
 
 // ============================================================
 // クリップ 1 枚分の合成描画 (プレビュー / 書き出し共通)
@@ -186,12 +189,14 @@ export interface VisualSource {
  */
 export function drawClip(
   target: DrawTarget,
-  clip: Clip,
+  rawClip: Clip,
   t: number,
   source: VisualSource | null
 ) {
   const { ctx } = target
-  const { eff, trans, localT } = computeEffective(clip, t)
+  const { eff, trans, localT } = computeEffective(rawClip, t)
+  // エフェクト・マスク・文字サイズ等のキーフレームを、この時刻の値として埋め込む
+  const clip = applyAnimatedProps(rawClip, localT)
   const blend = (clip.blendMode ?? 'normal') as BlendMode
   ctx.save()
   // 途中で例外が出ても clip 領域・変形が残って以降の全フレームが崩れないよう、必ず restore する
@@ -668,6 +673,13 @@ function drawText(
     })
   }
 
+  // 単語ハイライト字幕 (カラオケ風) は単語ごとに描く (文字アニメより優先)
+  if (clip.karaoke) {
+    drawKaraokeText(ctx, clip, clip.karaoke, localT, lineH, letterSpacing, unit)
+    ctx.restore()
+    return
+  }
+
   const run = (strokeOnly: boolean) =>
     eachLine((line, y, offset) =>
       drawTextLine(ctx, clip, line, y, progress, letterSpacing, strokeOnly, offset, totalChars)
@@ -695,6 +707,146 @@ function drawText(
   ctx.fillStyle = clip.color
   run(false)
   ctx.restore()
+}
+
+/** 字間を考慮した文字列の幅 (各文字の後ろに字間を足す。最後の文字の後ろは除く) */
+function spacedWidth(ctx: Ctx2D, text: string, letterSpacing: number): number {
+  const w = ctx.measureText(text).width
+  return letterSpacing === 0 ? w : w + letterSpacing * Array.from(text).length
+}
+
+/** 左揃えで文字列を描く (字間があれば 1 文字ずつ) */
+function drawSpaced(ctx: Ctx2D, text: string, x: number, y: number, letterSpacing: number, stroke: boolean) {
+  if (letterSpacing === 0) {
+    if (stroke) ctx.strokeText(text, x, y)
+    else ctx.fillText(text, x, y)
+    return
+  }
+  for (const ch of Array.from(text)) {
+    if (stroke) ctx.strokeText(ch, x, y)
+    else ctx.fillText(ch, x, y)
+    x += ctx.measureText(ch).width + letterSpacing
+  }
+}
+
+/**
+ * 単語ハイライト字幕を描く。背景の箱 → 影 → ふち → 文字 の順に重ねる。
+ * 座標系は drawText と同じ (1080p 基準に scale 済み、原点 = テキストの中心)。
+ */
+function drawKaraokeText(
+  ctx: Ctx2D,
+  clip: TextClip,
+  k: Karaoke,
+  localT: number,
+  lineH: number,
+  letterSpacing: number,
+  unit: number
+) {
+  const lines = karaokeLines(clip, localT)
+  const decor = clip.decor
+  interface Placed {
+    tok: KaraokeTokenState
+    x: number
+    y: number
+    w: number
+  }
+  const popScale = (tok: KaraokeTokenState) =>
+    k.mode === 'pop' && tok.current ? 1 + 0.18 * Math.min(1, tok.progress * 5) : 1
+  const placed: Placed[] = []
+  lines.forEach((toks, i) => {
+    const y = (i - (lines.length - 1) / 2) * lineH
+    const widths = toks.map(t => spacedWidth(ctx, t.text, letterSpacing))
+    // pop で大きくする単語は、その分だけ前後に余白を取る (隣の単語・空白に重ならない)
+    const extras = toks.map((t, j) => {
+      const glyphW = spacedWidth(ctx, t.text.trimEnd(), letterSpacing)
+      return widths[j] > 0 ? (popScale(t) - 1) * glyphW : 0
+    })
+    const total =
+      widths.reduce((a, b) => a + b, 0) + extras.reduce((a, b) => a + b, 0) - (toks.length ? letterSpacing : 0)
+    let x = clip.align === 'center' ? -total / 2 : clip.align === 'right' ? -total : 0
+    toks.forEach((tok, j) => {
+      placed.push({ tok, x: x + extras[j] / 2, y, w: widths[j] })
+      x += widths[j] + extras[j]
+    })
+  })
+  const visible = (p: Placed) => k.mode !== 'reveal' || p.tok.progress > 0
+  const prevAlign = ctx.textAlign
+  ctx.textAlign = 'left'
+
+  // 今の単語だけ少し大きく (pop)。読み始めで素早く大きくなる
+  const withToken = (p: Placed, draw: () => void) => {
+    ctx.save()
+    if (k.mode === 'pop' && p.tok.current) {
+      const s = popScale(p.tok)
+      // 空白を除いた文字部分の中心で拡大する
+      const cx = p.x + spacedWidth(ctx, p.tok.text.trimEnd(), letterSpacing) / 2
+      ctx.translate(cx, p.y)
+      ctx.scale(s, s)
+      ctx.translate(-cx, -p.y)
+    }
+    if (k.mode === 'reveal' && p.tok.progress < 1) {
+      ctx.globalAlpha = ctx.globalAlpha * Math.max(0.2, Math.min(1, p.tok.progress * 3))
+    }
+    draw()
+    ctx.restore()
+  }
+
+  // 背景の箱 (box): 今の単語の後ろ
+  if (k.mode === 'box') {
+    const cur = placed.find(p => p.tok.current)
+    if (cur) {
+      const padX = clip.fontSize * 0.18
+      const h = clip.fontSize * 1.15
+      ctx.save()
+      ctx.fillStyle = k.boxColor ?? k.color
+      ctx.beginPath()
+      roundRect(ctx, cur.x - padX, cur.y - h / 2, cur.w - letterSpacing + padX * 2, h, clip.fontSize * 0.2)
+      ctx.fill()
+      ctx.restore()
+    }
+  }
+
+  if (decor?.shadow) {
+    ctx.save()
+    ctx.shadowColor = decor.shadow.color
+    ctx.shadowBlur = decor.shadow.blur * unit
+    ctx.shadowOffsetX = decor.shadow.offsetX * unit
+    ctx.shadowOffsetY = decor.shadow.offsetY * unit
+    ctx.fillStyle = decor.shadow.color
+    for (const p of placed) if (visible(p)) withToken(p, () => drawSpaced(ctx, p.tok.text, p.x, p.y, letterSpacing, false))
+    ctx.restore()
+  }
+  if (decor?.outline && decor.outline.width > 0) {
+    ctx.save()
+    ctx.strokeStyle = decor.outline.color
+    ctx.lineWidth = decor.outline.width
+    ctx.lineJoin = 'round'
+    for (const p of placed) if (visible(p)) withToken(p, () => drawSpaced(ctx, p.tok.text, p.x, p.y, letterSpacing, true))
+    ctx.restore()
+  }
+  for (const p of placed) {
+    if (!visible(p)) continue
+    withToken(p, () => {
+      const { tok } = p
+      let color = clip.color
+      if (k.mode === 'color' && tok.progress > 0) color = k.color
+      if (k.mode === 'pop' && tok.current) color = k.color
+      if (k.mode === 'fill' && tok.progress >= 1) color = k.color
+      ctx.fillStyle = color
+      drawSpaced(ctx, tok.text, p.x, p.y, letterSpacing, false)
+      // fill: 読んでいる途中の単語は左から色を塗る
+      if (k.mode === 'fill' && tok.progress > 0 && tok.progress < 1) {
+        ctx.save()
+        ctx.beginPath()
+        ctx.rect(p.x, p.y - lineH, p.w * tok.progress, lineH * 2)
+        ctx.clip()
+        ctx.fillStyle = k.color
+        drawSpaced(ctx, tok.text, p.x, p.y, letterSpacing, false)
+        ctx.restore()
+      }
+    })
+  }
+  ctx.textAlign = prevAlign
 }
 
 function drawTextLine(

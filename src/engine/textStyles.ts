@@ -1,4 +1,4 @@
-import type { TextAnim, TextClip, TextDecor } from '../types/project'
+import type { Karaoke, TextAnim, TextClip, TextDecor } from '../types/project'
 
 // ============================================================
 // テキストのスタイル集 (ワンクリックで見た目をまとめて設定)
@@ -19,6 +19,8 @@ export interface TextStylePreset {
     italic: boolean
     decor?: TextDecor
     anim?: TextAnim
+    /** 単語ハイライト (持つプリセットだけ設定する。持たないプリセットは既存の設定を残す) */
+    karaoke?: Karaoke
   }
 }
 
@@ -48,6 +50,36 @@ export const TEXT_STYLE_PRESETS: TextStylePreset[] = [
     style: {
       fontFamily: "'Noto Sans JP'", fontSize: 50, color: '#ffffff', backgroundColor: '#000000b3',
       bold: false, italic: false, decor: { lineHeight: 1.5 }
+    }
+  },
+  {
+    id: 'karaoke-pop',
+    labelEasy: 'TikTok 風 (単語が光る)',
+    labelNormal: 'TikTok 風',
+    style: {
+      fontFamily: "'Noto Sans JP'", fontSize: 64, color: '#ffffff', bold: true, italic: false,
+      decor: { outline: { color: '#000000', width: 10 } },
+      karaoke: { mode: 'pop', color: '#ffe14d', lead: 0, tail: 0.2 }
+    }
+  },
+  {
+    id: 'karaoke-fill',
+    labelEasy: 'カラオケ (色が塗られる)',
+    labelNormal: 'カラオケ',
+    style: {
+      fontFamily: "'Noto Sans JP'", fontSize: 60, color: '#ffffff', bold: true, italic: false,
+      decor: { outline: { color: '#1a1a3a', width: 8 } },
+      karaoke: { mode: 'fill', color: '#3ad0ff', lead: 0, tail: 0.2 }
+    }
+  },
+  {
+    id: 'karaoke-box',
+    labelEasy: '単語に色の箱',
+    labelNormal: 'ハイライトボックス',
+    style: {
+      fontFamily: "'Noto Sans JP'", fontSize: 60, color: '#ffffff', bold: true, italic: false,
+      decor: { shadow: { color: '#00000099', blur: 8, offsetX: 0, offsetY: 3 } },
+      karaoke: { mode: 'box', color: '#ffffff', boxColor: '#7c4dff', lead: 0, tail: 0.2 }
     }
   },
   {
@@ -169,6 +201,7 @@ export function textStylePatch(preset: TextStylePreset): Partial<TextClip> {
     decor: s.decor ? JSON.parse(JSON.stringify(s.decor)) : undefined
   }
   if (s.anim) patch.anim = { ...s.anim }
+  if (s.karaoke) patch.karaoke = { ...s.karaoke }
   return patch
 }
 
