@@ -28,14 +28,19 @@ import type {
   Mask,
   MaskShape,
   SpeedPoint,
-  BgFill
+  BgFill,
+  Karaoke,
+  KaraokeMode
 } from '../types/project'
 import { findKeyframeAt, neighborKeyframes } from '../engine/keyframes'
 import { EFFECT_PRESETS } from '../engine/effectPresets'
 import { useLocale } from '../composables/useLocale'
 import EffectSlider from './EffectSlider.vue'
+import AnimSlider from './AnimSlider.vue'
+import BezierEditor from './BezierEditor.vue'
 import SpeedCurveEditor from './SpeedCurveEditor.vue'
 import { clipSourceSpan, durationForSourceSpan, trimSpeedCurveRight } from '../engine/frameTiming'
+import { animatableDef } from '../engine/animatable'
 import { TEXT_STYLE_PRESETS, textStylePreviewCss } from '../engine/textStyles'
 import { mapClipTimeToSource } from '../engine/frameTiming'
 import { captureVideoFrame } from '../engine/frameCapture'
@@ -83,6 +88,14 @@ const playheadInClip = computed(() => {
   return lt >= 0 && lt <= c.duration
 })
 
+const CORE_ANIM_KEYS = ['x', 'y', 'scale', 'rotation', 'opacity', 'volume'] as const
+
+/** 再生位置での値 (キーフレーム適用後)。入力欄の表示に使う */
+function cv(prop: KeyframeableProperty): number {
+  const c = selectedClip.value
+  return c ? store.currentEffectiveValue(c, prop) : 0
+}
+
 function update(patch: Partial<Clip>) {
   const id = selection.selectedClipId.value
   if (!id) return
@@ -103,6 +116,23 @@ function update(patch: Partial<Clip>) {
         }
         return
       }
+    }
+  }
+  // 位置・大きさ・回転・不透明度・音量にキーフレームがある場合は、基準値ではなく
+  // 再生位置のキーとして設定する (基準値を変えても画面に反映されないため)
+  {
+    const c = store.getClip(id)
+    const animatedKeys = CORE_ANIM_KEYS.filter(
+      k => typeof (patch as any)[k] === 'number' && (c?.keyframes?.[k]?.length ?? 0) > 0
+    )
+    if (c && animatedKeys.length) {
+      const values: Record<string, number> = {}
+      for (const k of animatedKeys) {
+        values[k] = (patch as any)[k]
+        delete (patch as any)[k]
+      }
+      store.setAnimatable(id, values)
+      if (Object.keys(patch).length === 0) return
     }
   }
   // 長さの変更は右端のトリムと同じく、速度カーブを伸縮させずに切り取り/延長する
@@ -200,7 +230,63 @@ function setEasing(prop: KeyframeableProperty, easing: Easing) {
   if (!c) return
   const k = findKeyframeAt(c.keyframes?.[prop], localPlayhead.value)
   if (!k) return
-  store.addKeyframe(c.id, prop, { ...k, easing })
+  store.setKeyframeEasing(c.id, prop, k.time, easing)
+}
+
+function currentBezier(prop: KeyframeableProperty): [number, number, number, number] {
+  const c = selectedClip.value
+  const k = c ? findKeyframeAt(c.keyframes?.[prop], localPlayhead.value) : undefined
+  return k?.bezier ?? [0.25, 0.1, 0.25, 1]
+}
+
+function setBezier(prop: KeyframeableProperty, v: [number, number, number, number]) {
+  const c = selectedClip.value
+  if (!c) return
+  const k = findKeyframeAt(c.keyframes?.[prop], localPlayhead.value)
+  if (!k) return
+  store.setKeyframeEasing(c.id, prop, k.time, 'bezier', v)
+}
+
+// ---------- キーフレーム一覧 ----------
+
+const EASINGS: Array<{ value: Easing; easy: string; normal: string }> = [
+  { value: 'linear', easy: '一定の速さ', normal: 'リニア' },
+  { value: 'easeIn', easy: 'だんだん速く', normal: 'イーズイン' },
+  { value: 'easeOut', easy: 'だんだん遅く', normal: 'イーズアウト' },
+  { value: 'easeInOut', easy: 'ゆっくり始まりゆっくり止まる', normal: 'イーズインアウト' },
+  { value: 'easeInCubic', easy: 'だんだん速く (強め)', normal: 'イーズイン (強)' },
+  { value: 'easeOutCubic', easy: 'だんだん遅く (強め)', normal: 'イーズアウト (強)' },
+  { value: 'easeInOutCubic', easy: 'ゆっくり始まり止まる (強め)', normal: 'イーズインアウト (強)' },
+  { value: 'back', easy: '少し行き過ぎて戻る', normal: 'バック' },
+  { value: 'spring', easy: 'バネ (揺れて止まる)', normal: 'スプリング' },
+  { value: 'bounce', easy: '弾んで止まる', normal: 'バウンス' },
+  { value: 'elastic', easy: 'ゴムのように伸び縮み', normal: 'エラスティック' },
+  { value: 'hold', easy: '動かさず急に切り替え', normal: 'ホールド' },
+  { value: 'bezier', easy: 'カーブを自分で作る', normal: 'ベジェ (カスタム)' }
+]
+
+const BEZIER_PRESETS: Array<{ easy: string; normal: string; v: [number, number, number, number] }> = [
+  { easy: 'なめらか', normal: 'ease', v: [0.25, 0.1, 0.25, 1] },
+  { easy: 'シャープ', normal: 'expo', v: [0.87, 0, 0.13, 1] },
+  { easy: '勢いよく止まる', normal: 'out-expo', v: [0.16, 1, 0.3, 1] },
+  { easy: '溜めて飛び出す', normal: 'anticipate', v: [0.68, -0.6, 0.32, 1.6] }
+]
+
+/** キーフレームが付いている項目 (一覧に出す) */
+const animatedProps = computed(() => {
+  const c = selectedClip.value
+  if (!c?.keyframes) return []
+  return Object.keys(c.keyframes)
+    .filter(p => (c.keyframes?.[p]?.length ?? 0) > 0)
+    .map(p => {
+      const def = animatableDef(p)
+      return { path: p, label: def ? t(def.easy, def.normal) : p, count: c.keyframes![p]!.length }
+    })
+})
+
+function clearAllKeyframes(prop: KeyframeableProperty) {
+  const c = selectedClip.value
+  if (c) store.clearKeyframes(c.id, prop)
 }
 
 // ---------- トランジション ----------
@@ -616,6 +702,28 @@ function setDucking(amount: number | null) {
   )
 }
 
+// ---------- 単語ハイライト字幕 ----------
+
+const KARAOKE_MODES: Array<{ value: KaraokeMode; easy: string; normal: string }> = [
+  { value: 'pop', easy: '今の単語を大きく・色付き (TikTok 風)', normal: 'ポップ' },
+  { value: 'fill', easy: '左から色が塗られる (カラオケ)', normal: 'フィル' },
+  { value: 'color', easy: '読んだ所の色が変わる', normal: 'カラー' },
+  { value: 'box', easy: '今の単語に色の箱', normal: 'ボックス' },
+  { value: 'reveal', easy: '読んだ所まで表示する', normal: 'リビール' }
+]
+
+/** 単語ハイライトの設定を変える (null で解除、{} で既定値を入れて有効化) */
+function setKaraoke(patch: Partial<Karaoke> | null) {
+  const c = textClip.value
+  if (!c) return
+  if (patch === null) {
+    store.updateClip(c.id, { karaoke: undefined } as any)
+    return
+  }
+  const prev: Karaoke = c.karaoke ?? { mode: 'pop', color: '#ffe14d', lead: 0, tail: 0.2 }
+  store.updateClip(c.id, { karaoke: { ...prev, ...patch } } as any, `karaoke:${c.id}`)
+}
+
 // ---------- テキストのスタイル集 ----------
 
 const styleWholeTrack = ref(false)
@@ -838,30 +946,17 @@ function kindNameJa(kind: string): string {
         <label class="field">
           <span>
             {{ t('透明度', '不透明度') }}
-            <span class="mono muted">{{ (selectedClip.opacity * 100).toFixed(0) }}%</span>
+            <span class="mono muted">{{ (cv('opacity') * 100).toFixed(0) }}%</span>
           </span>
           <input
             type="range"
             min="0"
             max="1"
             step="0.01"
-            :value="selectedClip.opacity"
+            :value="cv('opacity')"
             @input="(e) => update({ opacity: Number((e.target as HTMLInputElement).value) })"
           />
         </label>
-        <div v-if="kfExistsAt('opacity')" class="kf-row">
-          <button class="ghost tiny" @click="jumpToPrevKeyframe('opacity')">◀</button>
-          <select
-            :value="currentEasing('opacity')"
-            @change="(e) => setEasing('opacity', (e.target as HTMLSelectElement).value as any)"
-          >
-            <option value="linear">linear</option>
-            <option value="easeIn">easeIn</option>
-            <option value="easeOut">easeOut</option>
-            <option value="easeInOut">easeInOut</option>
-          </select>
-          <button class="ghost tiny" @click="jumpToNextKeyframe('opacity')">▶</button>
-        </div>
       </section>
 
       <!-- 配置 -->
@@ -881,7 +976,7 @@ function kindNameJa(kind: string): string {
             <input
               type="number"
               step="0.01"
-              :value="selectedClip.x.toFixed(3)"
+              :value="cv('x').toFixed(3)"
               @change="(e) => update({ x: Number((e.target as HTMLInputElement).value) })"
             />
           </label>
@@ -898,7 +993,7 @@ function kindNameJa(kind: string): string {
             <input
               type="number"
               step="0.01"
-              :value="selectedClip.y.toFixed(3)"
+              :value="cv('y').toFixed(3)"
               @change="(e) => update({ y: Number((e.target as HTMLInputElement).value) })"
             />
           </label>
@@ -921,7 +1016,7 @@ function kindNameJa(kind: string): string {
             <input
               type="number"
               step="0.01"
-              :value="(selectedClip as VideoClip | ImageClip).scale.toFixed(2)"
+              :value="cv('scale').toFixed(2)"
               @change="(e) => update({ scale: Number((e.target as HTMLInputElement).value) })"
             />
           </label>
@@ -938,10 +1033,55 @@ function kindNameJa(kind: string): string {
             <input
               type="number"
               step="1"
-              :value="(selectedClip as VideoClip | ImageClip | ShapeClip).rotation"
+              :value="cv('rotation')"
               @change="(e) => update({ rotation: Number((e.target as HTMLInputElement).value) })"
             />
           </label>
+        </div>
+      </section>
+
+      <!-- キーフレーム (動き) の一覧と緩急 -->
+      <section v-if="animatedProps.length" class="section">
+        <div class="section-head">{{ t('キーフレーム (動き)', 'キーフレーム') }}</div>
+        <div v-for="ap in animatedProps" :key="ap.path" class="kf-item">
+          <div class="kf-line">
+            <span class="kf-name">{{ ap.label }}</span>
+            <span class="muted mono">◆{{ ap.count }}</span>
+            <button class="ghost tiny" :title="t('前のキーフレームへ', '前のキーへ')" @click="jumpToPrevKeyframe(ap.path)">◀</button>
+            <button class="ghost tiny" :title="t('次のキーフレームへ', '次のキーへ')" @click="jumpToNextKeyframe(ap.path)">▶</button>
+            <button class="ghost tiny" :title="t('この項目のキーフレームを全部消す', 'キーフレームをすべて削除')" @click="clearAllKeyframes(ap.path)">×</button>
+          </div>
+          <template v-if="kfExistsAt(ap.path)">
+            <label class="field">
+              <span>{{ t('ここまでの動き方 (緩急)', 'このキーまでの補間') }}</span>
+              <select
+                :value="currentEasing(ap.path)"
+                @change="(e) => setEasing(ap.path, (e.target as HTMLSelectElement).value as Easing)"
+              >
+                <option v-for="ez in EASINGS" :key="ez.value" :value="ez.value">{{ t(ez.easy, ez.normal) }}</option>
+              </select>
+            </label>
+            <template v-if="currentEasing(ap.path) === 'bezier'">
+              <BezierEditor
+                :value="currentBezier(ap.path)"
+                @change="(v) => setBezier(ap.path, v)"
+              />
+              <div class="row gap-4 bezier-presets">
+                <button
+                  v-for="bp in BEZIER_PRESETS"
+                  :key="bp.normal"
+                  class="ghost tiny"
+                  @click="setBezier(ap.path, bp.v)"
+                >{{ t(bp.easy, bp.normal) }}</button>
+              </div>
+            </template>
+          </template>
+        </div>
+        <div class="section-hint">
+          {{ t(
+            '※ 各項目の ◆ で、今の位置にキーフレームを付けたり消したりできます。キーフレームがある項目を動かすと、今の位置のキーが変わります',
+            '※ 各項目の ◆ でキーを追加/削除。キーのある項目を変更すると再生位置のキーが更新されます'
+          ) }}
         </div>
       </section>
 
@@ -995,16 +1135,7 @@ function kindNameJa(kind: string): string {
           </select>
         </label>
         <div class="grid-2">
-          <label class="field">
-            <span>文字の大きさ</span>
-            <input
-              type="number"
-              min="8"
-              step="1"
-              :value="(selectedClip as TextClip).fontSize"
-              @change="(e) => update({ fontSize: Number((e.target as HTMLInputElement).value) })"
-            />
-          </label>
+          <AnimSlider :clip="selectedClip" path="fontSize" label="文字の大きさ" :min="8" :max="300" :step="1" />
           <label class="field">
             <span>そろえ方</span>
             <select
@@ -1074,14 +1205,14 @@ function kindNameJa(kind: string): string {
         </div>
         <label class="field">
           <span>
-            {{ t('音量', '音量') }} <span class="mono muted">{{ ((selectedClip.volume ?? 1) * 100).toFixed(0) }}%</span>
+            {{ t('音量', '音量') }} <span class="mono muted">{{ (cv('volume') * 100).toFixed(0) }}%</span>
           </span>
           <input
             type="range"
             min="0"
             max="2"
             step="0.01"
-            :value="selectedClip.volume ?? 1"
+            :value="cv('volume')"
             @input="(e) => update({ volume: Number((e.target as HTMLInputElement).value) })"
           />
         </label>
@@ -1165,46 +1296,14 @@ function kindNameJa(kind: string): string {
           <span>{{ t('効果', 'エフェクト') }}</span>
           <button class="ghost tiny" @click="resetEffects">{{ t('リセット', 'リセット') }}</button>
         </div>
-        <EffectSlider
-          label="明るさ" :value="selectedClip.effects?.brightness ?? 1"
-          :min="0" :max="3" :step="0.01"
-          @change="(v) => updateEffects({ brightness: v })"
-        />
-        <EffectSlider
-          label="コントラスト" :value="selectedClip.effects?.contrast ?? 1"
-          :min="0" :max="3" :step="0.01"
-          @change="(v) => updateEffects({ contrast: v })"
-        />
-        <EffectSlider
-          :label="t('色の濃さ', '彩度')" :value="selectedClip.effects?.saturation ?? 1"
-          :min="0" :max="3" :step="0.01"
-          @change="(v) => updateEffects({ saturation: v })"
-        />
-        <EffectSlider
-          label="ぼかし" :value="selectedClip.effects?.blur ?? 0"
-          :min="0" :max="50" :step="0.5"
-          @change="(v) => updateEffects({ blur: v })"
-        />
-        <EffectSlider
-          :label="t('色あい', '色相')" :value="selectedClip.effects?.hueRotate ?? 0"
-          :min="-180" :max="180" :step="1"
-          @change="(v) => updateEffects({ hueRotate: v })"
-        />
-        <EffectSlider
-          :label="t('白黒', 'グレースケール')" :value="selectedClip.effects?.grayscale ?? 0"
-          :min="0" :max="1" :step="0.01"
-          @change="(v) => updateEffects({ grayscale: v })"
-        />
-        <EffectSlider
-          label="色を反転" :value="selectedClip.effects?.invert ?? 0"
-          :min="0" :max="1" :step="0.01"
-          @change="(v) => updateEffects({ invert: v })"
-        />
-        <EffectSlider
-          :label="t('セピア (古い写真風)', 'セピア')" :value="selectedClip.effects?.sepia ?? 0"
-          :min="0" :max="1" :step="0.01"
-          @change="(v) => updateEffects({ sepia: v })"
-        />
+        <AnimSlider :clip="selectedClip" path="effects.brightness" label="明るさ" :min="0" :max="3" :step="0.01" />
+        <AnimSlider :clip="selectedClip" path="effects.contrast" label="コントラスト" :min="0" :max="3" :step="0.01" />
+        <AnimSlider :clip="selectedClip" path="effects.saturation" :label="t('色の濃さ', '彩度')" :min="0" :max="3" :step="0.01" />
+        <AnimSlider :clip="selectedClip" path="effects.blur" label="ぼかし" :min="0" :max="50" :step="0.5" />
+        <AnimSlider :clip="selectedClip" path="effects.hueRotate" :label="t('色あい', '色相')" :min="-180" :max="180" :step="1" />
+        <AnimSlider :clip="selectedClip" path="effects.grayscale" :label="t('白黒', 'グレースケール')" :min="0" :max="1" :step="0.01" />
+        <AnimSlider :clip="selectedClip" path="effects.invert" label="色を反転" :min="0" :max="1" :step="0.01" />
+        <AnimSlider :clip="selectedClip" path="effects.sepia" :label="t('セピア (古い写真風)', 'セピア')" :min="0" :max="1" :step="0.01" />
       </section>
 
       <!-- トランジション -->
@@ -1454,10 +1553,8 @@ function kindNameJa(kind: string): string {
         </label>
         <template v-if="videoOrImageClip.bgFill">
           <div class="grid-2">
-            <EffectSlider :label="t('ぼかし', 'ぼかし')" :value="videoOrImageClip.bgFill.blur" :min="0" :max="100" :step="1"
-              @change="(v) => updateBgFill({ blur: v })" />
-            <EffectSlider :label="t('暗さ', '暗さ')" :value="videoOrImageClip.bgFill.dim" :min="0" :max="0.8" :step="0.01"
-              @change="(v) => updateBgFill({ dim: v })" />
+            <AnimSlider :clip="selectedClip" path="bgFill.blur" :label="t('ぼかし', 'ぼかし')" :min="0" :max="100" :step="1" />
+            <AnimSlider :clip="selectedClip" path="bgFill.dim" :label="t('暗さ', '暗さ')" :min="0" :max="0.8" :step="0.01" />
           </div>
           <button class="ghost tiny" @click="applyBgFillToAll">
             {{ t('ほかの動画・画像にも同じ設定を入れる', 'すべての動画・画像に適用') }}
@@ -1478,14 +1575,10 @@ function kindNameJa(kind: string): string {
           <button class="ghost tiny" @click="resetCrop">{{ t('リセット', 'リセット') }}</button>
         </div>
         <div class="grid-2">
-          <EffectSlider :label="t('左', '左')" :value="videoOrImageClip.crop?.left ?? 0" :min="0" :max="0.45" :step="0.005"
-            @change="(v) => updateCrop({ left: v })" />
-          <EffectSlider :label="t('右', '右')" :value="videoOrImageClip.crop?.right ?? 0" :min="0" :max="0.45" :step="0.005"
-            @change="(v) => updateCrop({ right: v })" />
-          <EffectSlider :label="t('上', '上')" :value="videoOrImageClip.crop?.top ?? 0" :min="0" :max="0.45" :step="0.005"
-            @change="(v) => updateCrop({ top: v })" />
-          <EffectSlider :label="t('下', '下')" :value="videoOrImageClip.crop?.bottom ?? 0" :min="0" :max="0.45" :step="0.005"
-            @change="(v) => updateCrop({ bottom: v })" />
+          <AnimSlider :clip="selectedClip" path="crop.left" :label="t('左', '左')" :min="0" :max="0.45" :step="0.005" />
+          <AnimSlider :clip="selectedClip" path="crop.right" :label="t('右', '右')" :min="0" :max="0.45" :step="0.005" />
+          <AnimSlider :clip="selectedClip" path="crop.top" :label="t('上', '上')" :min="0" :max="0.45" :step="0.005" />
+          <AnimSlider :clip="selectedClip" path="crop.bottom" :label="t('下', '下')" :min="0" :max="0.45" :step="0.005" />
         </div>
         <div class="section-hint">
           {{ t('※ 端から切り落とす割合です (0.1 = 10%)', '※ 各辺から切り落とす割合 (0.1 = 10%)') }}
@@ -1506,20 +1599,14 @@ function kindNameJa(kind: string): string {
         </label>
         <template v-if="videoOrImageClip.mask">
           <div class="grid-2">
-            <EffectSlider :label="t('横位置', 'X')" :value="videoOrImageClip.mask.x" :min="0" :max="1" :step="0.01"
-              @change="(v) => updateMask({ x: v })" />
-            <EffectSlider :label="t('縦位置', 'Y')" :value="videoOrImageClip.mask.y" :min="0" :max="1" :step="0.01"
-              @change="(v) => updateMask({ y: v })" />
+            <AnimSlider :clip="selectedClip" path="mask.x" :label="t('横位置', 'X')" :min="0" :max="1" :step="0.01" />
+            <AnimSlider :clip="selectedClip" path="mask.y" :label="t('縦位置', 'Y')" :min="0" :max="1" :step="0.01" />
             <template v-if="videoOrImageClip.mask.shape !== 'linear'">
-              <EffectSlider :label="t('横幅', '幅')" :value="videoOrImageClip.mask.width" :min="0.02" :max="1.5" :step="0.01"
-                @change="(v) => updateMask({ width: v })" />
-              <EffectSlider :label="t('高さ', '高さ')" :value="videoOrImageClip.mask.height" :min="0.02" :max="1.5" :step="0.01"
-                @change="(v) => updateMask({ height: v })" />
+              <AnimSlider :clip="selectedClip" path="mask.width" :label="t('横幅', '幅')" :min="0.02" :max="1.5" :step="0.01" />
+              <AnimSlider :clip="selectedClip" path="mask.height" :label="t('高さ', '高さ')" :min="0.02" :max="1.5" :step="0.01" />
             </template>
-            <EffectSlider :label="t('回転 (度)', '回転')" :value="videoOrImageClip.mask.rotation" :min="-180" :max="180" :step="1"
-              @change="(v) => updateMask({ rotation: v })" />
-            <EffectSlider :label="t('ふちのぼかし', 'フェザー')" :value="videoOrImageClip.mask.feather" :min="0" :max="1" :step="0.01"
-              @change="(v) => updateMask({ feather: v })" />
+            <AnimSlider :clip="selectedClip" path="mask.rotation" :label="t('回転 (度)', '回転')" :min="-180" :max="180" :step="1" />
+            <AnimSlider :clip="selectedClip" path="mask.feather" :label="t('ふちのぼかし', 'フェザー')" :min="0" :max="1" :step="0.01" />
           </div>
           <label class="toggle">
             <input
@@ -1565,10 +1652,8 @@ function kindNameJa(kind: string): string {
           <EffectSlider label="青" :value="videoOrImageClip?.colorGrade?.gain?.b ?? 0" :min="-0.5" :max="0.5" :step="0.01"
             @change="(v) => updateGrade({ gain: { ...(videoOrImageClip?.colorGrade?.gain ?? { r: 0, g: 0, b: 0 }), b: v } })" />
         </div>
-        <EffectSlider :label="t('暖かさ', '色温度')" :value="videoOrImageClip?.colorGrade?.temperature ?? 0" :min="-1" :max="1" :step="0.01"
-          @change="(v) => updateGrade({ temperature: v })" />
-        <EffectSlider :label="t('緑〜紫', 'ティント')" :value="videoOrImageClip?.colorGrade?.tint ?? 0" :min="-1" :max="1" :step="0.01"
-          @change="(v) => updateGrade({ tint: v })" />
+        <AnimSlider :clip="selectedClip" path="colorGrade.temperature" :label="t('暖かさ', '色温度')" :min="-1" :max="1" :step="0.01" />
+        <AnimSlider :clip="selectedClip" path="colorGrade.tint" :label="t('緑〜紫', 'ティント')" :min="-1" :max="1" :step="0.01" />
       </section>
 
       <!-- クロマキー -->
@@ -1610,10 +1695,7 @@ function kindNameJa(kind: string): string {
           <span>{{ t('特殊効果', 'ピクセルエフェクト') }}</span>
           <button class="ghost tiny" @click="resetPixelFx">{{ t('リセット', 'リセット') }}</button>
         </div>
-        <EffectSlider
-          :label="t('ビネット (周辺を暗く)', 'ビネット')"
-          :value="videoOrImageClip?.pixelFx?.vignette ?? 0" :min="0" :max="1" :step="0.01"
-          @change="(v) => updatePixelFx({ vignette: v })" />
+        <AnimSlider :clip="selectedClip" path="pixelFx.vignette" :label="t('ビネット (周辺を暗く)', 'ビネット')" :min="0" :max="1" :step="0.01" />
         <EffectSlider
           :label="t('シャープ (くっきり)', 'シャープ')"
           :value="videoOrImageClip?.pixelFx?.sharpen ?? 0" :min="0" :max="1" :step="0.01"
@@ -1622,14 +1704,8 @@ function kindNameJa(kind: string): string {
           :label="t('バイブランス (自然な鮮やかさ)', 'バイブランス')"
           :value="videoOrImageClip?.pixelFx?.vibrance ?? 0" :min="-1" :max="1" :step="0.01"
           @change="(v) => updatePixelFx({ vibrance: v })" />
-        <EffectSlider
-          :label="t('フィルムグレイン (ざらつき)', 'フィルムグレイン')"
-          :value="videoOrImageClip?.pixelFx?.grain ?? 0" :min="0" :max="1" :step="0.01"
-          @change="(v) => updatePixelFx({ grain: v })" />
-        <EffectSlider
-          :label="t('モザイク', 'モザイク')"
-          :value="videoOrImageClip?.pixelFx?.pixelate ?? 0" :min="0" :max="40" :step="1"
-          @change="(v) => updatePixelFx({ pixelate: v })" />
+        <AnimSlider :clip="selectedClip" path="pixelFx.grain" :label="t('フィルムグレイン (ざらつき)', 'フィルムグレイン')" :min="0" :max="1" :step="0.01" />
+        <AnimSlider :clip="selectedClip" path="pixelFx.pixelate" :label="t('モザイク', 'モザイク')" :min="0" :max="40" :step="1" />
         <EffectSlider
           :label="t('ポスタライズ (階調を減らす)', 'ポスタライズ')"
           :value="videoOrImageClip?.pixelFx?.posterize ?? 0" :min="0" :max="16" :step="1"
@@ -1642,10 +1718,7 @@ function kindNameJa(kind: string): string {
           :label="t('走査線 (横じま)', '走査線')"
           :value="videoOrImageClip?.pixelFx?.scanlines ?? 0" :min="0" :max="1" :step="0.01"
           @change="(v) => updatePixelFx({ scanlines: v })" />
-        <EffectSlider
-          :label="t('色収差 (RGBずれ)', '色収差')"
-          :value="videoOrImageClip?.pixelFx?.chromaticAberration ?? 0" :min="0" :max="10" :step="0.5"
-          @change="(v) => updatePixelFx({ chromaticAberration: v })" />
+        <AnimSlider :clip="selectedClip" path="pixelFx.chromaticAberration" :label="t('色収差 (RGBずれ)', '色収差')" :min="0" :max="10" :step="0.5" />
         <label class="toggle" style="margin-top: 6px;">
           <input
             type="checkbox"
@@ -1724,24 +1797,8 @@ function kindNameJa(kind: string): string {
               @input="(e) => updateDecor({ outline: { ...(textClip?.decor?.outline ?? { color: '#000000', width: 0 }), color: (e.target as HTMLInputElement).value } })"
             />
           </label>
-          <label class="field">
-            <span>ふちの太さ</span>
-            <input
-              type="number"
-              min="0" step="0.5"
-              :value="textClip?.decor?.outline?.width ?? 0"
-              @change="(e) => updateDecor({ outline: { ...(textClip?.decor?.outline ?? { color: '#000000', width: 0 }), width: Number((e.target as HTMLInputElement).value) } })"
-            />
-          </label>
-          <label class="field">
-            <span>字間</span>
-            <input
-              type="number"
-              step="0.5"
-              :value="textClip?.decor?.letterSpacing ?? 0"
-              @change="(e) => updateDecor({ letterSpacing: Number((e.target as HTMLInputElement).value) })"
-            />
-          </label>
+          <AnimSlider :clip="selectedClip" path="decor.outline.width" label="ふちの太さ" />
+          <AnimSlider :clip="selectedClip" path="decor.letterSpacing" label="字間" />
           <label class="field">
             <span>行間 (倍)</span>
             <input
@@ -1779,6 +1836,60 @@ function kindNameJa(kind: string): string {
         </div>
       </section>
 
+      <!-- 単語ハイライト字幕 (カラオケ風) -->
+      <section v-if="textClip" class="section">
+        <div class="section-head">{{ t('単語を順に光らせる (字幕向け)', '単語ハイライト') }}</div>
+        <label class="toggle">
+          <input
+            type="checkbox"
+            :checked="!!textClip.karaoke"
+            @change="(e) => setKaraoke((e.target as HTMLInputElement).checked ? {} : null)"
+          />
+          <span>{{ t('しゃべっている単語を強調する', '単語を順にハイライト') }}</span>
+        </label>
+        <template v-if="textClip.karaoke">
+          <div class="grid-2">
+            <label class="field">
+              <span>{{ t('見せ方', '表現') }}</span>
+              <select
+                :value="textClip.karaoke.mode"
+                @change="(e) => setKaraoke({ mode: (e.target as HTMLSelectElement).value as KaraokeMode })"
+              >
+                <option v-for="m in KARAOKE_MODES" :key="m.value" :value="m.value">{{ t(m.easy, m.normal) }}</option>
+              </select>
+            </label>
+            <label class="field">
+              <span>{{ t('強調の色', '強調色') }}</span>
+              <input
+                type="color"
+                :value="textClip.karaoke.color"
+                @input="(e) => setKaraoke({ color: (e.target as HTMLInputElement).value })"
+              />
+            </label>
+            <label v-if="textClip.karaoke.mode === 'box'" class="field">
+              <span>{{ t('箱の色', '箱の色') }}</span>
+              <input
+                type="color"
+                :value="textClip.karaoke.boxColor ?? textClip.karaoke.color"
+                @input="(e) => setKaraoke({ boxColor: (e.target as HTMLInputElement).value })"
+              />
+            </label>
+          </div>
+          <div class="grid-2">
+            <EffectSlider :label="t('始まるまで (秒)', '開始の遅れ (秒)')" :value="textClip.karaoke.lead"
+              :min="0" :max="Math.max(0.1, textClip.duration - 0.1)" :step="0.05" @change="(v) => setKaraoke({ lead: v })" />
+            <EffectSlider :label="t('終わりの余白 (秒)', '終了の余白 (秒)')" :value="textClip.karaoke.tail"
+              :min="0" :max="Math.max(0.1, textClip.duration - 0.1)" :step="0.05" @change="(v) => setKaraoke({ tail: v })" />
+          </div>
+          <div class="section-hint">
+            {{ t(
+              '※ 文字数に合わせて時間を割り振ります。話し始め・話し終わりに合わせて「始まるまで」「終わりの余白」を調整してください。文字のアニメーションより優先されます',
+              '※ 文字数比で時間を配分します。開始の遅れ / 終了の余白で発話に合わせてください (テキストアニメより優先)'
+            ) }}
+          </div>
+        </template>
+      </section>
+
       <!-- 図形 -->
       <section v-if="selectedClip.kind === 'shape'" class="section">
         <div class="section-head">{{ t('図形', '図形') }}</div>
@@ -1792,24 +1903,8 @@ function kindNameJa(kind: string): string {
           </select>
         </label>
         <div class="grid-2">
-          <label class="field">
-            <span>横幅</span>
-            <input
-              type="number"
-              step="0.01" min="0.01" max="2"
-              :value="shapeClip!.width.toFixed(3)"
-              @change="(e) => updateShape({ width: Number((e.target as HTMLInputElement).value) })"
-            />
-          </label>
-          <label class="field">
-            <span>高さ</span>
-            <input
-              type="number"
-              step="0.01" min="0.01" max="2"
-              :value="shapeClip!.height.toFixed(3)"
-              @change="(e) => updateShape({ height: Number((e.target as HTMLInputElement).value) })"
-            />
-          </label>
+          <AnimSlider :clip="selectedClip" path="width" label="横幅" />
+          <AnimSlider :clip="selectedClip" path="height" label="高さ" />
           <label class="field">
             <span>塗りの色</span>
             <div class="row gap-4">
@@ -1832,24 +1927,8 @@ function kindNameJa(kind: string): string {
               <button class="ghost" @click="updateShapeStyle({ stroke: undefined })">なし</button>
             </div>
           </label>
-          <label class="field">
-            <span>線の太さ</span>
-            <input
-              type="number"
-              min="0" step="1"
-              :value="shapeClip!.style.strokeWidth ?? 0"
-              @change="(e) => updateShapeStyle({ strokeWidth: Number((e.target as HTMLInputElement).value) })"
-            />
-          </label>
-          <label class="field" v-if="shapeClip!.shape === 'rect'">
-            <span>角の丸み</span>
-            <input
-              type="number"
-              min="0" step="1"
-              :value="shapeClip!.style.cornerRadius ?? 0"
-              @change="(e) => updateShapeStyle({ cornerRadius: Number((e.target as HTMLInputElement).value) })"
-            />
-          </label>
+          <AnimSlider :clip="selectedClip" path="style.strokeWidth" label="線の太さ" />
+          <AnimSlider v-if="shapeClip!.shape === 'rect'" :clip="selectedClip" path="style.cornerRadius" label="角の丸み" />
         </div>
       </section>
 
@@ -2067,6 +2146,29 @@ button.tiny {
   color: var(--fg-3);
   line-height: 1.5;
   margin-top: 6px;
+}
+
+.kf-item {
+  padding: 6px 0;
+  border-bottom: 1px dotted var(--line-weak);
+}
+.kf-item:last-of-type {
+  border-bottom: none;
+}
+.kf-line {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  margin-bottom: 4px;
+}
+.kf-name {
+  flex: 1;
+  color: var(--fg-1);
+}
+.bezier-presets {
+  flex-wrap: wrap;
+  justify-content: center;
 }
 
 .seg {

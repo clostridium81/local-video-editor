@@ -6,6 +6,7 @@ import { useLocale } from '../composables/useLocale'
 import { PreviewEngine } from '../engine/previewEngine'
 import { sampleKeyframes } from '../engine/keyframes'
 import { pxUnit, visualDrawSize } from '../engine/renderer'
+import { applyAnimatedProps } from '../engine/animatable'
 import { computeDuckActivity, hasDucking, duckTriggers } from '../engine/ducking'
 import { toast } from '../composables/useToast'
 import type { Clip, VideoClip, ImageClip, TextClip, ShapeClip } from '../types/project'
@@ -299,8 +300,10 @@ function effectiveTransform(c: Clip) {
  * 任意クリップの canvas 座標系での bounding box を算出。
  * (選択枠の表示と、クリック時のヒットテストで共用)
  */
-function clipBoxOf(c: Clip): BoxInfo | null {
-  if (!isManipulatable(c)) return null
+function clipBoxOf(raw: Clip): BoxInfo | null {
+  if (!isManipulatable(raw)) return null
+  // 文字サイズ・図形の大きさ・クロップ等のキーフレームを反映した値で枠を出す
+  const c = applyAnimatedProps(raw, store.state.timeline.playhead - raw.start) as typeof raw
   const cw = store.meta.width
   const ch = store.meta.height
   const { x, y, scale, rotation } = effectiveTransform(c)
@@ -470,10 +473,11 @@ function onOverlayPointerDown(e: PointerEvent, mode: Mode) {
     mode,
     clipId: c.id,
     startCanvas: p,
-    origX: (c as any).x ?? 0.5,
-    origY: (c as any).y ?? 0.5,
-    origScale: (c as any).scale ?? 1,
-    origRotation: (c as any).rotation ?? 0,
+    // キーフレームで動いている場合も、画面に見えている (再生位置の) 値から動かす
+    origX: store.currentEffectiveValue(c, 'x'),
+    origY: store.currentEffectiveValue(c, 'y'),
+    origScale: store.currentEffectiveValue(c, 'scale'),
+    origRotation: store.currentEffectiveValue(c, 'rotation'),
     pivotCanvas: pivot,
     initialDistToPivot: pivot
       ? Math.hypot(p.x - pivot.x, p.y - pivot.y)
@@ -500,28 +504,17 @@ function onOverlayPointerMove(e: PointerEvent) {
     if (snapX) nx = 0.5
     if (snapY) ny = 0.5
     alignSnap.value = { x: snapX, y: snapY }
-    store.updateClip(
-      d.clipId,
-      { x: nx, y: ny } as any,
-      `canvas-move:${d.clipId}`
-    )
+    // キーフレームがあれば再生位置のキーとして、無ければ基準値として設定する
+    store.setAnimatable(d.clipId, { x: nx, y: ny }, `canvas-move:${d.clipId}`)
   } else if (d.mode.startsWith('scale-') && d.pivotCanvas && d.initialDistToPivot) {
     const distNow = Math.hypot(p.x - d.pivotCanvas.x, p.y - d.pivotCanvas.y)
     const ratio = distNow / Math.max(1, d.initialDistToPivot)
     const newScale = Math.max(0.05, Math.min(10, d.origScale * ratio))
-    store.updateClip(
-      d.clipId,
-      { scale: newScale } as any,
-      `canvas-scale:${d.clipId}`
-    )
+    store.setAnimatable(d.clipId, { scale: newScale }, `canvas-scale:${d.clipId}`)
   } else if (d.mode === 'rotate' && d.initialAngleToCenter != null) {
     const a = Math.atan2(p.y - d.center.y, p.x - d.center.x)
     const deltaDeg = ((a - d.initialAngleToCenter) * 180) / Math.PI
-    store.updateClip(
-      d.clipId,
-      { rotation: d.origRotation + deltaDeg } as any,
-      `canvas-rotate:${d.clipId}`
-    )
+    store.setAnimatable(d.clipId, { rotation: d.origRotation + deltaDeg }, `canvas-rotate:${d.clipId}`)
   }
 }
 

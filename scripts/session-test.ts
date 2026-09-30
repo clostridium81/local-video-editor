@@ -548,5 +548,59 @@ await test('テキストスタイル・背景ぼかしは複数クリップへ 1
   assert.equal((store.getClip(c1.id) as any).bgFill, undefined)
 })
 
+await test('キーフレーム: 値の変更は「キーがあれば再生位置にキー、無ければ基準値」・緩急・全削除・分割・保存', async () => {
+  await reset()
+  const img = (await store.addAssetFromFile(imageFile()))!
+  const c = store.addClipFromAsset(img.id, { start: 0 })!
+  store.updateClip(c.id, { duration: 4 } as any)
+  // キーが無い → 基準値 (親の effects も補う)
+  store.setPlayhead(1)
+  store.setAnimatable(c.id, { 'effects.blur': 5, x: 0.3 })
+  let cur = store.getClip(c.id) as any
+  assert.equal(cur.effects.blur, 5)
+  assert.equal(cur.x, 0.3)
+  assert.equal(cur.keyframes, undefined)
+  // キーを 2 つ打ってから、別の位置で値を変える → その位置にキーが増える
+  store.addKeyframe(c.id, 'effects.blur', { time: 0, value: 0, easing: 'linear' })
+  store.addKeyframe(c.id, 'effects.blur', { time: 3, value: 30, easing: 'linear' })
+  store.setPlayhead(2)
+  store.setAnimatable(c.id, { 'effects.blur': 12 })
+  cur = store.getClip(c.id) as any
+  assert.deepEqual(cur.keyframes['effects.blur'].map((k: any) => [k.time, k.value]), [[0, 0], [2, 12], [3, 30]])
+  assert.equal(cur.effects.blur, 5, '基準値はそのまま')
+  // 範囲の上限で丸める
+  store.setAnimatable(c.id, { 'effects.blur': 999 })
+  assert.equal((store.getClip(c.id) as any).keyframes['effects.blur'][1].value, 50)
+  // 緩急 (ベジェ) → 別の緩急に戻すと bezier は消える
+  store.setKeyframeEasing(c.id, 'effects.blur', 2, 'bezier', [0.1, 0.9, 0.2, 1])
+  assert.deepEqual((store.getClip(c.id) as any).keyframes['effects.blur'][1].bezier, [0.1, 0.9, 0.2, 1])
+  store.setKeyframeEasing(c.id, 'effects.blur', 2, 'spring')
+  const k = (store.getClip(c.id) as any).keyframes['effects.blur'][1]
+  assert.equal(k.easing, 'spring')
+  assert.equal(k.bezier, undefined)
+  // 分割: パス指定のキーも左右に分かれ、境界に値が入る
+  const rightId = store.splitClipAt(c.id, 1)!
+  assert.ok((store.getClip(rightId) as any).keyframes['effects.blur'].length >= 2)
+  store.undo()
+  // 保存 → 復元でキーフレーム (緩急込み) が残る
+  const r = await importBackup(zipFile(await createBackupBlob(store.serialize())))
+  assert.equal(r.project.clips[0].keyframes!['effects.blur']![1].easing, 'spring')
+  // 全削除: 再生位置の値を基準値として残す
+  store.setPlayhead(2)
+  store.clearKeyframes(c.id, 'effects.blur')
+  cur = store.getClip(c.id) as any
+  assert.equal(cur.keyframes, undefined)
+  assert.equal(cur.effects.blur, 50)
+})
+
+await test('単語ハイライト字幕のスタイルは karaoke を設定し、持たないスタイルは既存設定を残す', async () => {
+  await reset()
+  const tx = store.addTextClip()
+  store.applyTextStyle([tx.id], 'karaoke-pop')
+  assert.equal((store.getClip(tx.id) as any).karaoke.mode, 'pop')
+  store.applyTextStyle([tx.id], 'subtitle')
+  assert.equal((store.getClip(tx.id) as any).karaoke.mode, 'pop', '字幕スタイルを当てても単語ハイライトは残る')
+})
+
 await reset()
 console.log(`\n${passed} session regression tests passed.`)
