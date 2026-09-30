@@ -31,7 +31,7 @@ export const ANIMATABLE: AnimatableDef[] = [
   { path: 'x', easy: '横位置', normal: 'X', kinds: ['video', 'image', 'text', 'shape'], min: -1, max: 2, step: 0.001, base: 0.5 },
   { path: 'y', easy: '縦位置', normal: 'Y', kinds: ['video', 'image', 'text', 'shape'], min: -1, max: 2, step: 0.001, base: 0.5 },
   { path: 'scale', easy: '大きさ', normal: 'スケール', kinds: ['video', 'image', 'text', 'shape'], min: 0, max: 10, step: 0.01, base: 1 },
-  { path: 'rotation', easy: '回転', normal: '回転', kinds: ['video', 'image', 'text', 'shape'], min: -720, max: 720, step: 1, base: 0 },
+  { path: 'rotation', easy: '回転', normal: '回転', kinds: ['video', 'image', 'text', 'shape'], min: -36000, max: 36000, step: 1, base: 0 },
   { path: 'opacity', easy: '透明度', normal: '不透明度', kinds: ['video', 'image', 'text', 'shape'], min: 0, max: 1, step: 0.01, base: 1 },
   { path: 'volume', easy: '音量', normal: '音量', kinds: ['video', 'audio'], min: 0, max: 2, step: 0.01, base: 1 },
   // エフェクト
@@ -134,9 +134,16 @@ export function baseValue(clip: Clip, path: string): number {
   return getPath(clip, path) ?? animatableDef(path)?.base ?? 0
 }
 
-/** 時刻 localT (クリップ先頭からの秒) における path の値 (キーフレーム適用後) */
+/**
+ * 時刻 localT (クリップ先頭からの秒) における path の値 (キーフレーム適用後)。
+ * 基本 6 項目以外は描画 (applyAnimatedProps) と同じく範囲内に丸める
+ * (画面に出ている値と入力欄の表示を一致させる)。
+ */
 export function valueAt(clip: Clip, path: string, localT: number): number {
-  return sampleKeyframes(clip.keyframes?.[path], localT, baseValue(clip, path))
+  const v = sampleKeyframes(clip.keyframes?.[path], localT, baseValue(clip, path))
+  const def = animatableDef(path)
+  if (!def || (CORE_PROPS as readonly string[]).includes(path)) return v
+  return Math.max(def.min, Math.min(def.max, v))
 }
 
 export function isAnimated(clip: Clip, path: string): boolean {
@@ -156,9 +163,11 @@ export function applyAnimatedProps(clip: Clip, localT: number): Clip {
     const list: Keyframe[] | undefined = kfs[path]
     if (!list?.length) continue
     const def = animatableDef(path)
-    if (def && !def.kinds.includes(clip.kind)) continue
+    // 定義に無いパス (破損・改変したバックアップ等) は触らない (kind などを壊さない)
+    if (!def || !def.kinds.includes(clip.kind)) continue
     let v = sampleKeyframes(list, localT, baseValue(clip, path))
-    if (def) v = Math.max(def.min, Math.min(def.max, v))
+    if (!Number.isFinite(v)) continue
+    v = Math.max(def.min, Math.min(def.max, v))
     const next: Clip | null = setPath<Clip>(out ?? clip, path, v)
     if (next) out = next
   }

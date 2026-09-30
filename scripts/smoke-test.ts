@@ -51,6 +51,10 @@ import { TEXT_STYLE_PRESETS, textStylePatch, getTextStyle } from '../src/engine/
 import { easingFn, cubicBezier } from '../src/engine/keyframes'
 import { applyAnimatedProps, setPath, valueAt, ANIMATABLE } from '../src/engine/animatable'
 import { tokenizeLine, karaokeLines, karaokeProgress } from '../src/engine/karaoke'
+import { encodeWav } from '../src/engine/exportEngine'
+import { fontFamilyForAsset, assetIdFromFontFamily, fontDisplayName, syncFonts } from '../src/persistence/fontRegistry'
+import { replaceSessionAssets } from '../src/persistence/assetStore'
+import { detectAssetKind } from '../src/persistence/mediaMeta'
 import type { Clip, Keyframe, ProjectState, PixelEffects } from '../src/types/project'
 
 let failures = 0
@@ -981,6 +985,61 @@ console.log('karaoke:')
   calls.length = 0
   drawClip(target, text('reveal'), 2.5, null)
   check('reveal: まだの単語は描かない (ab 済み・cd 途中 → 2 語だけ)', calls.filter(c => c.fn === 'fillText').length === 2)
+}
+
+// ---------- v0.10: WAV / フォント ----------
+console.log('wav & fonts:')
+{
+  const L = new Float32Array([0, 1, -1, 0.5, 2])
+  const R = new Float32Array([0, -0.5, 1, -2, 0])
+  const blob = encodeWav({ length: 5, sampleRate: 48000, numberOfChannels: 2, getChannelData: (c: number) => (c ? R : L) })
+  const dv = new DataView(await blob.arrayBuffer())
+  const tag = (o: number) => String.fromCharCode(dv.getUint8(o), dv.getUint8(o + 1), dv.getUint8(o + 2), dv.getUint8(o + 3))
+  check('WAV ヘッダ (RIFF/WAVE/fmt/data, 48kHz, 16bit, 2ch)',
+    tag(0) === 'RIFF' && tag(8) === 'WAVE' && tag(12) === 'fmt ' && tag(36) === 'data' &&
+    dv.getUint32(24, true) === 48000 && dv.getUint16(34, true) === 16 && dv.getUint16(22, true) === 2 &&
+    dv.getUint32(40, true) === 20 && blob.size === 64)
+  const smp = (i: number, c: number) => dv.getInt16(44 + (i * 2 + c) * 2, true)
+  check('サンプルの変換と ±1 での丸め (はみ出しは切る)',
+    smp(1, 0) === 32767 && smp(1, 1) === -16384 && smp(2, 0) === -32768 && smp(3, 1) === -32768 && smp(4, 0) === 32767)
+  const mono = encodeWav({ length: 2, sampleRate: 44100, numberOfChannels: 1, getChannelData: () => new Float32Array([0.25, -0.25]) })
+  const mv = new DataView(await mono.arrayBuffer())
+  check('モノラルは左右に同じ音を入れる', mv.getInt16(44, true) === mv.getInt16(46, true) && mv.getUint32(24, true) === 44100)
+  check('フォント拡張子を素材として判定', ['a.ttf', 'b.OTF', 'c.woff', 'd.woff2'].every(n => detectAssetKind(new File(['x'], n)) === 'font') &&
+    detectAssetKind(new File(['x'], 'e.bin', { type: 'font/woff2' })) === 'font')
+  check('書体名 ↔ 素材 ID', assetIdFromFontFamily(fontFamilyForAsset('Ab_c-1')) === 'Ab_c-1' && assetIdFromFontFamily("'Noto Sans JP'") === null)
+  check('表示名は拡張子を除く', fontDisplayName({ name: 'MyFont-Bold.woff2' } as any) === 'MyFont-Bold')
+}
+
+// ---------- 監査対応 (v0.10) ----------
+console.log('audit fixes (v0.10):')
+{
+  const clip = { id: 'v', kind: 'video', start: 0, duration: 2, keyframes: {
+    kind: [{ time: 0, value: 1, easing: 'linear' }],
+    crop: [{ time: 0, value: 3, easing: 'linear' }],
+    'effects.blur': [{ time: 0, value: 4, easing: 'linear' }]
+  } } as unknown as Clip
+  const a = applyAnimatedProps(clip, 1) as any
+  check('定義に無いパスのキーは無視 (kind / crop を壊さない)', a.kind === 'video' && a.crop === undefined && a.effects.blur === 4)
+
+  // フォント登録の直列化: 読み込み中に続けて呼ばれても二重登録しない
+  const added: string[] = []
+  const fontSet = { add: (f: any) => added.push(f.family), delete: (f: any) => { const i = added.indexOf(f.family); if (i >= 0) added.splice(i, 1) } }
+  ;(globalThis as any).document = { fonts: fontSet, createElement: () => ({}) }
+  ;(globalThis as any).FontFace = class { family: string; constructor(f: string) { this.family = f } load() { return new Promise(r => setTimeout(r, 20)) } }
+  replaceSessionAssets('fp', new Map([['A', new Blob(['a'])], ['B', new Blob(['bb'])]]))
+  const A = { id: 'A', kind: 'font', name: 'A.ttf' } as any
+  const B = { id: 'B', kind: 'font', name: 'B.ttf' } as any
+  void syncFonts('fp', { A })
+  void syncFonts('fp', { A, B })
+  await syncFonts('fp', { A, B })
+  check('連続して呼んでも各フォントは 1 つだけ登録', added.sort().join() === 'lvefont-A,lvefont-B', added.join())
+  await syncFonts('fp', { B })
+  check('削除したフォントは外れる', added.join() === 'lvefont-B')
+  void syncFonts('fp', { A, B })
+  await syncFonts('other', {})
+  check('作品を切り替えたら古い作品のフォントを後から登録しない', added.length === 0, added.join())
+  delete (globalThis as any).FontFace
 }
 
 console.log(failures === 0 ? '\nALL PASS' : `\n${failures} FAILURES`)

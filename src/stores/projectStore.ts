@@ -45,7 +45,7 @@ import {
   splitAllKeyframes,
   findKeyframeAt
 } from '../engine/keyframes'
-import { animatableDef, setPath, valueAt } from '../engine/animatable'
+import { setPath, valueAt } from '../engine/animatable'
 import { toast } from '../composables/useToast'
 import { contentSignature, isEmptyProject } from './backupSignature'
 import { useClipboard } from '../composables/useClipboard'
@@ -54,6 +54,7 @@ import { clearWaveformCache } from '../engine/waveform'
 import { mapClipTimeToSource, splitSpeedCurve } from '../engine/frameTiming'
 import { clearDuckCache } from '../engine/ducking'
 import { getTextStyle, textStylePatch } from '../engine/textStyles'
+import { canLoadFont, syncFonts } from '../persistence/fontRegistry'
 
 // ============================================================
 // プロジェクトストア
@@ -106,6 +107,15 @@ export const useProjectStore = defineStore('project', () => {
   const state = ref<ProjectState>(makeEmptyProject())
   const historyVersion = ref(0)
   const sessionVersion = ref(0)
+
+  // フォント素材をブラウザに登録する (追加・削除・Undo・作品の切り替え/復元に追従)
+  watch(
+    () => [state.value.meta.id, sessionVersion.value, Object.values(state.value.assets).filter(a => a.kind === 'font').map(a => a.id).join()],
+    () => {
+      void syncFonts(state.value.meta.id, state.value.assets)
+    },
+    { immediate: true }
+  )
 
   // 操作完了後に実行する。削除/Undo の途中で必要な Blob を解放しない。
   watch(() => [Object.keys(state.value.assets), historyVersion.value], () => {
@@ -212,8 +222,12 @@ export const useProjectStore = defineStore('project', () => {
       toast.warn(`この形式のファイルは使えません: ${file.name}`)
       return null
     }
+    if (kind === 'font' && !(await canLoadFont(file))) {
+      toast.warn(`フォントとして読み込めませんでした: ${file.name}`)
+      return null
+    }
     const assetId = nanoid()
-    const mediaMeta = await extractMediaMeta(file, kind).catch(() => ({}))
+    const mediaMeta = kind === 'font' ? {} : await extractMediaMeta(file, kind).catch(() => ({}))
     // メタデータ読み込み中に新規作成/復元した場合、前の操作を新しい作品に混ぜない。
     if (expectedSession !== sessionVersion.value) return null
     const asset: Asset = {
@@ -265,6 +279,8 @@ export const useProjectStore = defineStore('project', () => {
       : undefined
     if (trackId && !explicitTrack) return null
     // 音声トラックに置けるのは音声を持つ素材 (audio / video) だけ
+    // フォントは書体として使う素材なのでタイムラインには置かない
+    if (asset.kind === 'font') return null
     if (explicitTrack?.kind === 'audio' && asset.kind === 'image') return null
     if (explicitTrack?.kind === 'video' && asset.kind === 'audio') return null
 
@@ -530,8 +546,9 @@ export const useProjectStore = defineStore('project', () => {
     recordHistory(mergeKey ?? `anim:${clipId}:${Object.keys(values).join(',')}`)
     for (const [path, raw] of Object.entries(values)) {
       if (!Number.isFinite(raw)) continue
-      const def = animatableDef(path)
-      const value = def ? Math.max(def.min, Math.min(def.max, raw)) : raw
+      // 範囲の丸めは描画時 (applyAnimatedProps) に行う。ここで丸めると、数値入力で
+      // 範囲外にした値 (大きな回転など) がドラッグの瞬間に跳ねてしまう
+      const value = raw
       const kfs = c.keyframes?.[path]
       if (kfs?.length && inClip) {
         const existing = findKeyframeAt(kfs, local)
@@ -1431,5 +1448,9 @@ function guessMimeByName(name: string): string {
   if (lower.endsWith('.mp3')) return 'audio/mpeg'
   if (lower.endsWith('.wav')) return 'audio/wav'
   if (lower.endsWith('.ogg')) return 'audio/ogg'
+  if (lower.endsWith('.ttf')) return 'font/ttf'
+  if (lower.endsWith('.otf')) return 'font/otf'
+  if (lower.endsWith('.woff2')) return 'font/woff2'
+  if (lower.endsWith('.woff')) return 'font/woff'
   return 'application/octet-stream'
 }

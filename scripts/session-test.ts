@@ -568,9 +568,10 @@ await test('キーフレーム: 値の変更は「キーがあれば再生位置
   cur = store.getClip(c.id) as any
   assert.deepEqual(cur.keyframes['effects.blur'].map((k: any) => [k.time, k.value]), [[0, 0], [2, 12], [3, 30]])
   assert.equal(cur.effects.blur, 5, '基準値はそのまま')
-  // 範囲の上限で丸める
+  // 保存値は入力のまま (ドラッグで跳ねない)、表示・描画は範囲内 (ぼかし上限 50) に丸める
   store.setAnimatable(c.id, { 'effects.blur': 999 })
-  assert.equal((store.getClip(c.id) as any).keyframes['effects.blur'][1].value, 50)
+  assert.equal((store.getClip(c.id) as any).keyframes['effects.blur'][1].value, 999)
+  assert.equal(store.currentEffectiveValue(store.getClip(c.id)!, 'effects.blur'), 50)
   // 緩急 (ベジェ) → 別の緩急に戻すと bezier は消える
   store.setKeyframeEasing(c.id, 'effects.blur', 2, 'bezier', [0.1, 0.9, 0.2, 1])
   assert.deepEqual((store.getClip(c.id) as any).keyframes['effects.blur'][1].bezier, [0.1, 0.9, 0.2, 1])
@@ -600,6 +601,45 @@ await test('単語ハイライト字幕のスタイルは karaoke を設定し�
   assert.equal((store.getClip(tx.id) as any).karaoke.mode, 'pop')
   store.applyTextStyle([tx.id], 'subtitle')
   assert.equal((store.getClip(tx.id) as any).karaoke.mode, 'pop', '字幕スタイルを当てても単語ハイライトは残る')
+})
+
+await test('フォント素材: 追加でき、タイムラインには置かず、バックアップで往復できる', async () => {
+  await reset()
+  const font = (await store.addAssetFromFile(new File(['font-bytes'], 'MyFont.woff2', { type: '' })))!
+  assert.equal(font.kind, 'font')
+  assert.equal(font.mimeType, 'font/woff2')
+  assert.equal(store.addClipFromAsset(font.id), null, 'フォントはクリップにならない')
+  const tx = store.addTextClip()
+  store.updateClip(tx.id, { fontFamily: `'lvefont-${font.id}'` } as any)
+  const r = await importBackup(zipFile(await createBackupBlob(store.serialize())))
+  assert.equal(r.project.assets[font.id].kind, 'font')
+  assert.equal(await r.blobs.get(font.id)!.text(), 'font-bytes')
+  assert.equal((r.project.clips[0] as any).fontFamily, `'lvefont-${font.id}'`)
+  // 素材を消してもテキストは残る (書体は既定に戻るだけ)
+  await store.removeAsset(font.id)
+  assert.equal(store.state.clips.length, 1)
+})
+
+await test('壊れたキーフレームを含むバックアップも、壊れた部分だけ取り除いて復元できる', async () => {
+  await reset()
+  store.addTextClip()
+  const p = store.serialize()
+  ;(p.clips[0] as any).keyframes = {
+    x: [null, { time: 0, value: 0.2, easing: 'linear' }, { time: 'x', value: 1 }],
+    opacity: 'broken',
+    'effects.blur': [{ time: 1, value: 3, easing: 'bezier', bezier: [0, 'a', 1, 1] }],
+    y: []
+  }
+  const files = unzipSync(new Uint8Array(await (await createBackupBlob(store.serialize())).arrayBuffer()))
+  files['project.json'] = strToU8(JSON.stringify(p))
+  const r = await importBackup(zipFile(new Blob([zipSync(files)])))
+  const kfs = r.project.clips[0].keyframes as any
+  assert.deepEqual(kfs.x, [{ time: 0, value: 0.2, easing: 'linear' }])
+  assert.equal(kfs.opacity, undefined)
+  assert.equal(kfs.y, undefined)
+  assert.equal(kfs['effects.blur'][0].easing, 'linear')
+  assert.equal(kfs['effects.blur'][0].bezier, undefined)
+  assert.match(r.warnings.join(), /キーフレーム/)
 })
 
 await reset()

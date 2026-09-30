@@ -6,6 +6,7 @@ import { toast } from '../composables/useToast'
 import { useLocale } from '../composables/useLocale'
 import { parseSubtitles, textClipsToCues, toSrt } from '../engine/subtitles'
 import { downloadBlob } from '../engine/exportEngine'
+import { fontFamilyForAsset, fontDisplayName } from '../persistence/fontRegistry'
 
 const locale = useLocale()
 const { t } = locale
@@ -13,7 +14,7 @@ const { t } = locale
 const searchQuery = ref('')
 
 // 素材の種別で絞り込む (フォルダ整理の代わり)
-type KindFilter = 'all' | 'video' | 'image' | 'audio'
+type KindFilter = 'all' | 'video' | 'image' | 'audio' | 'font'
 const kindFilter = ref<KindFilter>('all')
 
 const store = useProjectStore()
@@ -43,7 +44,7 @@ const assetList = computed<Asset[]>(() => {
 
 // 絞り込みチップに出す件数 (種別ごと)
 const kindCounts = computed<Record<KindFilter, number>>(() => {
-  const c: Record<KindFilter, number> = { all: 0, video: 0, image: 0, audio: 0 }
+  const c: Record<KindFilter, number> = { all: 0, video: 0, image: 0, audio: 0, font: 0 }
   for (const a of allAssets.value) {
     c.all++
     c[a.kind]++
@@ -161,6 +162,12 @@ function onDragLeave() {
 }
 
 function onAssetDblClick(asset: Asset) {
+  if (asset.kind === 'font') {
+    // フォントはそのフォントを使ったテキストを追加する
+    const clip = store.addTextClip()
+    store.updateClip(clip.id, { fontFamily: fontFamilyForAsset(asset.id), text: fontDisplayName(asset) } as any)
+    return
+  }
   store.addClipFromAsset(asset.id)
 }
 
@@ -199,6 +206,7 @@ function kindColor(kind: string): string {
   if (kind === 'video') return 'var(--video)'
   if (kind === 'audio') return 'var(--audio)'
   if (kind === 'image') return 'var(--image)'
+  if (kind === 'font') return 'var(--text)'
   return 'var(--fg-2)'
 }
 
@@ -206,11 +214,18 @@ function kindLabelJa(kind: string): string {
   if (kind === 'video') return t('動画', '動画')
   if (kind === 'audio') return t('音声', '音声')
   if (kind === 'image') return t('画像', '画像')
+  if (kind === 'font') return t('フォント', 'フォント')
   return kind
 }
 
 // 動画は音声トラックにも置ける (音声だけを使う) ので、その場でヒントを出す
 function assetHint(a: Asset): string {
+  if (a.kind === 'font') {
+    return a.name + '\n' + t(
+      'ダブルクリックで このフォントの文字を追加。文字の書体えらびにも出ます',
+      'ダブルクリックでこのフォントのテキストを追加 (テキストの書体選択にも表示)'
+    )
+  }
   if (a.kind !== 'video') return a.name
   return (
     a.name +
@@ -259,7 +274,7 @@ function assetHint(a: Asset): string {
       @click="kindFilter = 'all'"
     >{{ t('全部', '全て') }} <span class="count mono">{{ kindCounts.all }}</span></div>
     <div
-      v-for="k in (['video', 'image', 'audio'] as const)"
+      v-for="k in (['video', 'image', 'audio', 'font'] as const)"
       :key="k"
       class="kind-chip"
       :class="{ active: kindFilter === k }"
@@ -345,7 +360,7 @@ function assetHint(a: Asset): string {
     ref="fileInputRef"
     type="file"
     multiple
-    accept="video/*,image/*,audio/*,.srt,.vtt"
+    accept="video/*,image/*,audio/*,.srt,.vtt,.ttf,.otf,.woff,.woff2"
     style="display: none"
     @change="onFileChange"
   />

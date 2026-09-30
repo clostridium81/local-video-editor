@@ -11,7 +11,8 @@
 //   → バックアップZIPにそのまま書き出せる
 // ============================================================
 
-export type AssetKind = 'video' | 'image' | 'audio'
+// font: テキストの書体として使うフォントファイル (タイムラインには置かない)
+export type AssetKind = 'video' | 'image' | 'audio' | 'font'
 
 export interface Asset {
   id: string

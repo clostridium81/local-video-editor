@@ -19,7 +19,11 @@ import { exportProject, downloadBlob, type ExportOptions } from '../engine/expor
 const emit = defineEmits<{ close: [] }>()
 const store = useProjectStore()
 
-const format = ref<'mp4' | 'webm' | 'gif'>('mp4')
+const format = ref<'mp4' | 'webm' | 'gif' | 'png' | 'png-seq' | 'wav'>('mp4')
+// PNG / 連番 PNG で背景を透明にする
+const transparent = ref(false)
+const isVideoFormat = computed(() => format.value === 'mp4' || format.value === 'webm')
+const isImageFormat = computed(() => format.value === 'png' || format.value === 'png-seq')
 const useRange = ref<'full' | 'inout' | 'custom'>(
   store.state.timeline.inPoint != null || store.state.timeline.outPoint != null ? 'inout' : 'full'
 )
@@ -171,6 +175,17 @@ const estimatedSizeMB = computed(() => {
   return ((resolvedBitrate.value + audioBps) * exportLength.value) / 8 / 1e6
 })
 
+// メモリ上に作る出力 (連番 PNG / WAV) の推定サイズ (MB)。
+// 連番 PNG は 1 画素あたり約 0.8 バイト (写真的な内容の PNG の目安)
+const heavyOutputMB = computed(() => {
+  if (format.value === 'png-seq') {
+    const { width, height } = resolution.value
+    return (width * height * 0.8 * Math.ceil(exportLength.value * fps.value)) / 1e6
+  }
+  if (format.value === 'wav') return (exportLength.value * 192000 * 2.5) / 1e6 // ミックス用の一時データ込み
+  return 0
+})
+
 // 推定サイズの表示用フォーマット (大きい値は小数を出さない)
 function fmtSizeMB(mb: number): string {
   if (mb >= 100) return Math.round(mb).toLocaleString()
@@ -181,6 +196,7 @@ onMounted(async () => {
   if (!hasWebCodecs) {
     mp4Supported.value = false
     webmSupported.value = false
+    format.value = 'gif'
     return
   }
   const w = store.state.meta.width
@@ -200,7 +216,8 @@ onMounted(async () => {
     framerate: f,
     bitrate: 6_000_000
   })
-  if (!mp4Supported.value && webmSupported.value) format.value = 'webm'
+  // 判定を待つ間にユーザーが別の形式を選んでいたら変えない
+  if (!mp4Supported.value && webmSupported.value && format.value === 'mp4') format.value = 'webm'
   const audioOk =
     format.value === 'mp4'
       ? await canEncodeAudio({ codec: AAC_CODEC, sampleRate: 48000, numberOfChannels: 2 })
@@ -242,6 +259,12 @@ async function onStart() {
     rangeStart = Math.max(0, customStart.value)
     rangeEnd = Math.min(store.state.timeline.duration, customEnd.value)
   }
+  if (format.value === 'png') {
+    // 1 枚だけ: 再生位置のフレーム
+    rangeStart = store.state.timeline.playhead
+    rangeEnd = Math.min(store.state.timeline.duration, rangeStart + 1 / Math.max(1, fps.value))
+    if (rangeEnd <= rangeStart) rangeStart = Math.max(0, rangeEnd - 1 / Math.max(1, fps.value))
+  }
   if (rangeStart != null && rangeEnd != null && rangeEnd <= rangeStart) {
     toast.warn(t(
       '終了は開始より後にしてください',
@@ -249,6 +272,13 @@ async function onStart() {
     ))
     return
   }
+
+  // 大きな出力はメモリ上に作るため、タブが落ちて作業が消えないよう事前に確認する
+  const bigMB = heavyOutputMB.value
+  if (bigMB > 1024 && !confirm(t(
+    `できあがりが 約 ${fmtSizeMB(bigMB)} MB と大きいため、パソコンによっては途中で止まることがあります。先に「バックアップ」で保存してから書き出すのがおすすめです。このまま書き出しますか?`,
+    `出力が約 ${fmtSizeMB(bigMB)} MB と大きく、メモリ不足でタブが停止する可能性があります。先にバックアップを保存することを推奨します。続行しますか？`
+  ))) return
 
   running.value = true
   startTime.value = Date.now()
@@ -267,7 +297,8 @@ async function onStart() {
     fps: fps.value,
     videoBitrate: resolvedBitrate.value,
     audioBitrate: 192_000,
-    includeAudio: includeAudio.value && format.value !== 'gif',
+    includeAudio: includeAudio.value && isVideoFormat.value,
+    transparent: isImageFormat.value && transparent.value,
     startTime: rangeStart,
     endTime: rangeEnd,
     signal: ctrl.signal,
@@ -324,6 +355,7 @@ function fmtPhaseMessage(m: string): string {
   if (m === '出力中…') return 'まとめています…'
   if (m === '完了') return '完了'
   if (m === 'GIF を合成中…') return 'GIF を作成中…'
+  if (m === '画像を作成中…') return '画像を作成中…'
   return m
 }
 </script>
@@ -358,9 +390,12 @@ function fmtPhaseMessage(m: string): string {
               <option value="mp4" :disabled="!mp4Supported">MP4 (動画)</option>
               <option value="webm" :disabled="!webmSupported">WebM (動画)</option>
               <option value="gif">GIF (動く画像)</option>
+              <option value="png">{{ t('PNG (今の画面を1枚)', 'PNG (再生位置の静止画)') }}</option>
+              <option value="png-seq">{{ t('連番 PNG (全部のコマを画像に・ZIP)', '連番 PNG (ZIP)') }}</option>
+              <option value="wav">{{ t('WAV (音だけ)', 'WAV (音声のみ)') }}</option>
             </select>
           </label>
-          <label class="field">
+          <label v-if="format !== 'png' && format !== 'wav'" class="field">
             <span>フレームレート (1秒のコマ数)</span>
             <select v-model.number="fps">
               <option v-for="f in fpsOptions" :key="f" :value="f">
@@ -370,7 +405,7 @@ function fmtPhaseMessage(m: string): string {
           </label>
         </div>
 
-        <div class="row-2">
+        <div v-if="format !== 'wav'" class="row-2">
           <label class="field">
             <span>画面サイズ (解像度)</span>
             <select v-model="resolutionPreset">
@@ -382,7 +417,7 @@ function fmtPhaseMessage(m: string): string {
               <option value="480p">{{ sizeOptions['480p'].width }} × {{ sizeOptions['480p'].height }} (小)</option>
             </select>
           </label>
-          <label class="field">
+          <label v-if="format !== 'png' && format !== 'png-seq'" class="field">
             <span>画質</span>
             <select v-model="bitratePreset">
               <option value="low">標準</option>
@@ -392,7 +427,7 @@ function fmtPhaseMessage(m: string): string {
           </label>
         </div>
 
-        <label class="field">
+        <label v-if="isVideoFormat" class="field">
           <span>ビットレートを指定 (kbps)</span>
           <input
             type="number"
@@ -405,12 +440,19 @@ function fmtPhaseMessage(m: string): string {
           />
         </label>
 
-        <label class="toggle" v-if="format !== 'gif'">
+        <label class="toggle" v-if="isVideoFormat">
           <input type="checkbox" v-model="includeAudio" />
           <span>音声を含める</span>
         </label>
+        <label class="toggle" v-if="isImageFormat">
+          <input type="checkbox" v-model="transparent" />
+          <span>{{ t('背景を透明にする (他のソフトで重ねる素材に)', '背景を透明にする') }}</span>
+        </label>
+        <div v-if="format === 'png'" class="muted png-note">
+          {{ t('再生位置', '再生位置') }} {{ store.state.timeline.playhead.toFixed(2) }} {{ t('秒の画面を 1 枚保存します', '秒のフレームを保存します') }}
+        </div>
 
-        <div class="field">
+        <div v-if="format !== 'png'" class="field">
           <span>範囲</span>
           <div class="row-3">
             <label class="toggle">
@@ -427,7 +469,7 @@ function fmtPhaseMessage(m: string): string {
             </label>
           </div>
         </div>
-        <div v-if="useRange === 'custom'" class="row-2">
+        <div v-if="useRange === 'custom' && format !== 'png'" class="row-2">
           <label class="field">
             <span>開始 (秒)</span>
             <input type="number" step="0.1" min="0"
@@ -443,11 +485,26 @@ function fmtPhaseMessage(m: string): string {
         </div>
 
         <div class="summary muted">
-          <div>出力: {{ resolution.width }} × {{ resolution.height }} / {{ fps }} fps</div>
-          <div>画質: {{ Math.round(resolvedBitrate / 1000) }} kbps</div>
-          <div>長さ: {{ exportLength.toFixed(1) }} 秒</div>
-          <div v-if="format === 'gif'">推定サイズ: — (GIF は目安なし)</div>
-          <div v-else>推定サイズ: 約 {{ fmtSizeMB(estimatedSizeMB) }} MB</div>
+          <template v-if="format === 'wav'">
+            <div>出力: 48kHz / 16bit / ステレオ</div>
+            <div>長さ: {{ exportLength.toFixed(1) }} 秒</div>
+            <div>推定サイズ: 約 {{ fmtSizeMB(exportLength * 192000 / 1e6) }} MB</div>
+          </template>
+          <template v-else-if="format === 'png'">
+            <div>出力: {{ resolution.width }} × {{ resolution.height }} の PNG 1 枚</div>
+          </template>
+          <template v-else-if="format === 'png-seq'">
+            <div>出力: {{ resolution.width }} × {{ resolution.height }} / {{ fps }} fps の PNG</div>
+            <div>枚数: 約 {{ Math.ceil(exportLength * fps) }} 枚 ({{ exportLength.toFixed(1) }} 秒)</div>
+            <div :class="{ warn: heavyOutputMB > 1024 }">推定サイズ: 約 {{ fmtSizeMB(heavyOutputMB) }} MB{{ heavyOutputMB > 1024 ? ' (大きいので範囲を短くするのがおすすめ)' : '' }}</div>
+          </template>
+          <template v-else>
+            <div>出力: {{ resolution.width }} × {{ resolution.height }} / {{ fps }} fps</div>
+            <div>画質: {{ Math.round(resolvedBitrate / 1000) }} kbps</div>
+            <div>長さ: {{ exportLength.toFixed(1) }} 秒</div>
+            <div v-if="format === 'gif'">推定サイズ: — (GIF は目安なし)</div>
+            <div v-else>推定サイズ: 約 {{ fmtSizeMB(estimatedSizeMB) }} MB</div>
+          </template>
         </div>
 
         <div class="actions">
@@ -477,6 +534,14 @@ function fmtPhaseMessage(m: string): string {
 </template>
 
 <style scoped>
+.summary .warn {
+  color: var(--danger);
+}
+.png-note {
+  font-size: 11px;
+  margin: 4px 0 8px;
+}
+
 .modal-backdrop {
   position: fixed;
   inset: 0;

@@ -41,6 +41,7 @@ import BezierEditor from './BezierEditor.vue'
 import SpeedCurveEditor from './SpeedCurveEditor.vue'
 import { clipSourceSpan, durationForSourceSpan, trimSpeedCurveRight } from '../engine/frameTiming'
 import { animatableDef } from '../engine/animatable'
+import { fontFamilyForAsset, fontDisplayName, assetIdFromFontFamily } from '../persistence/fontRegistry'
 import { TEXT_STYLE_PRESETS, textStylePreviewCss } from '../engine/textStyles'
 import { mapClipTimeToSource } from '../engine/frameTiming'
 import { captureVideoFrame } from '../engine/frameCapture'
@@ -702,6 +703,17 @@ function setDucking(amount: number | null) {
   )
 }
 
+// ---------- フォント ----------
+
+const fontAssets = computed(() => Object.values(store.assets).filter(a => a.kind === 'font'))
+/** 選択中のテキストが、削除済みのフォント素材を指しているか */
+const missingFont = computed(() => {
+  const c = textClip.value
+  if (!c) return false
+  const id = assetIdFromFontFamily(c.fontFamily)
+  return !!id && !store.assets[id]
+})
+
 // ---------- 単語ハイライト字幕 ----------
 
 const KARAOKE_MODES: Array<{ value: KaraokeMode; easy: string; normal: string }> = [
@@ -1132,10 +1144,20 @@ function kindNameJa(kind: string): string {
             <option value="'Instrument Serif'">Instrument Serif</option>
             <option value="'Noto Sans JP'">Noto Sans JP</option>
             <option value="'Noto Serif JP'">Noto Serif JP</option>
+            <optgroup v-if="fontAssets.length" :label="t('読み込んだフォント', '追加したフォント')">
+              <option v-for="fa in fontAssets" :key="fa.id" :value="fontFamilyForAsset(fa.id)">{{ fontDisplayName(fa) }}</option>
+            </optgroup>
+            <option
+              v-if="missingFont"
+              :value="(selectedClip as TextClip).fontFamily"
+            >{{ t('(消したフォント)', '(削除済みのフォント)') }}</option>
           </select>
+          <span class="section-hint">
+            {{ t('.ttf / .otf / .woff のフォントを素材に追加すると、ここで選べます', 'フォントファイル (.ttf/.otf/.woff) を素材に追加すると選択肢に出ます') }}
+          </span>
         </label>
         <div class="grid-2">
-          <AnimSlider :clip="selectedClip" path="fontSize" label="文字の大きさ" :min="8" :max="300" :step="1" />
+          <AnimSlider :clip="selectedClip" path="fontSize" label="文字の大きさ" />
           <label class="field">
             <span>そろえ方</span>
             <select

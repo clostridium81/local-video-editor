@@ -7,6 +7,7 @@ import type {
 import { getAssetObjectURL, loadAssetBlob } from '../persistence/assetStore'
 import { computeEffective, drawClip, LayerBuffer, type VisualSource } from './renderer'
 import { PositionedBlobWriter } from './positionedBlob'
+import { buildStoredZip } from '../persistence/zipStream'
 import {
   avcCodecFor,
   AAC_CODEC,
@@ -69,7 +70,12 @@ type Progress = {
 }
 
 export interface ExportOptions {
-  format: 'mp4' | 'webm' | 'gif'
+  /**
+   * png: startTime の 1 枚 / png-seq: 範囲の全フレームの連番 PNG (ZIP) / wav: 音声のみ
+   */
+  format: 'mp4' | 'webm' | 'gif' | 'png' | 'png-seq' | 'wav'
+  /** png / png-seq で背景色を塗らず透明にする */
+  transparent?: boolean
   width: number
   height: number
   fps: number
@@ -123,16 +129,21 @@ interface RenderContext {
   bgBuffer: LayerBuffer
 }
 
-function drawFrame(rc: RenderContext, t: number) {
+function drawFrame(rc: RenderContext, t: number, transparent = false) {
   const { state, ctx } = rc
   const { width, height, backgroundColor } = state.meta
 
   ctx.save()
   ctx.filter = 'none' as any
   ctx.globalAlpha = 1
+  ctx.globalCompositeOperation = 'source-over'
   ctx.setTransform(1, 0, 0, 1, 0, 0)
-  ctx.fillStyle = backgroundColor
-  ctx.fillRect(0, 0, width, height)
+  if (transparent) {
+    ctx.clearRect(0, 0, width, height)
+  } else {
+    ctx.fillStyle = backgroundColor
+    ctx.fillRect(0, 0, width, height)
+  }
   ctx.restore()
 
   const tracksByOrder = [...state.tracks].sort((a, b) => a.order - b.order)
@@ -554,8 +565,6 @@ export async function exportProject(
   state: ProjectState,
   opts: ExportOptions
 ): Promise<ExportResult> {
-  if (!hasWebCodecs) throw new Error('このブラウザでは動画の書き出しができません')
-
   const { width, height, fps, videoBitrate, audioBitrate, format, includeAudio, signal } = opts
   state = {
     ...state,
@@ -576,12 +585,25 @@ export async function exportProject(
 
   const warnings: string[] = []
 
+  // 静止画 / 連番 PNG / 音声のみは専用パス
+  if (format === 'png' || format === 'png-seq') {
+    return await exportImages(state, { ...opts, startTime: rangeStart, endTime: rangeEnd })
+  }
+  if (format === 'wav') {
+    return await exportWav(state, { ...opts, startTime: rangeStart, endTime: rangeEnd })
+  }
+
+  // ここから先 (MP4 / WebM / GIF) は WebCodecs が必要
+  if (!hasWebCodecs && format !== 'gif') throw new Error('このブラウザでは動画の書き出しができません')
+
   // GIF 出力は専用パス
   if (format === 'gif') {
     return await exportGIF(state, { ...opts, startTime: rangeStart, endTime: rangeEnd })
   }
 
   notifyProgress(opts, { phase: 'prepare', done: 0, total: 1, message: '準備中…' })
+  // Web フォント・読み込んだフォントの準備が終わってから描く (文字だけ別書体になるのを防ぐ)
+  await waitFontsReady()
 
   // ---------- muxer ----------
   let muxer: any
@@ -885,6 +907,143 @@ export async function exportProject(
   }
 }
 
+// ============================================================
+// PNG (1 枚) / 連番 PNG (ZIP) / WAV
+// ============================================================
+
+function outputName(state: ProjectState, ext: string): string {
+  const safeName = state.meta.name.replace(/[^\p{L}\p{N}._-]+/gu, '_').slice(0, 64) || 'project'
+  const stamp = new Date().toISOString().replace(/[:.]/g, '-')
+  return `${safeName}__${stamp}.${ext}`
+}
+
+async function canvasToPng(canvas: OffscreenCanvas | HTMLCanvasElement): Promise<Blob> {
+  if ('convertToBlob' in canvas) return await (canvas as OffscreenCanvas).convertToBlob({ type: 'image/png' })
+  return await new Promise<Blob>((resolve, reject) =>
+    (canvas as HTMLCanvasElement).toBlob(b => (b ? resolve(b) : reject(new Error('PNG に変換できませんでした'))), 'image/png')
+  )
+}
+
+/**
+ * png: startTime の 1 枚を PNG に。png-seq: 範囲の全フレームを連番 PNG にして無圧縮 ZIP に。
+ * transparent なら背景色を塗らない (透明な素材として他のソフトで重ねられる)。
+ */
+async function exportImages(state: ProjectState, opts: ExportOptions): Promise<ExportResult> {
+  await waitFontsReady()
+  const { width, height, signal } = opts
+  const single = opts.format === 'png'
+  const fps = Math.max(1, opts.fps)
+  const rangeStart = opts.startTime ?? 0
+  const rangeEnd = opts.endTime ?? state.timeline.duration
+  const totalFrames = single ? 1 : Math.max(1, Math.ceil((rangeEnd - rangeStart) * fps))
+
+  notifyProgress(opts, { phase: 'prepare', done: 0, total: 1, message: '準備中…' })
+  const rc: RenderContext = {
+    state,
+    currentFrames: new Map(),
+    images: new Map(),
+    canvas: (globalThis as any).OffscreenCanvas
+      ? new OffscreenCanvas(width, height)
+      : Object.assign(document.createElement('canvas'), { width, height }),
+    ctx: null as any,
+    buffer: new LayerBuffer(),
+    bgBuffer: new LayerBuffer()
+  }
+  rc.ctx = (rc.canvas as any).getContext('2d') as any
+  const videoClips = state.clips.filter(c => c.kind === 'video') as VideoClip[]
+  const mediaCache = new ExportMediaCache(state.meta.id)
+  const resolver = new VideoFrameResolver(state.meta.id, videoClips, mediaCache, rangeStart, fps, totalFrames)
+  try {
+    for (const c of state.clips) {
+      if (c.kind !== 'image' || rc.images.has(c.assetId)) continue
+      const url = await getAssetObjectURL(state.meta.id, c.assetId)
+      if (url) rc.images.set(c.assetId, await loadImage(url).catch(() => null as any))
+    }
+    const entries: Array<{ name: string; data: Blob }> = []
+    const digits = String(totalFrames).length
+    notifyProgress(opts, { phase: 'video', done: 0, total: totalFrames, message: '画像を作成中…' })
+    for (let i = 0; i < totalFrames; i++) {
+      checkAbort(signal)
+      const t = rangeStart + i / fps
+      await resolver.resolveFrames(t, rc.currentFrames)
+      drawFrame(rc, t, !!opts.transparent)
+      const png = await canvasToPng(rc.canvas)
+      if (single) {
+        notifyProgress(opts, { phase: 'done', done: 1, total: 1, message: '完了' })
+        return { blob: png, filename: outputName(state, 'png'), mime: 'image/png', warnings: [] }
+      }
+      entries.push({ name: `frame_${String(i).padStart(Math.max(5, digits), '0')}.png`, data: png })
+      if (i % 3 === 0 || i === totalFrames - 1) {
+        notifyProgress(opts, { phase: 'video', done: i + 1, total: totalFrames })
+        await new Promise(r => setTimeout(r, 0))
+      }
+    }
+    checkAbort(signal)
+    notifyProgress(opts, { phase: 'mux', done: 0, total: 1, message: '出力中…' })
+    const zip = await buildStoredZip(entries)
+    notifyProgress(opts, { phase: 'done', done: 1, total: 1, message: '完了' })
+    return { blob: zip, filename: outputName(state, 'png.zip'), mime: 'application/zip', warnings: [] }
+  } finally {
+    resolver.closeAll()
+    void mediaCache.closeAll()
+  }
+}
+
+/** 音声だけを 48kHz / 16bit / ステレオの WAV にする */
+async function exportWav(state: ProjectState, opts: ExportOptions): Promise<ExportResult> {
+  const rangeStart = opts.startTime ?? 0
+  const rangeEnd = opts.endTime ?? state.timeline.duration
+  const rangeDur = Math.max(0.01, rangeEnd - rangeStart)
+  const warnings: string[] = []
+  notifyProgress(opts, { phase: 'audio', done: 0, total: 1, message: '音声をミックス中…' })
+  const sampleRate = 48000
+  const buf = await renderAudioMix(state, rangeDur, sampleRate, opts.signal, rangeStart, warnings)
+  checkAbort(opts.signal)
+  notifyProgress(opts, { phase: 'mux', done: 0, total: 1, message: '出力中…' })
+  const blob = encodeWav(buf)
+  notifyProgress(opts, { phase: 'done', done: 1, total: 1, message: '完了' })
+  return { blob, filename: outputName(state, 'wav'), mime: 'audio/wav', warnings }
+}
+
+/**
+ * AudioBuffer → 16bit PCM ステレオ WAV。長い音声でも 1 つの巨大な配列を作らないよう、
+ * 一定の長さごとに区切って Blob の部品にする。
+ */
+export function encodeWav(buf: { length: number; sampleRate: number; numberOfChannels: number; getChannelData(c: number): Float32Array }): Blob {
+  const ch = 2
+  const frames = buf.length
+  const L = buf.getChannelData(0)
+  const R = buf.numberOfChannels > 1 ? buf.getChannelData(1) : L
+  const dataBytes = frames * ch * 2
+  const header = new DataView(new ArrayBuffer(44))
+  const str = (o: number, s: string) => { for (let i = 0; i < s.length; i++) header.setUint8(o + i, s.charCodeAt(i)) }
+  str(0, 'RIFF'); header.setUint32(4, 36 + dataBytes, true); str(8, 'WAVE')
+  str(12, 'fmt '); header.setUint32(16, 16, true); header.setUint16(20, 1, true); header.setUint16(22, ch, true)
+  header.setUint32(24, buf.sampleRate, true); header.setUint32(28, buf.sampleRate * ch * 2, true)
+  header.setUint16(32, ch * 2, true); header.setUint16(34, 16, true)
+  str(36, 'data'); header.setUint32(40, dataBytes, true)
+  const parts: BlobPart[] = [header.buffer]
+  const CHUNK = 1 << 18 // 262144 フレームごと (約 1MB)
+  for (let off = 0; off < frames; off += CHUNK) {
+    const n = Math.min(CHUNK, frames - off)
+    const pcm = new Int16Array(n * 2)
+    for (let i = 0; i < n; i++) {
+      const l = Math.max(-1, Math.min(1, L[off + i]))
+      const r = Math.max(-1, Math.min(1, R[off + i]))
+      pcm[i * 2] = l < 0 ? l * 0x8000 : l * 0x7fff
+      pcm[i * 2 + 1] = r < 0 ? r * 0x8000 : r * 0x7fff
+    }
+    parts.push(pcm.buffer)
+  }
+  return new Blob(parts, { type: 'audio/wav' })
+}
+
+async function waitFontsReady() {
+  const fonts = (globalThis as any).document?.fonts
+  if (!fonts?.ready) return
+  await Promise.race([fonts.ready, new Promise(r => setTimeout(r, 5000))])
+}
+
 export async function downloadBlob(blob: Blob, filename: string) {
   const url = URL.createObjectURL(blob)
   const a = document.createElement('a')
@@ -902,6 +1061,7 @@ export async function downloadBlob(blob: Blob, filename: string) {
 // ============================================================
 
 async function exportGIF(state: ProjectState, opts: ExportOptions): Promise<ExportResult> {
+  await waitFontsReady()
   const { width, height } = opts
   const fps = Math.max(2, Math.min(30, opts.fps))
   const rangeStart = opts.startTime ?? 0

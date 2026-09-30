@@ -115,11 +115,11 @@ async function onNew() {
 
 function onExport() {
   if (!hasWebCodecs) {
-    toast.warn(t(
-      'このブラウザでは動画ファイルを作成できません',
-      'このブラウザはエクスポート (WebCodecs) に対応していません'
+    // MP4 / WebM は作れないが、GIF・PNG・WAV は書き出せる
+    toast.info(t(
+      'このブラウザでは MP4 / WebM を作れません (GIF・PNG・WAV は作れます)',
+      'このブラウザは WebCodecs 非対応のため MP4 / WebM は選べません'
     ))
-    return
   }
   showExport.value = true
 }
@@ -192,10 +192,9 @@ function onExport() {
       >{{ locale.isEasy.value ? 'あ' : '漢' }}</button>
       <button
         class="primary"
-        :disabled="!hasWebCodecs"
         :title="hasWebCodecs
           ? t('動画ファイルにする', '動画書き出し')
-          : t('このブラウザでは使えません', 'このブラウザは WebCodecs 未対応')"
+          : t('このブラウザでは GIF・PNG・WAV のみ', 'このブラウザは WebCodecs 未対応 (GIF / PNG / WAV のみ)')"
         @click="onExport"
       >▼ {{ t('動画を書き出す', '動画書き出し') }}</button>
       <input

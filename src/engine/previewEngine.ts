@@ -35,6 +35,8 @@ interface AudioChain {
 interface VideoMediaNode {
   el: HTMLVideoElement
   loaded: boolean
+  /** 読み込み (loadeddata) の完了。失敗しても resolve する */
+  ready?: Promise<void>
   chain?: AudioChain
 }
 interface AudioMediaNode {
@@ -461,7 +463,7 @@ export class PreviewEngine {
   private async seekOnly(activeClips: Clip[], t: number, seq: number) {
     for (const clip of activeClips) {
       if (clip.kind === 'video') {
-        const node = await this.ensureVideoNode(clip)
+        const node = await this.ensureVideoNode(clip, true)
         if (this.isStale(seq)) return
         if (!node) continue
         node.el.pause()
@@ -489,9 +491,20 @@ export class PreviewEngine {
     }
   }
 
-  private async ensureVideoNode(clip: VideoClip): Promise<VideoMediaNode | null> {
+  /**
+   * waitReady: 読み込み中の要素があれば完了まで待つ。停止中の描画では待たないと、
+   * 読み込みを待っていた古い描画は (最新でないため) 描かず、新しい描画は読み込み中で
+   * 描けず、次の操作まで映像が出ないままになる。再生中は待たずに進める (全体が止まるため)。
+   */
+  private async ensureVideoNode(clip: VideoClip, waitReady = false): Promise<VideoMediaNode | null> {
     let node = this.videoNodes.get(clip.id)
-    if (node) return node
+    if (node) {
+      if (waitReady && !node.loaded && node.ready) {
+        await node.ready
+        if (this.disposed || this.videoNodes.get(clip.id) !== node) return null
+      }
+      return node
+    }
     const url = await getAssetObjectURL(this.state.meta.id, clip.assetId)
     if (!url || this.disposed || !this.state.clips.some(c => c.id === clip.id)) return null
     node = this.videoNodes.get(clip.id)
@@ -506,12 +519,16 @@ export class PreviewEngine {
     el.addEventListener('error', () => {
       this.onError?.(`動画を読み込めませんでした`)
     })
-    node = { el, loaded: false, chain: this.attachAudioChain(el) }
-    this.videoNodes.set(clip.id, node)
-    await waitEvent(el, 'loadeddata').catch(() => {})
-    if (this.disposed || this.videoNodes.get(clip.id) !== node) return null
-    node.loaded = true
-    return node
+    const created: VideoMediaNode = { el, loaded: false, chain: this.attachAudioChain(el) }
+    node = created
+    created.ready = waitEvent(el, 'loadeddata').then(
+      () => { created.loaded = true },
+      () => {}
+    )
+    this.videoNodes.set(clip.id, created)
+    await created.ready
+    if (this.disposed || this.videoNodes.get(clip.id) !== created) return null
+    return created
   }
 
   private async ensureAudioNode(clip: AudioClip): Promise<AudioMediaNode | null> {

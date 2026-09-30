@@ -7,6 +7,7 @@ import { PreviewEngine } from '../engine/previewEngine'
 import { sampleKeyframes } from '../engine/keyframes'
 import { pxUnit, visualDrawSize } from '../engine/renderer'
 import { applyAnimatedProps } from '../engine/animatable'
+import { fontsVersion } from '../persistence/fontRegistry'
 import { computeDuckActivity, hasDucking, duckTriggers } from '../engine/ducking'
 import { toast } from '../composables/useToast'
 import type { Clip, VideoClip, ImageClip, TextClip, ShapeClip } from '../types/project'
@@ -138,7 +139,9 @@ watch(
     store.state.clips,
     store.state.tracks,
     store.state.meta,
-    store.state.timeline.playhead
+    store.state.timeline.playhead,
+    // フォント素材の読み込みが終わったら描き直す
+    fontsVersion.value
   ],
   () => {
     if (!engine) return
