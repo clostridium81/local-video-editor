@@ -25,6 +25,10 @@ function extForMime(mime: string, fallbackName: string): string {
   if (m === 'audio/mpeg') return 'mp3'
   if (m === 'audio/wav' || m === 'audio/x-wav') return 'wav'
   if (m === 'audio/ogg') return 'ogg'
+  if (m === 'font/ttf') return 'ttf'
+  if (m === 'font/otf') return 'otf'
+  if (m === 'font/woff') return 'woff'
+  if (m === 'font/woff2') return 'woff2'
   // fallback: 元ファイル名から
   const match = /\.([a-z0-9]+)$/i.exec(fallbackName)
   return match ? match[1] : 'bin'
@@ -239,8 +243,49 @@ export async function importBackup(file: File): Promise<ImportResult> {
   )
   const dropped = before - project.clips.length
   if (dropped > 0) warnings.push(`素材やトラックが見つからないクリップ ${dropped} 件を外しました`)
+  if (sanitizeKeyframes(project)) warnings.push('壊れていたキーフレームを取り除きました')
 
   return { project, assetCount: blobs.size, blobs, warnings }
+}
+
+/**
+ * キーフレームを検査し、描画を止めてしまう壊れたデータ (null・数値でない時刻や値・
+ * 配列でない) を取り除く。取り除いたものがあれば true。
+ */
+function sanitizeKeyframes(project: ProjectState): boolean {
+  let changed = false
+  for (const clip of project.clips) {
+    const kfs = (clip as any).keyframes
+    if (kfs == null) continue
+    if (typeof kfs !== 'object' || Array.isArray(kfs)) {
+      delete (clip as any).keyframes
+      changed = true
+      continue
+    }
+    for (const [path, list] of Object.entries(kfs)) {
+      if (!Array.isArray(list)) {
+        delete kfs[path]
+        changed = true
+        continue
+      }
+      const valid = list.filter(
+        (k: any) => k && typeof k === 'object' && Number.isFinite(k.time) && Number.isFinite(k.value)
+      )
+      for (const k of valid as any[]) {
+        if (typeof k.easing !== 'string') k.easing = 'linear'
+        if (k.bezier !== undefined && !(Array.isArray(k.bezier) && k.bezier.length === 4 && k.bezier.every(Number.isFinite))) {
+          delete k.bezier
+          if (k.easing === 'bezier') k.easing = 'linear'
+          changed = true
+        }
+      }
+      if (valid.length !== list.length) changed = true
+      if (valid.length) kfs[path] = (valid as any[]).sort((a, b) => a.time - b.time)
+      else delete kfs[path]
+    }
+    if (Object.keys(kfs).length === 0) delete (clip as any).keyframes
+  }
+  return changed
 }
 
 // ZIP v1 の構造・素材参照の整合性を確認する (エフェクト等の拡張フィールドは維持)。
@@ -257,7 +302,7 @@ function validateProjectReferences(project: ProjectState, manifest: BackupManife
     throw new Error('バックアップのプロジェクト情報が不正です')
   }
   for (const [id, asset] of Object.entries(project.assets)) {
-    if (!validId(id) || !asset || asset.id !== id || !['video', 'image', 'audio'].includes(asset.kind)
+    if (!validId(id) || !asset || asset.id !== id || !['video', 'image', 'audio', 'font'].includes(asset.kind)
       || typeof asset.name !== 'string' || typeof asset.mimeType !== 'string'
       || !Number.isSafeInteger(asset.size) || asset.size < 0) {
       throw new Error('バックアップの素材情報が不正です')

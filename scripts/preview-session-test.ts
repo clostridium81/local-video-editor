@@ -170,6 +170,25 @@ await test('読み込み待ちの古い描画は、後から始まった描画�
   engine.dispose()
 })
 
+await test('停止中: 動画の読み込み中に次の描画が始まっても、読み込み後に映像が描かれる', async () => {
+  const state = fixture(['video'])
+  setSources(state)
+  const engine = new PreviewEngine(canvas(), state)
+  deferLoads = true
+  const first = engine.renderCurrent()
+  for (let i = 0; i < 10; i++) await Promise.resolve()
+  // 読み込み中に別の変更で描き直し (フォント読み込み完了・再生位置の変更など)
+  engine.setState({ ...state, timeline: { ...state.timeline, playhead: 0.5 } })
+  const second = engine.renderCurrent()
+  for (let i = 0; i < 10; i++) await Promise.resolve()
+  assert.equal(draws.length, 0, '読み込み前は描かない')
+  loads.splice(0).forEach(done => done())
+  deferLoads = false
+  await Promise.all([first, second])
+  assert.deepEqual(draws.map(el => el.kind), ['video'], '最新の描画が読み込みを待って 1 回描く')
+  engine.dispose()
+})
+
 await test('動画書き出しの FrameSource がセッション素材を読み込み、シーク/終了できる', async () => {
   const state = fixture(['video'])
   setSources(state)

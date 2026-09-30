@@ -9,11 +9,13 @@ export function detectAssetKind(file: File): AssetKind | null {
   if (t.startsWith('video/')) return 'video'
   if (t.startsWith('image/')) return 'image'
   if (t.startsWith('audio/')) return 'audio'
+  if (t.startsWith('font/') || /^application\/(x-)?font/.test(t)) return 'font'
   // 拡張子フォールバック (type が空のこともある)
   const name = file.name.toLowerCase()
   if (/\.(mp4|webm|mov|mkv|m4v)$/.test(name)) return 'video'
   if (/\.(png|jpg|jpeg|gif|webp|bmp|avif)$/.test(name)) return 'image'
   if (/\.(mp3|wav|ogg|m4a|aac|flac)$/.test(name)) return 'audio'
+  if (/\.(ttf|otf|woff2?)$/.test(name)) return 'font'
   return null
 }
 
