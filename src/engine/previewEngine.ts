@@ -83,6 +83,7 @@ export class PreviewEngine {
 
   private onFrame?: (playhead: number) => void
   private onError?: (msg: string) => void
+  private onRateChange?: (rate: number) => void
   private layerBuf = new LayerBuffer()
   private bgBuf = new LayerBuffer()
   // ダッキングの度合い (作品変更のたびに呼び出し側が非同期で求めて渡す)
@@ -237,6 +238,12 @@ export class PreviewEngine {
   setPlaybackRate(r: number) {
     if (!Number.isFinite(r) || r === 0) r = 1
     this.rate = Math.max(-8, Math.min(8, r))
+    this.onRateChange?.(this.rate)
+  }
+
+  /** 再生レートが変わったとき (J/K/L・速度の切り替え) に呼ばれる。表示の追従用 */
+  setOnRateChange(cb: (rate: number) => void) {
+    this.onRateChange = cb
   }
 
   getPlaybackRate(): number {
@@ -597,6 +604,7 @@ export class PreviewEngine {
     this.disposed = true
     this.onFrame = undefined
     this.onError = undefined
+    this.onRateChange = undefined
     this.pause()
     // 自分がアクティブエンジンとして登録されている場合のみ解除する
     // (新しいエンジンが先に登録された後で旧エンジンが破棄されても消さない)
