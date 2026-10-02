@@ -112,6 +112,11 @@ onMounted(() => {
     playing.value = engine?.isPlaying() ?? false
   })
   engine.setOnError(msg => toast.error(msg))
+  engine.setOnRateChange(r => {
+    currentRate.value = r
+    // 表示と次の再生 (Space / 再生ボタン) の速さを一致させる (逆再生は引き継がない)
+    if (r > 0) preferredRate.value = r
+  })
   engine.renderCurrent()
   updateFit()
   window.addEventListener('resize', updateFit)
@@ -225,11 +230,30 @@ function togglePlay() {
     if (tl.playhead >= rangeEnd - 0.01) {
       store.setPlayhead(validOut != null ? tl.inPoint ?? 0 : 0)
     }
-    // Space からの再生は常に等速順方向 (J/K/L のシャトルレートを引き継がない)
-    engine.setPlaybackRate(1)
+    // Space / 再生ボタンは「再生速度」で選んだ速さの順方向 (J/K/L の逆再生などは引き継がない)
+    engine.setPlaybackRate(preferredRate.value)
     engine.play()
     playing.value = true
   }
+}
+
+// ---------- 再生速度 ----------
+// 再生ボタン / Space で使う速さ。J/K/L のシャトル中はその速さを表示する
+const RATE_OPTIONS = [0.5, 1, 1.5, 2, 4]
+const preferredRate = ref(1)
+const currentRate = ref(1)
+
+function fmtRate(r: number) {
+  return `${r < 0 ? '−' : ''}${Math.abs(r)}×`
+}
+
+function onRateSelect(e: Event) {
+  const r = Number((e.target as HTMLSelectElement).value)
+  if (!Number.isFinite(r) || r <= 0) return
+  preferredRate.value = r
+  // 再生中ならすぐ反映。停止中は表示だけ変えて、次の再生で使う
+  if (engine?.isPlaying()) engine.setPlaybackRate(r)
+  else currentRate.value = r
 }
 
 function toStart() {
@@ -675,6 +699,16 @@ function onBodyPointerDown(e: PointerEvent) {
         <span class="sep"> / </span>
         <span class="muted">{{ fmt(duration) }}</span>
       </div>
+      <select
+        class="zoom-select rate-select"
+        :class="{ active: currentRate !== 1 }"
+        :value="currentRate"
+        :title="t('再生の速さ (J / K / L キーでも変えられます)', '再生速度 (J/K/L でシャトル再生)')"
+        @change="onRateSelect"
+      >
+        <option v-if="!RATE_OPTIONS.includes(currentRate)" :value="currentRate">{{ fmtRate(currentRate) }}</option>
+        <option v-for="r in RATE_OPTIONS" :key="r" :value="r">{{ fmtRate(r) }}</option>
+      </select>
       <div class="spacer" />
       <select
         v-model="zoomMode"
@@ -882,6 +916,14 @@ canvas {
   padding: 6px 6px;
   font-size: 11px;
   letter-spacing: -0.05em;
+}
+
+.rate-select {
+  width: 58px;
+}
+.rate-select.active {
+  color: var(--accent-hi);
+  border-color: var(--accent);
 }
 
 .zoom-select {
